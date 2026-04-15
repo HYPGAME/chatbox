@@ -60,3 +60,39 @@ func TestStoreEncryptsAndReloadsConversationRecords(t *testing.T) {
 		t.Fatalf("expected status %q, got %q", StatusSent, loaded[0].Status)
 	}
 }
+
+func TestConversationFileNameUsesRoomKeyForGroupChat(t *testing.T) {
+	t.Parallel()
+
+	psk := bytes.Repeat([]byte{0x52}, 32)
+
+	hostRoom := HostRoomKey("0.0.0.0:7331")
+	joinRoom := JoinRoomKey("127.0.0.1:7331")
+
+	if hostRoom == "" || joinRoom == "" {
+		t.Fatalf("expected non-empty room keys, got host=%q join=%q", hostRoom, joinRoom)
+	}
+
+	hostFile := conversationFileName("alice", hostRoom, psk)
+	joinFile := conversationFileName("alice", joinRoom, psk)
+	if hostFile == joinFile {
+		t.Fatalf("expected host and join room keys to remain distinct, got %q", hostFile)
+	}
+
+	sameHostFile := conversationFileName("alice", HostRoomKey("0.0.0.0:7331"), psk)
+	if hostFile != sameHostFile {
+		t.Fatalf("expected stable file name for identical room keys, got %q vs %q", hostFile, sameHostFile)
+	}
+}
+
+func TestConversationFileNameStillSeparatesDifferentRooms(t *testing.T) {
+	t.Parallel()
+
+	psk := bytes.Repeat([]byte{0x52}, 32)
+
+	roomA := conversationFileName("alice", JoinRoomKey("127.0.0.1:7331"), psk)
+	roomB := conversationFileName("alice", JoinRoomKey("127.0.0.1:7444"), psk)
+	if roomA == roomB {
+		t.Fatalf("expected different room addresses to produce different files, got %q", roomA)
+	}
+}

@@ -56,7 +56,7 @@ type fileEvent struct {
 	Record    Record `json:"record,omitempty"`
 }
 
-func OpenStore(baseDir, localName, peerName string, psk []byte) (*Store, error) {
+func OpenStore(baseDir, localName, conversationKey string, psk []byte) (*Store, error) {
 	if len(psk) != 32 {
 		return nil, errors.New("transcript store requires a 32-byte PSK")
 	}
@@ -74,7 +74,7 @@ func OpenStore(baseDir, localName, peerName string, psk []byte) (*Store, error) 
 	}
 
 	store := &Store{
-		path: filepath.Join(baseDir, conversationFileName(localName, peerName, psk)),
+		path: filepath.Join(baseDir, conversationFileName(localName, conversationKey, psk)),
 		aead: aead,
 	}
 	if err := store.ensureInitialized(); err != nil {
@@ -251,10 +251,18 @@ func verifyMagic(file *os.File) error {
 	return nil
 }
 
-func conversationFileName(localName, peerName string, psk []byte) string {
+func HostRoomKey(listenAddr string) string {
+	return "host:" + strings.TrimSpace(listenAddr)
+}
+
+func JoinRoomKey(targetAddr string) string {
+	return "join:" + strings.TrimSpace(targetAddr)
+}
+
+func conversationFileName(localName, conversationKey string, psk []byte) string {
 	fingerprintBytes := sha256.Sum256(psk)
 	fingerprint := hex.EncodeToString(fingerprintBytes[:6])
-	return strings.Join([]string{sanitizeName(localName), sanitizeName(peerName), fingerprint}, "--") + ".cbh"
+	return strings.Join([]string{sanitizeName(localName), sanitizeName(conversationKey), fingerprint}, "--") + ".cbh"
 }
 
 func sanitizeName(name string) string {
