@@ -3,10 +3,14 @@
 package tui
 
 import (
+	"bufio"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
 )
+
+const terminalBundleID = "com.apple.Terminal"
 
 const terminalAppForegroundScript = `
 tell application "System Events"
@@ -29,14 +33,16 @@ end tell
 `
 
 type terminalAppForegroundDetector struct {
-	currentTTY string
-	runScript  func(string) (string, error)
+	currentTTY        string
+	runScript         func(string) (string, error)
+	frontmostBundleID func() (string, error)
 }
 
 func newTerminalAppForegroundDetector(currentTTY string) terminalAppForegroundDetector {
 	return terminalAppForegroundDetector{
-		currentTTY: strings.TrimSpace(currentTTY),
-		runScript:  runAppleScript,
+		currentTTY:        strings.TrimSpace(currentTTY),
+		runScript:         runAppleScript,
+		frontmostBundleID: currentFrontmostAppBundleID,
 	}
 }
 
@@ -48,6 +54,14 @@ func (d terminalAppForegroundDetector) ShouldAlert() bool {
 	runScript := d.runScript
 	if runScript == nil {
 		runScript = runAppleScript
+	}
+
+	frontmostBundleID := d.frontmostBundleID
+	if frontmostBundleID == nil {
+		frontmostBundleID = currentFrontmostAppBundleID
+	}
+	if bundleID, err := frontmostBundleID(); err == nil && bundleID != "" && bundleID != terminalBundleID {
+		return true
 	}
 
 	output, err := runScript(terminalAppForegroundScript)
@@ -93,6 +107,85 @@ func runAppleScript(script string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(output)), nil
+}
+
+func currentFrontmostAppBundleID() (string, error) {
+	frontOutput, err := exec.Command("lsappinfo", "front").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("lsappinfo front: %w", err)
+	}
+	asn, ok := parseFrontmostASN(string(frontOutput))
+	if !ok {
+		return "", fmt.Errorf("parse lsappinfo front output: %q", strings.TrimSpace(string(frontOutput)))
+	}
+
+	listOutput, err := exec.Command("lsappinfo", "list").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("lsappinfo list: %w", err)
+	}
+	bundleID, ok := parseBundleIDForASN(string(listOutput), asn)
+	if !ok {
+		return "", fmt.Errorf("resolve bundleID for ASN %s", asn)
+	}
+	return bundleID, nil
+}
+
+func parseFrontmostASN(output string) (string, bool) {
+	line := strings.TrimSpace(output)
+	if !strings.HasPrefix(line, "ASN:") {
+		return "", false
+	}
+	asn := strings.TrimSuffix(strings.TrimPrefix(line, "ASN:"), ":")
+	if asn == "" {
+		return "", false
+	}
+	return asn, true
+}
+
+func parseBundleIDForASN(output string, asn string) (string, bool) {
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	target := "ASN:" + asn + ":"
+	inBlock := false
+	for scanner.Scan() {
+		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+		if isLSAppInfoEntryHeader(trimmed) && strings.Contains(trimmed, target) {
+			inBlock = true
+			continue
+		}
+		if !inBlock {
+			continue
+		}
+		if isLSAppInfoEntryHeader(trimmed) {
+			inBlock = false
+			continue
+		}
+		if !strings.HasPrefix(trimmed, "bundleID=") {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(trimmed, "bundleID="))
+		if value == "" || value == "[ NULL ]" {
+			return "", false
+		}
+		return strings.Trim(value, `"`), true
+	}
+	return "", false
+}
+
+func isLSAppInfoEntryHeader(line string) bool {
+	if line == "" {
+		return false
+	}
+	index := strings.Index(line, ")")
+	if index <= 0 {
+		return false
+	}
+	for _, r := range line[:index] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func newTerminalBellAlertNotifier(console *promptConsole) alertNotifierFunc {
