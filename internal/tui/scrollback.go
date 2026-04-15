@@ -353,6 +353,7 @@ func runScrollbackLoop(m *model, console *promptConsole, input io.Reader) error 
 		var messages <-chan session.Message
 		var receipts <-chan session.Receipt
 		var done <-chan struct{}
+		roomEvents := m.roomEvents
 		if m.session != nil {
 			messages = m.session.Messages()
 			receipts = m.session.Receipts()
@@ -413,6 +414,11 @@ func runScrollbackLoop(m *model, console *promptConsole, input io.Reader) error 
 				continue
 			}
 			_ = m.handleReceipt(receipt)
+		case event, ok := <-roomEvents:
+			if !ok {
+				continue
+			}
+			_, _ = m.handleRoomEvent(event)
 		case <-done:
 			if m.session != nil {
 				handleSessionClosed(m.session.Err())

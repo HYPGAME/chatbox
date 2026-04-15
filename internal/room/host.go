@@ -1,6 +1,7 @@
 package room
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -63,6 +64,24 @@ func NewHostRoom(localName string) *HostRoom {
 		events:    make(chan Event, 64),
 		done:      make(chan struct{}),
 		members:   make(map[uint64]trackedMember),
+	}
+}
+
+func (r *HostRoom) Serve(ctx context.Context, host *session.Host) {
+	if host == nil {
+		return
+	}
+
+	for {
+		conn, err := host.Accept(ctx)
+		if err != nil {
+			select {
+			case <-r.done:
+			default:
+			}
+			return
+		}
+		r.AddMember(conn)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"chatbox/internal/room"
 	"chatbox/internal/session"
 	"chatbox/internal/transcript"
 )
@@ -42,6 +43,8 @@ type modelOptions struct {
 	alertMode        string
 	listeningAddr    string
 	session          sessionClient
+	roomEvents       <-chan room.Event
+	peerCount        func() int
 	sessionReady     <-chan sessionResult
 	connect          connectFunc
 	reconnectDelay   time.Duration
@@ -66,6 +69,10 @@ type incomingMessageMsg struct {
 
 type receiptMsg struct {
 	receipt session.Receipt
+}
+
+type roomEventMsg struct {
+	event room.Event
 }
 
 type sessionClosedMsg struct {
@@ -100,6 +107,8 @@ type model struct {
 	alertMode        string
 	listeningAddr    string
 	session          sessionClient
+	roomEvents       <-chan room.Event
+	peerCountValue   int
 	sessionReady     <-chan sessionResult
 	connect          connectFunc
 	reconnectDelay   time.Duration
@@ -140,14 +149,17 @@ var (
 )
 
 func RunHost(host *session.Host, localName string, psk []byte, uiMode string, alertMode string) error {
+	hostRoom := room.NewHostRoom(localName)
+	go hostRoom.Serve(context.Background(), host)
+
 	return runUI(newModel(modelOptions{
-		mode:          "host",
-		uiMode:        uiMode,
-		alertMode:     alertMode,
-		listeningAddr: host.Addr(),
-		connect: func(ctx context.Context) (sessionClient, error) {
-			return host.Accept(ctx)
-		},
+		mode:             "host",
+		uiMode:           uiMode,
+		alertMode:        alertMode,
+		listeningAddr:    host.Addr(),
+		session:          hostRoom,
+		roomEvents:       hostRoom.Events(),
+		peerCount:        hostRoom.PeerCount,
 		transcriptOpener: defaultTranscriptOpener(localName, psk),
 	}))
 }
@@ -203,6 +215,7 @@ func newModel(opts modelOptions) model {
 		alertMode:        opts.alertMode,
 		listeningAddr:    opts.listeningAddr,
 		session:          opts.session,
+		roomEvents:       opts.roomEvents,
 		sessionReady:     opts.sessionReady,
 		connect:          opts.connect,
 		reconnectDelay:   opts.reconnectDelay,
@@ -226,8 +239,13 @@ func newModel(opts modelOptions) model {
 	if m.reconnectDelay == 0 {
 		m.reconnectDelay = time.Second
 	}
+	if opts.peerCount != nil {
+		m.peerCountValue = opts.peerCount()
+	}
 
 	switch {
+	case opts.mode == "host" && opts.roomEvents != nil:
+		m.status = m.hostStatus()
 	case opts.session != nil:
 		m.status = fmt.Sprintf("connected to %s", opts.session.PeerName())
 		m.currentPeer = opts.session.PeerName()
@@ -242,16 +260,22 @@ func newModel(opts modelOptions) model {
 }
 
 func (m model) Init() tea.Cmd {
+	cmds := make([]tea.Cmd, 0, 2)
 	switch {
 	case m.session != nil:
-		return emitSessionReady(m.session)
+		cmds = append(cmds, emitSessionReady(m.session))
 	case m.connect != nil:
-		return attemptConnect(m.connect)
+		cmds = append(cmds, attemptConnect(m.connect))
 	case m.sessionReady != nil:
-		return waitForSessionReady(m.sessionReady)
-	default:
+		cmds = append(cmds, waitForSessionReady(m.sessionReady))
+	}
+	if m.roomEvents != nil {
+		cmds = append(cmds, waitForRoomEvent(m.roomEvents))
+	}
+	if len(cmds) == 0 {
 		return nil
 	}
+	return tea.Batch(cmds...)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -276,6 +300,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case receiptMsg:
 		receiptCmd := m.handleReceipt(msg.receipt)
 		return m, tea.Batch(waitForReceipt(m.session), receiptCmd)
+	case roomEventMsg:
+		return m.handleRoomEvent(msg.event)
 	case sessionClosedMsg:
 		return m.handleSessionClosed(msg.err)
 	case tea.KeyMsg:
@@ -369,9 +395,13 @@ func (m *model) bindSession(conn sessionClient) error {
 
 	m.session = conn
 	m.currentPeer = peerName
-	m.status = fmt.Sprintf("connected to %s", peerName)
-	if m.uiMode != uiModeScrollback {
-		m.addSystemEntry(m.status)
+	if m.mode == "host" && m.roomEvents != nil {
+		m.status = m.hostStatus()
+	} else {
+		m.status = fmt.Sprintf("connected to %s", peerName)
+		if m.uiMode != uiModeScrollback {
+			m.addSystemEntry(m.status)
+		}
 	}
 	m.resendPendingMessages()
 	return nil
@@ -385,7 +415,7 @@ func (m *model) handleReconnectError(err error) (tea.Model, tea.Cmd) {
 	m.addErrorEntry(err.Error())
 	switch {
 	case m.mode == "host":
-		m.status = fmt.Sprintf("listening on %s", m.listeningAddr)
+		m.status = m.hostStatus()
 		return *m, tea.Batch(retryConnectAfter(m.reconnectDelay, m.connect), m.flushScrollbackCmd())
 	case m.connect != nil:
 		m.status = "reconnecting"
@@ -400,6 +430,12 @@ func (m *model) handleSessionClosed(err error) (tea.Model, tea.Cmd) {
 	m.session = nil
 
 	switch {
+	case m.mode == "host" && m.roomEvents != nil:
+		m.status = m.hostStatus()
+		if err != nil && err.Error() != "session closed locally" {
+			m.addErrorEntry(err.Error())
+		}
+		return *m, m.flushScrollbackCmd()
 	case m.mode == "host" && m.connect != nil:
 		m.status = fmt.Sprintf("listening on %s", m.listeningAddr)
 		if err != nil && err != context.Canceled && err.Error() != "session closed locally" {
@@ -422,6 +458,24 @@ func (m *model) handleSessionClosed(err error) (tea.Model, tea.Cmd) {
 		}
 		return *m, m.flushScrollbackCmd()
 	}
+}
+
+func (m *model) handleRoomEvent(event room.Event) (tea.Model, tea.Cmd) {
+	m.peerCountValue = event.PeerCount
+	m.status = m.hostStatus()
+
+	switch event.Kind {
+	case room.EventPeerJoined:
+		m.addSystemEntry(fmt.Sprintf("%s joined", event.PeerName))
+	case room.EventPeerLeft:
+		m.addSystemEntry(fmt.Sprintf("%s left", event.PeerName))
+	}
+
+	cmds := []tea.Cmd{m.flushScrollbackCmd()}
+	if m.roomEvents != nil {
+		cmds = append(cmds, waitForRoomEvent(m.roomEvents))
+	}
+	return *m, tea.Batch(cmds...)
 }
 
 func (m *model) handleSubmit(text string) (tea.Model, tea.Cmd) {
@@ -775,6 +829,16 @@ func waitForReceipt(conn sessionClient) tea.Cmd {
 	}
 }
 
+func waitForRoomEvent(events <-chan room.Event) tea.Cmd {
+	return func() tea.Msg {
+		event, ok := <-events
+		if !ok {
+			return nil
+		}
+		return roomEventMsg{event: event}
+	}
+}
+
 func waitForSessionClose(conn sessionClient) tea.Cmd {
 	return func() tea.Msg {
 		<-conn.Done()
@@ -835,6 +899,10 @@ func defaultHistoryPrinter(lines []string) tea.Cmd {
 		return nil
 	}
 	return tea.Sequence(cmds...)
+}
+
+func (m model) hostStatus() string {
+	return fmt.Sprintf("hosting on %s (%d peers)", m.listeningAddr, m.peerCountValue)
 }
 
 func (m *model) flushScrollbackCmd() tea.Cmd {

@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"chatbox/internal/room"
 	"chatbox/internal/session"
 	"chatbox/internal/transcript"
 )
@@ -150,6 +151,101 @@ func TestModelRetainsScrollableHistoryAcrossManyMessages(t *testing.T) {
 	uiModel = updated.(model)
 	if !strings.Contains(uiModel.View(), "message-00") {
 		t.Fatalf("expected first message after Home scroll, got %q", uiModel.View())
+	}
+}
+
+func TestHostModelShowsPeerCountInStatus(t *testing.T) {
+	t.Parallel()
+
+	hostRoom := &fakeHostRoom{fakeSession: fakeSession{peerName: "room"}, peerCount: 2}
+	uiModel := newModel(modelOptions{
+		mode:          "host",
+		listeningAddr: "0.0.0.0:7331",
+		session:       hostRoom,
+		roomEvents:    hostRoom.Events(),
+		peerCount:     hostRoom.PeerCount,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	uiModel = updated.(model)
+	if !strings.Contains(uiModel.View(), "hosting on 0.0.0.0:7331 (2 peers)") {
+		t.Fatalf("expected host status with peer count, got %q", uiModel.View())
+	}
+}
+
+func TestHostModelRendersJoinAndLeaveSystemEvents(t *testing.T) {
+	t.Parallel()
+
+	hostRoom := &fakeHostRoom{fakeSession: fakeSession{peerName: "room"}, peerCount: 0}
+	uiModel := newModel(modelOptions{
+		mode:          "host",
+		listeningAddr: "0.0.0.0:7331",
+		session:       hostRoom,
+		roomEvents:    hostRoom.Events(),
+		peerCount:     hostRoom.PeerCount,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(roomEventMsg{event: room.Event{
+		Kind:      room.EventPeerJoined,
+		PeerName:  "aaa",
+		PeerCount: 1,
+	}})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(roomEventMsg{event: room.Event{
+		Kind:      room.EventPeerLeft,
+		PeerName:  "aaa",
+		PeerCount: 0,
+	}})
+	uiModel = updated.(model)
+
+	view := uiModel.View()
+	if !strings.Contains(view, "aaa joined") {
+		t.Fatalf("expected joined system message, got %q", view)
+	}
+	if !strings.Contains(view, "aaa left") {
+		t.Fatalf("expected left system message, got %q", view)
+	}
+}
+
+func TestHostModelShowsRelayedMessagesFromOriginalSender(t *testing.T) {
+	t.Parallel()
+
+	hostRoom := &fakeHostRoom{fakeSession: fakeSession{peerName: "room"}, peerCount: 1}
+	uiModel := newModel(modelOptions{
+		mode:          "host",
+		listeningAddr: "0.0.0.0:7331",
+		session:       hostRoom,
+		roomEvents:    hostRoom.Events(),
+		peerCount:     hostRoom.PeerCount,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "room-1",
+			From: "aaa",
+			Body: "hello group",
+			At:   time.Date(2026, 4, 15, 20, 0, 0, 0, time.Local),
+		},
+	})
+	uiModel = updated.(model)
+
+	view := uiModel.View()
+	if !strings.Contains(view, "aaa: hello group") {
+		t.Fatalf("expected relayed message to preserve sender label, got %q", view)
+	}
+	if strings.Contains(view, "you: hello group") {
+		t.Fatalf("expected relayed message not to be rendered as local send, got %q", view)
 	}
 }
 
@@ -780,6 +876,12 @@ type fakeSession struct {
 	resent   []session.Message
 }
 
+type fakeHostRoom struct {
+	fakeSession
+	events    chan room.Event
+	peerCount int
+}
+
 func (f *fakeSession) Messages() <-chan session.Message { return nil }
 func (f *fakeSession) Receipts() <-chan session.Receipt { return nil }
 func (f *fakeSession) Done() <-chan struct{}            { return nil }
@@ -801,6 +903,17 @@ func (f *fakeSession) Send(text string) (session.Message, error) {
 func (f *fakeSession) Resend(message session.Message) error {
 	f.resent = append(f.resent, message)
 	return nil
+}
+
+func (f *fakeHostRoom) Events() <-chan room.Event {
+	if f.events == nil {
+		f.events = make(chan room.Event, 8)
+	}
+	return f.events
+}
+
+func (f *fakeHostRoom) PeerCount() int {
+	return f.peerCount
 }
 
 type fakeTranscriptStore struct {
