@@ -48,6 +48,7 @@ type modelOptions struct {
 	sessionReady     <-chan sessionResult
 	connect          connectFunc
 	reconnectDelay   time.Duration
+	transcriptKey    string
 	transcriptOpener func(peerName string) (transcriptStore, error)
 	historyPrinter   historyPrinterFunc
 	alertNotifier    alertNotifierFunc
@@ -112,13 +113,15 @@ type model struct {
 	sessionReady     <-chan sessionResult
 	connect          connectFunc
 	reconnectDelay   time.Duration
+	transcriptKey    string
 	transcriptOpener func(peerName string) (transcriptStore, error)
 	historyPrinter   historyPrinterFunc
 	alertNotifier    alertNotifierFunc
 
-	transcript     transcriptStore
-	transcriptPeer string
-	currentPeer    string
+	transcript                 transcriptStore
+	transcriptConversationKey  string
+	currentConversationKey     string
+	currentPeer                string
 
 	history      []historyEntry
 	printedCount int
@@ -219,6 +222,7 @@ func newModel(opts modelOptions) model {
 		sessionReady:     opts.sessionReady,
 		connect:          opts.connect,
 		reconnectDelay:   opts.reconnectDelay,
+		transcriptKey:    opts.transcriptKey,
 		transcriptOpener: opts.transcriptOpener,
 		historyPrinter:   opts.historyPrinter,
 		alertNotifier:    opts.alertNotifier,
@@ -383,17 +387,19 @@ func (m *model) handleSessionReady(msg sessionReadyMsg) (tea.Model, tea.Cmd) {
 
 func (m *model) bindSession(conn sessionClient) error {
 	peerName := conn.PeerName()
-	peerChanged := m.currentPeer != "" && m.currentPeer != peerName
-	if peerChanged {
+	conversationKey := m.conversationKeyForPeer(peerName)
+	conversationChanged := m.currentConversationKey != "" && m.currentConversationKey != conversationKey
+	if conversationChanged {
 		m.failPendingMessages()
 		m.resetConversation()
 	}
 
-	if err := m.ensureTranscriptLoaded(peerName); err != nil {
+	if err := m.ensureTranscriptLoaded(conversationKey); err != nil {
 		m.addErrorEntry(err.Error())
 	}
 
 	m.session = conn
+	m.currentConversationKey = conversationKey
 	m.currentPeer = peerName
 	if m.mode == "host" && m.roomEvents != nil {
 		m.status = m.hostStatus()
@@ -667,15 +673,15 @@ func (m model) isWithinViewport(mouseY int) bool {
 	return mouseY >= viewportTop && mouseY <= viewportBottom
 }
 
-func (m *model) ensureTranscriptLoaded(peerName string) error {
+func (m *model) ensureTranscriptLoaded(conversationKey string) error {
 	if m.transcriptOpener == nil {
 		return nil
 	}
-	if m.transcript != nil && m.transcriptPeer == peerName {
+	if m.transcript != nil && m.transcriptConversationKey == conversationKey {
 		return nil
 	}
 
-	store, err := m.transcriptOpener(peerName)
+	store, err := m.transcriptOpener(conversationKey)
 	if err != nil {
 		return fmt.Errorf("open transcript: %w", err)
 	}
@@ -684,12 +690,8 @@ func (m *model) ensureTranscriptLoaded(peerName string) error {
 		return fmt.Errorf("load transcript: %w", err)
 	}
 
-	if m.currentPeer == "" || m.currentPeer != peerName {
-		m.resetConversation()
-	}
-
 	m.transcript = store
-	m.transcriptPeer = peerName
+	m.transcriptConversationKey = conversationKey
 	for _, record := range records {
 		if record.Direction == transcript.DirectionOutgoing && record.Status == transcript.StatusSending {
 			record.Status = transcript.StatusFailed
@@ -712,9 +714,24 @@ func (m *model) resetConversation() {
 	m.seenMessages = make(map[string]struct{})
 	m.pending = make(map[string]session.Message)
 	m.transcript = nil
-	m.transcriptPeer = ""
+	m.transcriptConversationKey = ""
+	m.currentConversationKey = ""
 	m.currentPeer = ""
 	m.addStartupHints()
+}
+
+func (m model) conversationKeyForPeer(peerName string) string {
+	if key := strings.TrimSpace(m.transcriptKey); key != "" {
+		return key
+	}
+	switch {
+	case m.mode == "host" && m.roomEvents != nil && strings.TrimSpace(m.listeningAddr) != "":
+		return transcript.HostRoomKey(m.listeningAddr)
+	case m.mode == "join" && strings.TrimSpace(m.listeningAddr) != "":
+		return transcript.JoinRoomKey(m.listeningAddr)
+	default:
+		return peerName
+	}
 }
 
 func (m *model) resendPendingMessages() {

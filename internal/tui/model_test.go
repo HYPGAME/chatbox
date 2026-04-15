@@ -397,6 +397,54 @@ func TestModelLoadsTranscriptEntriesOnConnect(t *testing.T) {
 	}
 }
 
+func TestHostTranscriptUsesRoomScopedKey(t *testing.T) {
+	t.Parallel()
+
+	var opened []string
+	hostRoom := &fakeHostRoom{fakeSession: fakeSession{peerName: "room"}, peerCount: 0}
+	uiModel := newModel(modelOptions{
+		mode:          "host",
+		listeningAddr: "0.0.0.0:7331",
+		session:       hostRoom,
+		roomEvents:    hostRoom.Events(),
+		peerCount:     hostRoom.PeerCount,
+		transcriptOpener: func(key string) (transcriptStore, error) {
+			opened = append(opened, key)
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: hostRoom})
+	uiModel = updated.(model)
+
+	want := transcript.HostRoomKey("0.0.0.0:7331")
+	if len(opened) != 1 || opened[0] != want {
+		t.Fatalf("expected host transcript opener to use %q, got %#v", want, opened)
+	}
+}
+
+func TestJoinTranscriptUsesTargetScopedKey(t *testing.T) {
+	t.Parallel()
+
+	var opened []string
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		transcriptOpener: func(key string) (transcriptStore, error) {
+			opened = append(opened, key)
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: &fakeSession{peerName: "host"}})
+	uiModel = updated.(model)
+
+	want := transcript.JoinRoomKey("203.0.113.10:7331")
+	if len(opened) != 1 || opened[0] != want {
+		t.Fatalf("expected join transcript opener to use %q, got %#v", want, opened)
+	}
+}
+
 func TestModelResendsPendingMessagesWhenSessionReconnects(t *testing.T) {
 	t.Parallel()
 
