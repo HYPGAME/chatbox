@@ -127,6 +127,30 @@ git push origin v0.1.0
 
 The workflow injects the tag into `chatbox/internal/version.Version`, builds both macOS binaries, generates checksums, and uploads all artifacts to the GitHub Release.
 
+## Manual Release
+
+If GitHub Actions is blocked by account billing state, use the local fallback release script:
+
+```bash
+./scripts/release-manual.sh v0.1.3
+```
+
+The script:
+
+- requires a clean `main` branch
+- runs `go test ./...`
+- builds both macOS release archives
+- generates `checksums.txt`
+- pushes `main`
+- creates and pushes the tag
+- publishes the GitHub Release with assets
+
+After a successful run, collaborators can update with:
+
+```bash
+chatbox self-update
+```
+
 ## Limitations
 
 - No zero-config NAT traversal
