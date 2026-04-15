@@ -1,10 +1,10 @@
 # chatbox
 
-`chatbox` is a macOS-first command-line app for direct 1:1 remote text chat.
+`chatbox` is a macOS-first command-line app for encrypted remote text chat.
 
 It is intentionally small:
-- pure P2P over TCP
-- one side hosts, one side joins
+- direct TCP sessions between a host and one or more joiners
+- one side hosts, others join
 - authenticated and encrypted with a pre-shared key
 - no server, no offline messages
 - encrypted local transcript history
@@ -77,6 +77,25 @@ The host side must be reachable from the internet. In practice that means:
 
 `join` also accepts `--ui tui` if you prefer the full-screen mode.
 
+## Minimal Group Chat
+
+You can use one host with multiple joiners:
+
+```bash
+./chatbox host --listen 0.0.0.0:7331 --psk-file ./chatbox.psk --name alice
+./chatbox join --peer 203.0.113.10:7331 --psk-file ./chatbox.psk --name bob
+./chatbox join --peer 203.0.113.10:7331 --psk-file ./chatbox.psk --name carol
+```
+
+Behavior:
+
+- the host acts as the room relay
+- every joiner connects only to the host, not to each other
+- host status shows the current peer count
+- the host view shows `joined` and `left` system lines as members connect or disconnect
+
+This is intentionally a minimal host-relayed room, not a mesh network or a feature-rich chat server.
+
 ## In-Session Commands
 
 - `/help`
@@ -90,7 +109,8 @@ The host side must be reachable from the internet. In practice that means:
 - In optional `--ui tui` mode, use `PgUp`, `PgDn`, `Home`, and `End` to move through the current conversation.
 - Encrypted transcript files are stored under `~/Library/Application Support/chatbox/history/`.
 - Transcript encryption reuses the chat PSK.
-- When you reconnect to the same peer name with the same PSK, previous messages are loaded automatically.
+- Transcript history is keyed by room: host mode uses the listen address, join mode uses the target host address.
+- When you reconnect to the same room with the same PSK, previous messages are loaded automatically.
 
 ## Delivery Behavior
 
@@ -156,5 +176,5 @@ chatbox self-update
 - No zero-config NAT traversal
 - No signaling or relay server
 - No file transfer
-- No group chat
+- No mesh group chat
 - No cross-process pending-message recovery
