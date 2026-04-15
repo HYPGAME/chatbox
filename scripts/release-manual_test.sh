@@ -31,6 +31,8 @@ case "${1:-}" in
       if [[ "${FAKE_GIT_TAG_EXISTS:-0}" == "1" ]]; then
         echo "${3:-v0.0.0}"
       fi
+    elif [[ -n "${FAKE_LOG_FILE:-}" ]]; then
+      echo "git tag ${2:-}" >>"${FAKE_LOG_FILE}"
     fi
     ;;
   ls-remote)
@@ -41,7 +43,12 @@ case "${1:-}" in
   rev-parse)
     echo "${FAKE_GIT_ROOT:-$PWD}"
     ;;
-  push|add|commit)
+  push)
+    if [[ -n "${FAKE_LOG_FILE:-}" ]]; then
+      echo "git push ${*:2}" >>"${FAKE_LOG_FILE}"
+    fi
+    ;;
+  add|commit)
     ;;
   *)
     ;;
@@ -51,25 +58,66 @@ EOF
   cat >"${bin_dir}/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "${1:-}" == "release" && "${2:-}" == "create" ]]; then
+  if [[ -n "${FAKE_LOG_FILE:-}" ]]; then
+    echo "gh release create ${3:-}" >>"${FAKE_LOG_FILE}"
+  fi
+  if [[ "${FAKE_GH_RELEASE_FAIL:-0}" == "1" ]]; then
+    echo "release create failed" >&2
+    exit 1
+  fi
+  exit 0
+fi
 exit 0
 EOF
 
   cat >"${bin_dir}/go" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "${1:-}" == "build" ]]; then
+  output=""
+  prev=""
+  for arg in "$@"; do
+    if [[ "$prev" == "-o" ]]; then
+      output="$arg"
+      break
+    fi
+    prev="$arg"
+  done
+  if [[ -n "$output" ]]; then
+    mkdir -p "$(dirname "$output")"
+    printf 'fake-binary' >"$output"
+  fi
+fi
 exit 0
 EOF
 
   cat >"${bin_dir}/tar" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+output=""
+prev=""
+for arg in "$@"; do
+  if [[ "$prev" == "-czf" ]]; then
+    output="$arg"
+    break
+  fi
+  prev="$arg"
+done
+if [[ -n "$output" ]]; then
+  : >"$output"
+fi
 exit 0
 EOF
 
   cat >"${bin_dir}/shasum" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-exit 0
+for arg in "$@"; do
+  if [[ "$arg" == *.tar.gz ]]; then
+    echo "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  $(basename "$arg")"
+  fi
+done
 EOF
 
   chmod +x "${bin_dir}/git" "${bin_dir}/gh" "${bin_dir}/go" "${bin_dir}/tar" "${bin_dir}/shasum"
@@ -93,6 +141,20 @@ run_script_expect_failure() {
   fi
 }
 
+run_script_expect_success() {
+  local temp_dir
+  temp_dir="$(mktemp -d)"
+  trap "rm -rf '${temp_dir}'" RETURN
+
+  make_fake_bin "${temp_dir}/bin"
+  : >"${temp_dir}/commands.log"
+  local output
+  if ! output="$(FAKE_LOG_FILE="${temp_dir}/commands.log" PATH="${temp_dir}/bin:${PATH}" bash "$SCRIPT" "$@" 2>&1)"; then
+    fail "expected command to succeed, got failure: ${output}"
+  fi
+  cat "${temp_dir}/commands.log"
+}
+
 test_missing_version_fails() {
   run_script_expect_failure "usage"
 }
@@ -105,8 +167,44 @@ test_existing_tag_fails() {
   FAKE_GIT_TAG_EXISTS=1 run_script_expect_failure "tag already exists locally" "v0.1.3"
 }
 
+test_release_flow_pushes_main_then_tag_then_release() {
+  local log
+  log="$(run_script_expect_success "v0.1.3")"
+  local expected
+  expected="$(cat <<'EOF'
+git push origin main
+git tag v0.1.3
+git push origin refs/tags/v0.1.3
+gh release create v0.1.3
+EOF
+)"
+  if [[ "$log" != "$expected" ]]; then
+    fail "unexpected publish order:\n$log"
+  fi
+}
+
+test_release_create_failure_reports_recovery_steps() {
+  local temp_dir
+  temp_dir="$(mktemp -d)"
+  trap "rm -rf '${temp_dir}'" RETURN
+
+  make_fake_bin "${temp_dir}/bin"
+  local output
+  if output="$(FAKE_GH_RELEASE_FAIL=1 FAKE_LOG_FILE="${temp_dir}/commands.log" PATH="${temp_dir}/bin:${PATH}" bash "$SCRIPT" v0.1.3 2>&1)"; then
+    fail "expected release create failure"
+  fi
+  if [[ "${output}" != *"release creation failed for v0.1.3"* ]]; then
+    fail "expected release failure guidance, got: ${output}"
+  fi
+  if [[ "${output}" != *"git push origin :refs/tags/v0.1.3"* ]]; then
+    fail "expected tag cleanup guidance, got: ${output}"
+  fi
+}
+
 test_missing_version_fails
 test_dirty_worktree_fails
 test_existing_tag_fails
+test_release_flow_pushes_main_then_tag_then_release
+test_release_create_failure_reports_recovery_steps
 
 echo "ok"

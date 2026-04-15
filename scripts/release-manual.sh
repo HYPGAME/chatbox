@@ -74,3 +74,26 @@ done
   cd dist
   shasum -a 256 chatbox_darwin_arm64.tar.gz chatbox_darwin_amd64.tar.gz
 ) > dist/checksums.txt
+
+git push origin main
+git tag "$VERSION"
+git push origin "refs/tags/$VERSION"
+
+if ! gh release create "$VERSION" \
+  dist/chatbox_darwin_arm64.tar.gz \
+  dist/chatbox_darwin_amd64.tar.gz \
+  dist/checksums.txt \
+  --target main \
+  --title "$VERSION" \
+  --notes "Manual release fallback because GitHub Actions is currently blocked by repository billing status."
+then
+  echo "release creation failed for $VERSION" >&2
+  echo "recovery options:" >&2
+  echo "  gh release view $VERSION" >&2
+  echo "  git push origin :refs/tags/$VERSION" >&2
+  echo "  git tag -d $VERSION" >&2
+  exit 1
+fi
+
+echo "release published: https://github.com/HYPGAME/chatbox/releases/tag/$VERSION"
+echo "collaborators can update with: chatbox self-update"
