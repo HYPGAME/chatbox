@@ -2,3 +2,4 @@ chatbox
 *.psk
 dist/
 release/
+.worktrees/
