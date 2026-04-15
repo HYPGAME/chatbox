@@ -12,6 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/term"
+	"github.com/mattn/go-runewidth"
 
 	"chatbox/internal/session"
 	"chatbox/internal/transcript"
@@ -108,7 +109,7 @@ func (c *promptConsole) clearLocked() {
 func (c *promptConsole) renderPromptLocked() {
 	c.clearLocked()
 	_, _ = fmt.Fprint(c.out, c.prompt, string(c.buffer))
-	if remaining := len(c.buffer) - c.cursor; remaining > 0 {
+	if remaining := runewidth.StringWidth(string(c.buffer[c.cursor:])); remaining > 0 {
 		_, _ = fmt.Fprintf(c.out, "\x1b[%dD", remaining)
 	}
 }

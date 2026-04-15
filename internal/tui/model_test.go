@@ -482,6 +482,20 @@ func TestPromptConsoleArrowKeysRecallSubmittedHistory(t *testing.T) {
 	}
 }
 
+func TestPromptConsoleUsesDisplayWidthForWideCharacters(t *testing.T) {
+	t.Parallel()
+
+	var output bytes.Buffer
+	console := newPromptConsole(&output)
+	console.buffer = []rune("你好")
+	console.cursor = 1
+	console.printLine("system")
+
+	if !strings.HasSuffix(output.String(), "\r\x1b[2K> 你好\x1b[2D") {
+		t.Fatalf("expected prompt redraw to move back by display width, got %q", output.String())
+	}
+}
+
 func TestScrollbackSessionReadyPrintsTranscriptAndNewMessages(t *testing.T) {
 	t.Parallel()
 
