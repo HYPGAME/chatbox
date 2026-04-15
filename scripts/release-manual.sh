@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  echo "usage: ./scripts/release-manual.sh vMAJOR.MINOR.PATCH" >&2
+}
+
+require_command() {
+  local name="$1"
+  if ! command -v "$name" >/dev/null 2>&1; then
+    echo "missing required command: $name" >&2
+    exit 1
+  fi
+}
+
+if [[ $# -ne 1 ]]; then
+  usage
+  exit 1
+fi
+
+VERSION="$1"
+if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "invalid version '$VERSION': use vMAJOR.MINOR.PATCH" >&2
+  exit 1
+fi
+
+require_command git
+require_command gh
+require_command go
+require_command tar
+require_command shasum
+
+git rev-parse --show-toplevel >/dev/null
+gh auth status >/dev/null
+
+BRANCH="$(git branch --show-current 2>/dev/null || true)"
+BRANCH="${BRANCH#\* }"
+if [[ -z "$BRANCH" ]]; then
+  BRANCH="$(git branch | sed -n 's/^\* //p')"
+fi
+if [[ "$BRANCH" != "main" ]]; then
+  echo "current branch must be main, got: $BRANCH" >&2
+  exit 1
+fi
+
+if [[ -n "$(git status --short)" ]]; then
+  echo "working tree is not clean" >&2
+  exit 1
+fi
+
+if [[ -n "$(git tag --list "$VERSION")" ]]; then
+  echo "tag already exists locally: $VERSION" >&2
+  exit 1
+fi
+
+if [[ -n "$(git ls-remote --tags origin "$VERSION" 2>/dev/null)" ]]; then
+  echo "tag already exists on origin: $VERSION" >&2
+  exit 1
+fi
+
+go test ./...
+
+rm -rf dist
+mkdir -p dist
+
+for ARCH in arm64 amd64; do
+  WORKDIR="dist/chatbox_darwin_${ARCH}"
+  mkdir -p "$WORKDIR"
+  GOOS=darwin GOARCH="$ARCH" go build -ldflags "-X chatbox/internal/version.Version=${VERSION}" -o "$WORKDIR/chatbox" ./cmd/chatbox
+  tar -C "$WORKDIR" -czf "dist/chatbox_darwin_${ARCH}.tar.gz" chatbox
+done
+
+(
+  cd dist
+  shasum -a 256 chatbox_darwin_arm64.tar.gz chatbox_darwin_amd64.tar.gz
+) > dist/checksums.txt
