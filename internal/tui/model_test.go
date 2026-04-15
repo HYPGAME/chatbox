@@ -382,6 +382,7 @@ func TestPromptConsolePrintLineRedrawsTypedInput(t *testing.T) {
 	var output bytes.Buffer
 	console := newPromptConsole(&output)
 	console.buffer = []rune("typing")
+	console.cursor = len(console.buffer)
 	console.printLine("system [2026-04-14 16:00:00]: connected")
 
 	rendered := output.String()
@@ -399,6 +400,7 @@ func TestPromptConsoleEnterUsesCRLF(t *testing.T) {
 	var output bytes.Buffer
 	console := newPromptConsole(&output)
 	console.buffer = []rune("draft")
+	console.cursor = len(console.buffer)
 
 	line, submitted, quit := console.handleRune('\r')
 	if quit {
@@ -412,6 +414,71 @@ func TestPromptConsoleEnterUsesCRLF(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "\r\n") {
 		t.Fatalf("expected CRLF output, got %q", output.String())
+	}
+}
+
+func TestPromptConsoleArrowKeysEditBuffer(t *testing.T) {
+	t.Parallel()
+
+	var output bytes.Buffer
+	console := newPromptConsole(&output)
+	for _, r := range "helo" {
+		_, _, _ = console.handleRune(r)
+	}
+	for _, r := range []rune{27, '[', 'D'} {
+		_, _, _ = console.handleRune(r)
+	}
+
+	line, submitted, quit := console.handleRune('l')
+	if submitted || quit {
+		t.Fatalf("expected in-progress edit, got submitted=%v quit=%v", submitted, quit)
+	}
+
+	line, submitted, quit = console.handleRune('\r')
+	if quit {
+		t.Fatal("expected enter not to quit")
+	}
+	if !submitted {
+		t.Fatal("expected enter to submit")
+	}
+	if line != "hello" {
+		t.Fatalf("expected edited line %q, got %q", "hello", line)
+	}
+}
+
+func TestPromptConsoleArrowKeysRecallSubmittedHistory(t *testing.T) {
+	t.Parallel()
+
+	var output bytes.Buffer
+	console := newPromptConsole(&output)
+	for _, r := range "first" {
+		_, _, _ = console.handleRune(r)
+	}
+	_, _, _ = console.handleRune('\r')
+	for _, r := range "second" {
+		_, _, _ = console.handleRune(r)
+	}
+	_, _, _ = console.handleRune('\r')
+
+	for _, r := range []rune{27, '[', 'A'} {
+		_, _, _ = console.handleRune(r)
+	}
+	if got := string(console.buffer); got != "second" {
+		t.Fatalf("expected first up arrow to recall most recent line, got %q", got)
+	}
+
+	for _, r := range []rune{27, '[', 'A'} {
+		_, _, _ = console.handleRune(r)
+	}
+	if got := string(console.buffer); got != "first" {
+		t.Fatalf("expected second up arrow to recall earlier line, got %q", got)
+	}
+
+	for _, r := range []rune{27, '[', 'B'} {
+		_, _, _ = console.handleRune(r)
+	}
+	if got := string(console.buffer); got != "second" {
+		t.Fatalf("expected down arrow to move forward in history, got %q", got)
 	}
 }
 
