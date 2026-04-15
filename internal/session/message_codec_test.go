@@ -35,3 +35,28 @@ func TestEncodeAndDecodeMessagePayloadPreservesSenderTimestamp(t *testing.T) {
 		t.Fatalf("expected message ID %q, got %q", original.ID, decoded.ID)
 	}
 }
+
+func TestDecodeMessagePayloadUsesPayloadSenderOverConnectionPeer(t *testing.T) {
+	t.Parallel()
+
+	original := Message{
+		ID:   "msg-2",
+		From: "aaa",
+		Body: "hello from aaa",
+		At:   time.Date(2026, 4, 15, 9, 30, 45, 0, time.UTC),
+	}
+
+	payload, err := encodeMessagePayload(original)
+	if err != nil {
+		t.Fatalf("encodeMessagePayload returned error: %v", err)
+	}
+
+	decoded, err := decodeMessagePayload("host", payload)
+	if err != nil {
+		t.Fatalf("decodeMessagePayload returned error: %v", err)
+	}
+
+	if decoded.From != original.From {
+		t.Fatalf("expected sender %q, got %q", original.From, decoded.From)
+	}
+}

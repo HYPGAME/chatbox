@@ -51,8 +51,10 @@ type HostRoom struct {
 
 	closeOnce sync.Once
 	memberSeq atomic.Uint64
+	memberWG  sync.WaitGroup
 
 	mu      sync.Mutex
+	closed  bool
 	members map[uint64]trackedMember
 }
 
@@ -110,6 +112,7 @@ func (r *HostRoom) Close() error {
 		close(r.done)
 
 		r.mu.Lock()
+		r.closed = true
 		members := make([]trackedMember, 0, len(r.members))
 		for _, member := range r.members {
 			members = append(members, member)
@@ -120,6 +123,8 @@ func (r *HostRoom) Close() error {
 		for _, member := range members {
 			_ = member.session.Close()
 		}
+
+		r.memberWG.Wait()
 
 		close(r.messages)
 		close(r.receipts)
@@ -137,12 +142,18 @@ func (r *HostRoom) AddMember(member memberSession) {
 		return
 	}
 
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		_ = member.Close()
+		return
+	}
 	tracked := trackedMember{
 		id:      r.memberSeq.Add(1),
 		session: member,
 	}
+	r.memberWG.Add(1)
 
-	r.mu.Lock()
 	r.members[tracked.id] = tracked
 	peerCount := len(r.members)
 	r.mu.Unlock()
@@ -154,7 +165,10 @@ func (r *HostRoom) AddMember(member memberSession) {
 		At:        time.Now(),
 	})
 
-	go r.runMember(tracked)
+	go func() {
+		defer r.memberWG.Done()
+		r.runMember(tracked)
+	}()
 }
 
 func (r *HostRoom) Send(text string) (session.Message, error) {

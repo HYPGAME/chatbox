@@ -2,7 +2,7 @@ package session
 
 import "time"
 
-const ProtocolVersion uint16 = 1
+const ProtocolVersion uint16 = 2
 
 type Config struct {
 	Name              string

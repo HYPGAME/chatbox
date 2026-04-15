@@ -371,37 +371,66 @@ func encodeMessagePayload(message Message) ([]byte, error) {
 	if message.ID == "" {
 		return nil, errors.New("message must have an ID")
 	}
+	if !utf8.ValidString(message.From) {
+		return nil, errors.New("message sender must be valid UTF-8")
+	}
+	if message.From == "" {
+		return nil, errors.New("message must have a sender")
+	}
 
 	idBytes := []byte(message.ID)
+	fromBytes := []byte(message.From)
 	body := []byte(message.Body)
-	payload := make([]byte, 2+len(idBytes)+8+len(body))
+	payload := make([]byte, 2+len(idBytes)+2+len(fromBytes)+8+len(body))
 	binary.BigEndian.PutUint16(payload[:2], uint16(len(idBytes)))
 	copy(payload[2:2+len(idBytes)], idBytes)
-	binary.BigEndian.PutUint64(payload[2+len(idBytes):10+len(idBytes)], uint64(message.At.UnixNano()))
-	copy(payload[10+len(idBytes):], body)
+	fromStart := 2 + len(idBytes)
+	binary.BigEndian.PutUint16(payload[fromStart:fromStart+2], uint16(len(fromBytes)))
+	copy(payload[fromStart+2:fromStart+2+len(fromBytes)], fromBytes)
+	timestampStart := fromStart + 2 + len(fromBytes)
+	binary.BigEndian.PutUint64(payload[timestampStart:timestampStart+8], uint64(message.At.UnixNano()))
+	copy(payload[timestampStart+8:], body)
 	return payload, nil
 }
 
-func decodeMessagePayload(from string, payload []byte) (Message, error) {
-	if len(payload) < 10 {
+func decodeMessagePayload(fallbackFrom string, payload []byte) (Message, error) {
+	if len(payload) < 12 {
 		return Message{}, errors.New("message payload too short")
 	}
 
 	idLength := int(binary.BigEndian.Uint16(payload[:2]))
-	if idLength == 0 || len(payload) < 2+idLength+8 {
+	fromLengthOffset := 2 + idLength
+	if idLength == 0 || len(payload) < fromLengthOffset+2+8 {
 		return Message{}, errors.New("message payload has invalid ID")
 	}
 
-	body := payload[2+idLength+8:]
+	fromLength := int(binary.BigEndian.Uint16(payload[fromLengthOffset : fromLengthOffset+2]))
+	fromStart := fromLengthOffset + 2
+	timestampStart := fromStart + fromLength
+	if fromLength == 0 || len(payload) < timestampStart+8 {
+		return Message{}, errors.New("message payload has invalid sender")
+	}
+
+	fromBytes := payload[fromStart:timestampStart]
+	if !utf8.Valid(fromBytes) {
+		return Message{}, errors.New("received invalid UTF-8 sender")
+	}
+
+	body := payload[timestampStart+8:]
 	if !utf8.Valid(body) {
 		return Message{}, errors.New("received invalid UTF-8 message")
+	}
+
+	from := string(fromBytes)
+	if from == "" {
+		from = fallbackFrom
 	}
 
 	return Message{
 		ID:   string(payload[2 : 2+idLength]),
 		From: from,
 		Body: string(body),
-		At:   time.Unix(0, int64(binary.BigEndian.Uint64(payload[2+idLength:2+idLength+8]))),
+		At:   time.Unix(0, int64(binary.BigEndian.Uint64(payload[timestampStart:timestampStart+8]))),
 	}, nil
 }
 
