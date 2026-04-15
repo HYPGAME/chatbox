@@ -5,15 +5,19 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"path"
 	"runtime"
 	"strings"
 )
 
 const defaultAPIBaseURL = "https://api.github.com"
+const defaultWebBaseURL = "https://github.com"
 
 type Client struct {
 	BaseURL        string
+	WebBaseURL     string
 	Repository     string
 	HTTPClient     *http.Client
 	CurrentVersion string
@@ -34,10 +38,10 @@ type SelfUpdateResult struct {
 func (c Client) LatestRelease(ctx context.Context) (Release, error) {
 	endpoint := strings.TrimRight(c.baseURL(), "/") + "/repos/" + c.repository() + "/releases/latest"
 	payload, err := c.download(ctx, endpoint)
-	if err != nil {
-		return Release{}, err
+	if err == nil {
+		return parseLatestRelease(payload)
 	}
-	return parseLatestRelease(payload)
+	return c.latestReleaseViaRedirect(ctx)
 }
 
 func (c Client) SelfUpdate(ctx context.Context) (SelfUpdateResult, error) {
@@ -133,6 +137,13 @@ func (c Client) baseURL() string {
 	return c.BaseURL
 }
 
+func (c Client) webBaseURL() string {
+	if c.WebBaseURL == "" {
+		return defaultWebBaseURL
+	}
+	return c.WebBaseURL
+}
+
 func (c Client) repository() string {
 	if c.Repository == "" {
 		return "HYPGAME/chatbox"
@@ -175,4 +186,60 @@ func (c Client) applyUpdate() func(string, []byte) (ApplyResult, error) {
 		}
 	}
 	return c.ApplyUpdate
+}
+
+func (c Client) latestReleaseViaRedirect(ctx context.Context) (Release, error) {
+	releasesLatestURL := strings.TrimRight(c.webBaseURL(), "/") + "/" + c.repository() + "/releases/latest"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, releasesLatestURL, nil)
+	if err != nil {
+		return Release{}, fmt.Errorf("build latest release request: %w", err)
+	}
+
+	noRedirectClient := *c.httpClient()
+	noRedirectClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+
+	resp, err := noRedirectClient.Do(req)
+	if err != nil {
+		return Release{}, fmt.Errorf("fetch latest release redirect: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusMovedPermanently && resp.StatusCode != http.StatusSeeOther && resp.StatusCode != http.StatusTemporaryRedirect && resp.StatusCode != http.StatusPermanentRedirect {
+		return Release{}, fmt.Errorf("fetch latest release redirect: unexpected status %s", resp.Status)
+	}
+
+	location := resp.Header.Get("Location")
+	if location == "" {
+		return Release{}, fmt.Errorf("fetch latest release redirect: missing location header")
+	}
+
+	redirectURL, err := url.Parse(location)
+	if err != nil {
+		return Release{}, fmt.Errorf("parse latest release redirect: %w", err)
+	}
+	tagName := path.Base(redirectURL.Path)
+	if _, ok := parseVersionTag(tagName); !ok {
+		return Release{}, fmt.Errorf("parse latest release redirect: invalid tag %q", tagName)
+	}
+
+	return Release{
+		TagName: tagName,
+		HTMLURL: strings.TrimRight(c.webBaseURL(), "/") + "/" + c.repository() + "/releases/tag/" + tagName,
+		Assets: []ReleaseAsset{
+			{
+				Name:        "chatbox_darwin_arm64.tar.gz",
+				DownloadURL: strings.TrimRight(c.webBaseURL(), "/") + "/" + c.repository() + "/releases/latest/download/chatbox_darwin_arm64.tar.gz",
+			},
+			{
+				Name:        "chatbox_darwin_amd64.tar.gz",
+				DownloadURL: strings.TrimRight(c.webBaseURL(), "/") + "/" + c.repository() + "/releases/latest/download/chatbox_darwin_amd64.tar.gz",
+			},
+			{
+				Name:        "checksums.txt",
+				DownloadURL: strings.TrimRight(c.webBaseURL(), "/") + "/" + c.repository() + "/releases/latest/download/checksums.txt",
+			},
+		},
+	}, nil
 }
