@@ -5,6 +5,14 @@ usage() {
   echo "usage: ./scripts/release-manual.sh vMAJOR.MINOR.PATCH" >&2
 }
 
+run_publish_step() {
+  if [[ "${DRY_RUN:-0}" == "1" ]]; then
+    echo "dry-run: $*"
+    return 0
+  fi
+  "$@"
+}
+
 require_command() {
   local name="$1"
   if ! command -v "$name" >/dev/null 2>&1; then
@@ -75,11 +83,11 @@ done
   shasum -a 256 chatbox_darwin_arm64.tar.gz chatbox_darwin_amd64.tar.gz
 ) > dist/checksums.txt
 
-git push origin main
-git tag "$VERSION"
-git push origin "refs/tags/$VERSION"
+run_publish_step git push origin main
+run_publish_step git tag "$VERSION"
+run_publish_step git push origin "refs/tags/$VERSION"
 
-if ! gh release create "$VERSION" \
+if ! run_publish_step gh release create "$VERSION" \
   dist/chatbox_darwin_arm64.tar.gz \
   dist/chatbox_darwin_amd64.tar.gz \
   dist/checksums.txt \
@@ -93,6 +101,11 @@ then
   echo "  git push origin :refs/tags/$VERSION" >&2
   echo "  git tag -d $VERSION" >&2
   exit 1
+fi
+
+if [[ "${DRY_RUN:-0}" == "1" ]]; then
+  echo "dry-run complete: release artifacts are ready in dist/"
+  exit 0
 fi
 
 echo "release published: https://github.com/HYPGAME/chatbox/releases/tag/$VERSION"
