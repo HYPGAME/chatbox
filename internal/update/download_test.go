@@ -25,6 +25,23 @@ func TestParseChecksumsFindsExpectedAsset(t *testing.T) {
 	}
 }
 
+func TestParseChecksumsAcceptsPathPrefixedAssetNames(t *testing.T) {
+	t.Parallel()
+
+	checksums := strings.Join([]string{
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  dist/chatbox_darwin_arm64.tar.gz",
+		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  dist/checksums.txt",
+	}, "\n")
+
+	sum, err := parseChecksums([]byte(checksums), "chatbox_darwin_arm64.tar.gz")
+	if err != nil {
+		t.Fatalf("parseChecksums returned error: %v", err)
+	}
+	if sum != strings.Repeat("a", 64) {
+		t.Fatalf("expected checksum to be returned, got %q", sum)
+	}
+}
+
 func TestVerifyChecksumRejectsMismatch(t *testing.T) {
 	t.Parallel()
 

@@ -40,10 +40,12 @@ jobs:
             tar -C "${WORKDIR}" -czf "dist/chatbox_darwin_${ARCH}.tar.gz" chatbox
           done
 
-          shasum -a 256 \
-            dist/chatbox_darwin_arm64.tar.gz \
-            dist/chatbox_darwin_amd64.tar.gz \
-            > dist/checksums.txt
+          (
+            cd dist
+            shasum -a 256 \
+              chatbox_darwin_arm64.tar.gz \
+              chatbox_darwin_amd64.tar.gz
+          ) > dist/checksums.txt
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2

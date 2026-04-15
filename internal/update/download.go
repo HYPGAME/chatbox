@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"path"
 	"strings"
 )
 
@@ -18,7 +19,7 @@ func parseChecksums(payload []byte, assetName string) (string, error) {
 		if len(fields) != 2 {
 			continue
 		}
-		if fields[1] == assetName {
+		if fields[1] == assetName || path.Base(fields[1]) == assetName {
 			return fields[0], nil
 		}
 	}
