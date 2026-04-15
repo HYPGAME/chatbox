@@ -59,6 +59,17 @@ func TestIsNewerReleaseTreatsDevAsOlderThanStable(t *testing.T) {
 	}
 }
 
+func TestIsNewerReleaseTreatsPrereleaseBuildsAsOlderThanStable(t *testing.T) {
+	t.Parallel()
+
+	if !isNewerRelease("v0.0.0-dev", "v0.1.4") {
+		t.Fatal("expected stable tag to be newer than prerelease dev build")
+	}
+	if !isNewerRelease("v0.1.4-dev", "v0.1.4") {
+		t.Fatal("expected stable tag to be newer than same-version prerelease build")
+	}
+}
+
 func TestSelectAssetNameForPlatform(t *testing.T) {
 	t.Parallel()
 

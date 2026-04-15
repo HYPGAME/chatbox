@@ -18,6 +18,11 @@ type ReleaseAsset struct {
 	DownloadURL string `json:"browser_download_url"`
 }
 
+type comparableVersion struct {
+	core       [3]int
+	prerelease bool
+}
+
 type githubRelease struct {
 	TagName string         `json:"tag_name"`
 	HTMLURL string         `json:"html_url"`
@@ -46,29 +51,50 @@ func (r Release) AssetByName(name string) (ReleaseAsset, bool) {
 }
 
 func isNewerRelease(currentVersion string, latestVersion string) bool {
-	if currentVersion == "dev" {
-		_, ok := parseVersionTag(latestVersion)
-		return ok
-	}
-
-	current, ok := parseVersionTag(currentVersion)
+	current, ok := parseComparableVersion(currentVersion)
 	if !ok {
 		return false
 	}
-	latest, ok := parseVersionTag(latestVersion)
+	latest, ok := parseComparableVersion(latestVersion)
 	if !ok {
 		return false
 	}
 
-	for i := range current {
-		if latest[i] > current[i] {
+	for i := range current.core {
+		if latest.core[i] > current.core[i] {
 			return true
 		}
-		if latest[i] < current[i] {
+		if latest.core[i] < current.core[i] {
 			return false
 		}
 	}
+	if current.prerelease != latest.prerelease {
+		return current.prerelease && !latest.prerelease
+	}
 	return false
+}
+
+func parseComparableVersion(raw string) (comparableVersion, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "dev" {
+		return comparableVersion{prerelease: true}, true
+	}
+
+	prerelease := false
+	base := raw
+	if index := strings.Index(base, "-"); index >= 0 {
+		prerelease = true
+		base = base[:index]
+	}
+
+	core, ok := parseVersionTag(base)
+	if !ok {
+		return comparableVersion{}, false
+	}
+	return comparableVersion{
+		core:       core,
+		prerelease: prerelease,
+	}, true
 }
 
 func parseVersionTag(raw string) ([3]int, bool) {
