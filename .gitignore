@@ -1,5 +1,5 @@
 chatbox
 *.psk
 dist/
-release/
+/release/
 .worktrees/
