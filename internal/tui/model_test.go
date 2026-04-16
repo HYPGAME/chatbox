@@ -56,7 +56,7 @@ func TestModelShowsConnectedStatusAndIncomingMessage(t *testing.T) {
 func TestModelSendsTypedMessageOnEnter(t *testing.T) {
 	t.Parallel()
 
-	fake := &fakeSession{peerName: "host"}
+	fake := &fakeSession{peerName: "host", localName: "alice"}
 	uiModel := newModel(modelOptions{
 		mode:    "join",
 		session: fake,
@@ -76,7 +76,7 @@ func TestModelSendsTypedMessageOnEnter(t *testing.T) {
 	}
 
 	view := uiModel.View()
-	if !strings.Contains(view, "you: hello from cli") {
+	if !strings.Contains(view, "alice: hello from cli") {
 		t.Fatalf("expected local message in view, got %q", view)
 	}
 	if !strings.Contains(view, time.Now().Format("2006-01-02")) {
@@ -733,7 +733,7 @@ func TestScrollbackReconnectErrorsPrintToTerminalHistory(t *testing.T) {
 func TestScrollbackOutgoingReceiptDoesNotPrintDeliveryStatuses(t *testing.T) {
 	t.Parallel()
 
-	fake := &fakeSession{peerName: "host"}
+	fake := &fakeSession{peerName: "host", localName: "alice"}
 	var printed []string
 	uiModel := newModel(modelOptions{
 		mode:    "join",
@@ -753,7 +753,7 @@ func TestScrollbackOutgoingReceiptDoesNotPrintDeliveryStatuses(t *testing.T) {
 	uiModel = updated.(model)
 
 	joined := strings.Join(printed, "\n")
-	if !strings.Contains(joined, "you: oi") {
+	if !strings.Contains(joined, "alice: oi") {
 		t.Fatalf("expected outgoing message to be printed, got %q", joined)
 	}
 	if strings.Contains(joined, "commands: /help /status /quit") {
@@ -780,8 +780,8 @@ func TestScrollbackOutgoingReceiptDoesNotPrintDeliveryStatuses(t *testing.T) {
 func TestScrollbackReconnectPrintsRetryMarkerForPendingMessage(t *testing.T) {
 	t.Parallel()
 
-	first := &fakeSession{peerName: "host"}
-	second := &fakeSession{peerName: "host"}
+	first := &fakeSession{peerName: "host", localName: "alice"}
+	second := &fakeSession{peerName: "host", localName: "alice"}
 	var printed []string
 	uiModel := newModel(modelOptions{
 		mode:    "join",
@@ -805,7 +805,7 @@ func TestScrollbackReconnectPrintsRetryMarkerForPendingMessage(t *testing.T) {
 	uiModel = updated.(model)
 
 	joined := strings.Join(printed, "\n")
-	if !strings.Contains(joined, "reliable hello [retrying]") {
+	if !strings.Contains(joined, "alice: reliable hello [retrying]") {
 		t.Fatalf("expected retry marker in scrollback output, got %q", joined)
 	}
 	if strings.Contains(joined, "[sending]") || strings.Contains(joined, "[sent]") {
@@ -919,9 +919,10 @@ func TestScrollbackDoesNotAlertForOutgoingReceiptOrRetry(t *testing.T) {
 }
 
 type fakeSession struct {
-	peerName string
-	sent     []session.Message
-	resent   []session.Message
+	peerName  string
+	localName string
+	sent      []session.Message
+	resent    []session.Message
 }
 
 type fakeHostRoom struct {
@@ -938,9 +939,13 @@ func (f *fakeSession) Close() error                     { return nil }
 func (f *fakeSession) PeerName() string                 { return f.peerName }
 
 func (f *fakeSession) Send(text string) (session.Message, error) {
+	from := f.localName
+	if from == "" {
+		from = f.peerName
+	}
 	message := session.Message{
 		ID:   fmt.Sprintf("fake-%d", len(f.sent)+1),
-		From: f.peerName,
+		From: from,
 		Body: text,
 		At:   time.Date(2026, 4, 14, 20, 31, len(f.sent), 0, time.Local),
 	}

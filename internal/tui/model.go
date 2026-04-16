@@ -883,9 +883,6 @@ func renderEntryWithStatus(entry historyEntry, status string) string {
 		return errorStyle.Render(fmt.Sprintf("error [%s]: %s", entry.at.Local().Format("2006-01-02 15:04:05"), entry.body))
 	default:
 		label := entry.from
-		if entry.outgoing {
-			label = "you"
-		}
 		statusSuffix := ""
 		if entry.outgoing && status != "" {
 			statusSuffix = fmt.Sprintf(" [%s]", status)
