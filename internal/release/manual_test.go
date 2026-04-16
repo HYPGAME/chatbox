@@ -28,6 +28,7 @@ func TestArtifactNamesForVersionedRelease(t *testing.T) {
 	want := []string{
 		"chatbox_darwin_arm64.tar.gz",
 		"chatbox_darwin_amd64.tar.gz",
+		"chatbox_android_arm64.tar.gz",
 		"checksums.txt",
 	}
 	if len(assets) != len(want) {
@@ -37,5 +38,21 @@ func TestArtifactNamesForVersionedRelease(t *testing.T) {
 		if assets[i] != want[i] {
 			t.Fatalf("expected asset %d to be %q, got %q", i, want[i], assets[i])
 		}
+	}
+}
+
+func TestReleaseArtifactsIncludeAndroidArm64Archive(t *testing.T) {
+	t.Parallel()
+
+	assets := ArtifactNames()
+	found := false
+	for _, asset := range assets {
+		if asset == "chatbox_android_arm64.tar.gz" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected android arm64 archive in release artifacts")
 	}
 }
