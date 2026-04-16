@@ -78,9 +78,14 @@ for ARCH in arm64 amd64; do
   tar -C "$WORKDIR" -czf "dist/chatbox_darwin_${ARCH}.tar.gz" chatbox
 done
 
+ANDROID_WORKDIR="dist/chatbox_android_arm64"
+mkdir -p "$ANDROID_WORKDIR"
+GOOS=android GOARCH=arm64 go build -ldflags "-X chatbox/internal/version.Version=${VERSION}" -o "$ANDROID_WORKDIR/chatbox" ./cmd/chatbox
+tar -C "$ANDROID_WORKDIR" -czf "dist/chatbox_android_arm64.tar.gz" chatbox
+
 (
   cd dist
-  shasum -a 256 chatbox_darwin_arm64.tar.gz chatbox_darwin_amd64.tar.gz
+  shasum -a 256 chatbox_darwin_arm64.tar.gz chatbox_darwin_amd64.tar.gz chatbox_android_arm64.tar.gz
 ) > dist/checksums.txt
 
 run_publish_step git push origin main
@@ -90,6 +95,7 @@ run_publish_step git push origin "refs/tags/$VERSION"
 if ! run_publish_step gh release create "$VERSION" \
   dist/chatbox_darwin_arm64.tar.gz \
   dist/chatbox_darwin_amd64.tar.gz \
+  dist/chatbox_android_arm64.tar.gz \
   dist/checksums.txt \
   --target main \
   --title "$VERSION" \

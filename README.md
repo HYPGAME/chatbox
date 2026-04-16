@@ -1,6 +1,6 @@
 # chatbox
 
-`chatbox` is a macOS-first command-line app for encrypted remote text chat.
+`chatbox` is a command-line app for encrypted remote text chat, with the smoothest experience today on macOS and a supported Android Termux path for CLI use.
 
 It is intentionally small:
 - direct TCP sessions between a host and one or more joiners
@@ -29,7 +29,7 @@ Print the current build version:
 ./chatbox version
 ```
 
-Update to the latest stable GitHub Release for the current macOS architecture:
+Update to the latest stable GitHub Release for the current platform when self-update is supported:
 
 ```bash
 ./chatbox self-update
@@ -38,10 +38,11 @@ Update to the latest stable GitHub Release for the current macOS architecture:
 Update behavior:
 
 - startup checks GitHub Releases asynchronously and prints a hint when a newer stable version exists
-- `self-update` downloads the matching `darwin/arm64` or `darwin/amd64` release archive
+- `self-update` currently supports macOS release archives
 - the archive is verified against `checksums.txt` before extraction
 - `chatbox` tries to replace the current executable in place
 - if the current install location is not writable, the new binary is written next to it and `chatbox` prints a manual replacement path
+- Android/Termux users should manually download and replace the binary from GitHub Releases
 
 ## Generate a Shared Key
 
@@ -76,6 +77,46 @@ The host side must be reachable from the internet. In practice that means:
 ```
 
 `join` also accepts `--ui tui` if you prefer the full-screen mode.
+
+## Android / Termux
+
+Android support is CLI-only through Termux. There is no APK or native Android UI.
+
+Recommended device/runtime:
+
+- Android on `arm64`
+- Termux
+
+Install from a release archive in Termux:
+
+```bash
+pkg update
+pkg install tar
+curl -L -o chatbox_android_arm64.tar.gz https://github.com/HYPGAME/chatbox/releases/latest/download/chatbox_android_arm64.tar.gz
+tar -xzf chatbox_android_arm64.tar.gz
+chmod +x ./chatbox
+./chatbox version
+```
+
+Or build it yourself from source:
+
+```bash
+GOOS=android GOARCH=arm64 go build -o ./chatbox ./cmd/chatbox
+```
+
+Run commands the same way as on desktop:
+
+```bash
+./chatbox host --listen 0.0.0.0:7331 --psk-file ./chatbox.psk --name android-host
+./chatbox join --peer 203.0.113.10:7331 --psk-file ./chatbox.psk --name android-joiner
+```
+
+Android-specific notes:
+
+- `self-update` is not supported on Android; replace the binary manually from GitHub Releases
+- macOS Terminal bell/badge notifications do not exist on Android Termux
+- joining a host usually works fine, but hosting from a phone often fails on cellular networks because of carrier NAT or inbound-port restrictions
+- transcript encryption and room history behavior are the same as other platforms
 
 ## Minimal Group Chat
 
@@ -130,12 +171,13 @@ This is intentionally a minimal host-relayed room, not a mesh network or a featu
 
 ## Release Publishing
 
-GitHub Actions publishes macOS release archives when you push a tag matching `v*`.
+GitHub Actions publishes release archives when you push a tag matching `v*`.
 
 Release assets:
 
 - `chatbox_darwin_arm64.tar.gz`
 - `chatbox_darwin_amd64.tar.gz`
+- `chatbox_android_arm64.tar.gz`
 - `checksums.txt`
 
 Release flow:
@@ -170,6 +212,8 @@ After a successful run, collaborators can update with:
 ```bash
 chatbox self-update
 ```
+
+On Android/Termux, download the latest `chatbox_android_arm64.tar.gz` release and replace the binary manually instead.
 
 ## Limitations
 

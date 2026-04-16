@@ -219,9 +219,33 @@ test_dry_run_prints_publish_plan_without_mutation() {
   if [[ "${output}" != *"dry-run: gh release create v0.1.3"* ]]; then
     fail "expected dry run release output, got: ${output}"
   fi
+  if [[ "${output}" != *"dist/chatbox_android_arm64.tar.gz"* ]]; then
+    fail "expected dry run to include android archive, got: ${output}"
+  fi
   if [[ -s "${temp_dir}/commands.log" ]]; then
     fail "expected dry run not to execute push/tag/release commands"
   fi
+}
+
+test_release_generates_checksums_for_android_archive() {
+  local temp_dir
+  temp_dir="$(mktemp -d)"
+  trap "rm -rf '${temp_dir}'" RETURN
+
+  make_fake_bin "${temp_dir}/bin"
+
+  local output
+  if ! output="$(PATH="${temp_dir}/bin:${PATH}" bash "$SCRIPT" v0.1.3 2>&1)"; then
+    fail "expected command to succeed, got failure: ${output}"
+  fi
+
+  if [[ ! -f "${ROOT}/dist/checksums.txt" ]]; then
+    fail "expected dist/checksums.txt to be generated"
+  fi
+  if ! grep -q "chatbox_android_arm64.tar.gz" "${ROOT}/dist/checksums.txt"; then
+    fail "expected checksums to include android archive"
+  fi
+  rm -rf "${ROOT}/dist"
 }
 
 test_missing_version_fails
@@ -230,5 +254,6 @@ test_existing_tag_fails
 test_release_flow_pushes_main_then_tag_then_release
 test_release_create_failure_reports_recovery_steps
 test_dry_run_prints_publish_plan_without_mutation
+test_release_generates_checksums_for_android_archive
 
 echo "ok"
