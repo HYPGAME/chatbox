@@ -156,6 +156,7 @@ This is intentionally a minimal host-relayed room, not a mesh network or a featu
 ## Delivery Behavior
 
 - Normal outgoing messages are shown once without delivery badges.
+- Outgoing messages render with the sender's configured display name, just like incoming messages.
 - If a connection drops, unacknowledged messages stay pending in the current process and are resent automatically after reconnection.
 - Automatic resend adds a single `[retrying]` line so retries are visible without duplicating normal delivery updates.
 - Pending resend does not survive process restart.
@@ -171,7 +172,7 @@ This is intentionally a minimal host-relayed room, not a mesh network or a featu
 
 ## Release Publishing
 
-GitHub Actions publishes release archives when you push a tag matching `v*`.
+GitHub Actions publishes stable release archives when you push a tag matching `v*`.
 
 Release assets:
 
@@ -188,6 +189,19 @@ git push origin v0.1.0
 ```
 
 The workflow injects the tag into `chatbox/internal/version.Version`, builds both macOS binaries, generates checksums, and uploads all artifacts to the GitHub Release.
+
+## Edge Prereleases
+
+Every push to `main` also publishes a unique GitHub prerelease.
+
+Behavior:
+
+- each push to `main` gets its own `edge-<short-sha>` prerelease
+- edge prereleases include the same darwin/android archives and `checksums.txt`
+- edge binaries embed an `edge-<short-sha>` version string
+- `self-update` continues to track stable releases, not edge prereleases
+
+Use edge prereleases when you want the newest build from `main` without waiting for a tagged stable release.
 
 ## Manual Release
 
