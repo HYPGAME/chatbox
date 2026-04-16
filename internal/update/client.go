@@ -45,6 +45,16 @@ func (c Client) LatestRelease(ctx context.Context) (Release, error) {
 }
 
 func (c Client) SelfUpdate(ctx context.Context) (SelfUpdateResult, error) {
+	if c.goos() == "android" {
+		return SelfUpdateResult{
+			CurrentVersion: c.CurrentVersion,
+		}, fmt.Errorf(
+			"self-update is not supported on android; download chatbox_android_arm64.tar.gz from GitHub Releases and replace the binary manually: %s/%s/releases/latest",
+			strings.TrimRight(c.webBaseURL(), "/"),
+			c.repository(),
+		)
+	}
+
 	release, err := c.LatestRelease(ctx)
 	if err != nil {
 		return SelfUpdateResult{}, err

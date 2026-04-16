@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -156,5 +157,32 @@ func TestSelfUpdateFallsBackToLatestDownloadEndpointsWhenAPIIsRateLimited(t *tes
 	}
 	if result.LatestVersion != "v0.2.0" {
 		t.Fatalf("expected fallback latest version %q, got %q", "v0.2.0", result.LatestVersion)
+	}
+}
+
+func TestSelfUpdateRejectsAndroidWithManualUpgradeMessage(t *testing.T) {
+	t.Parallel()
+
+	client := Client{
+		BaseURL:        "http://127.0.0.1:1",
+		WebBaseURL:     "https://github.com",
+		Repository:     "HYPGAME/chatbox",
+		CurrentVersion: "v0.1.0",
+		GOOS:           "android",
+		GOARCH:         "arm64",
+	}
+
+	_, err := client.SelfUpdate(context.Background())
+	if err == nil {
+		t.Fatal("expected android self-update to fail")
+	}
+	if !strings.Contains(err.Error(), "android") {
+		t.Fatalf("expected android-specific error, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "GitHub Releases") {
+		t.Fatalf("expected manual upgrade guidance, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "chatbox_android_arm64.tar.gz") {
+		t.Fatalf("expected android asset name in guidance, got %q", err.Error())
 	}
 }
