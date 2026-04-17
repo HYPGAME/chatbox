@@ -127,6 +127,75 @@ printf '%s\n' "${1:-}" >> "${CHATBOX_STATE_DIR:?}/chatbox-init.log"
 	}
 }
 
+func TestOpenWrtAutoUpdateRecoversFromStaleLock(t *testing.T) {
+	t.Parallel()
+
+	scriptPath, err := filepath.Abs("chatbox-openwrt-autoupdate.sh")
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+
+	tempDir := t.TempDir()
+	binDir := filepath.Join(tempDir, "bin")
+	initdDir := filepath.Join(tempDir, "init.d")
+	stateDir := filepath.Join(tempDir, "state")
+	lockDir := filepath.Join(tempDir, "lock")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("create bin dir: %v", err)
+	}
+	if err := os.MkdirAll(initdDir, 0o755); err != nil {
+		t.Fatalf("create initd dir: %v", err)
+	}
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+	if err := os.MkdirAll(lockDir, 0o755); err != nil {
+		t.Fatalf("create lock dir: %v", err)
+	}
+
+	mustWriteExecutable(t, filepath.Join(binDir, "chatbox"), `#!/bin/sh
+set -eu
+state="${CHATBOX_STATE_DIR:?}"
+case "${1:-}" in
+version)
+	cat "$state/version"
+	;;
+self-update)
+	printf '%s\n' 'chatbox is already up to date (v0.1.9)'
+	;;
+*)
+	echo "unexpected command: $*" >&2
+	exit 99
+	;;
+esac
+`)
+	mustWriteExecutable(t, filepath.Join(initdDir, "chatbox"), `#!/bin/sh
+exit 0
+`)
+	mustWriteFile(t, filepath.Join(stateDir, "version"), []byte("v0.1.9\n"), 0o644)
+	mustWriteFile(t, filepath.Join(lockDir, "pid"), []byte("999999\n"), 0o644)
+
+	cmd := exec.Command("/bin/sh", scriptPath)
+	cmd.Env = append(os.Environ(),
+		"PATH="+binDir+":"+os.Getenv("PATH"),
+		"CHATBOX_BIN="+filepath.Join(binDir, "chatbox"),
+		"CHATBOX_INITD_DIR="+initdDir,
+		"CHATBOX_STATE_DIR="+stateDir,
+		"LOCKDIR="+lockDir,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run script with stale lock: %v\n%s", err, output)
+	}
+	if strings.Contains(string(output), "another update is already running") {
+		t.Fatalf("expected stale lock recovery, got %q", output)
+	}
+
+	if _, err := os.Stat(lockDir); !os.IsNotExist(err) {
+		t.Fatalf("expected lock dir to be removed, stat err=%v", err)
+	}
+}
+
 func mustWriteExecutable(t *testing.T, path string, content string) {
 	t.Helper()
 	mustWriteFile(t, path, []byte(content), 0o755)

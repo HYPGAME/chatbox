@@ -33,6 +33,7 @@ cleanup() {
 	status=$?
 	trap - EXIT INT TERM
 	restore_openclash
+	rm -f "$(lock_pid_path)" 2>/dev/null || true
 	rmdir "$LOCKDIR"
 	exit "$status"
 }
@@ -50,7 +51,52 @@ run_self_update() {
 	"$CHATBOX_BIN" self-update 2>&1
 }
 
-if ! mkdir "$LOCKDIR" 2>/dev/null; then
+lock_pid_path() {
+	printf '%s/pid' "$LOCKDIR"
+}
+
+lock_is_stale() {
+	[ -d "$LOCKDIR" ] || return 1
+
+	pid_file="$(lock_pid_path)"
+	if [ ! -f "$pid_file" ]; then
+		return 0
+	fi
+
+	pid="$(sed -n '1p' "$pid_file" 2>/dev/null || true)"
+	case "$pid" in
+		''|*[!0-9]*)
+			return 0
+			;;
+	esac
+
+	if kill -0 "$pid" 2>/dev/null; then
+		return 1
+	fi
+	return 0
+}
+
+acquire_lock() {
+	if mkdir "$LOCKDIR" 2>/dev/null; then
+		printf '%s\n' "$$" > "$(lock_pid_path)"
+		return 0
+	fi
+
+	if ! lock_is_stale; then
+		return 1
+	fi
+
+	rm -f "$(lock_pid_path)" 2>/dev/null || true
+	rmdir "$LOCKDIR" 2>/dev/null || return 1
+	if ! mkdir "$LOCKDIR" 2>/dev/null; then
+		return 1
+	fi
+	printf '%s\n' "$$" > "$(lock_pid_path)"
+	log "chatbox auto-update: recovered stale lock at $LOCKDIR"
+	return 0
+}
+
+if ! acquire_lock; then
 	log "chatbox auto-update skipped: another update is already running"
 	exit 0
 fi
