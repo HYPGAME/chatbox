@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"chatbox/internal/keys"
@@ -18,6 +19,7 @@ import (
 
 var (
 	runHostUI                   = tui.RunHost
+	runHostHeadless             = func(context.Context, *session.Host, string, []byte) error { return errors.New("headless host is not implemented") }
 	runJoinUI                   = tui.RunJoin
 	runSelfUpdateCommand        = runSelfUpdate
 	launchBackgroundUpdateCheck = func(ctx context.Context) {
@@ -41,7 +43,7 @@ func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return usageError()
 	}
-	if args[0] != "self-update" {
+	if shouldLaunchBackgroundUpdateCheck(args) {
 		launchBackgroundUpdateCheck(ctx)
 	}
 
@@ -107,6 +109,7 @@ func runHost(ctx context.Context, args []string) error {
 	listenAddr := fs.String("listen", "0.0.0.0:7331", "TCP address to listen on")
 	pskFile := fs.String("psk-file", "", "Path to the PSK file")
 	name := fs.String("name", defaultName(), "Local display name")
+	headless := fs.Bool("headless", false, "Run as a non-interactive relay service")
 	ui := fs.String("ui", "", "UI mode: scrollback or tui")
 	alert := fs.String("alert", "", "Alert mode: bell or off")
 	if err := fs.Parse(args); err != nil {
@@ -114,6 +117,9 @@ func runHost(ctx context.Context, args []string) error {
 	}
 	if *pskFile == "" {
 		return errors.New("host requires --psk-file")
+	}
+	if *headless && strings.TrimSpace(*ui) != "" {
+		return errors.New("host --headless cannot be combined with --ui")
 	}
 	uiMode, err := resolveUI(*ui)
 	if err != nil {
@@ -138,6 +144,9 @@ func runHost(ctx context.Context, args []string) error {
 	}
 	defer host.Close()
 
+	if *headless {
+		return runHostHeadless(ctx, host, *name, psk)
+	}
 	return runHostUI(host, *name, psk, uiMode, alertMode)
 }
 
@@ -196,6 +205,39 @@ func defaultName() string {
 
 func usageError() error {
 	return errors.New("usage: chatbox <keygen|host|join|version|self-update> [flags]")
+}
+
+func shouldLaunchBackgroundUpdateCheck(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	if args[0] == "self-update" {
+		return false
+	}
+	if args[0] != "host" {
+		return true
+	}
+	return !hostHeadlessRequested(args[1:])
+}
+
+func hostHeadlessRequested(args []string) bool {
+	for _, arg := range args {
+		switch {
+		case arg == "--headless":
+			return true
+		case strings.HasPrefix(arg, "--headless="):
+			value := strings.TrimSpace(strings.TrimPrefix(arg, "--headless="))
+			if value == "" {
+				return true
+			}
+			enabled, err := strconv.ParseBool(value)
+			if err != nil {
+				return false
+			}
+			return enabled
+		}
+	}
+	return false
 }
 
 func resolveUI(raw string) (string, error) {

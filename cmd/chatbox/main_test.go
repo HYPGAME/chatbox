@@ -229,6 +229,89 @@ func TestRunHostPassesAlertModeToLauncher(t *testing.T) {
 	}
 }
 
+func TestRunHostHeadlessDelegatesToHeadlessLauncher(t *testing.T) {
+	tempDir := t.TempDir()
+	path := filepath.Join(tempDir, "chatbox.psk")
+	if err := run(context.Background(), []string{"keygen", "--out", path}); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	originalRunHostUI := runHostUI
+	originalRunHostHeadless := runHostHeadless
+	t.Cleanup(func() {
+		runHostUI = originalRunHostUI
+		runHostHeadless = originalRunHostHeadless
+	})
+
+	uiCalled := false
+	headlessCalled := false
+	runHostUI = func(_ *session.Host, _ string, _ []byte, _ string, _ string) error {
+		uiCalled = true
+		return nil
+	}
+	runHostHeadless = func(_ context.Context, _ *session.Host, _ string, _ []byte) error {
+		headlessCalled = true
+		return nil
+	}
+
+	if err := runHost(context.Background(), []string{"--listen", "127.0.0.1:0", "--psk-file", path, "--name", "tester", "--headless"}); err != nil {
+		t.Fatalf("runHost returned error: %v", err)
+	}
+
+	if !headlessCalled {
+		t.Fatal("expected headless launcher to be invoked")
+	}
+	if uiCalled {
+		t.Fatal("expected ui launcher to stay unused in headless mode")
+	}
+}
+
+func TestRunHostRejectsHeadlessWithUI(t *testing.T) {
+	tempDir := t.TempDir()
+	path := filepath.Join(tempDir, "chatbox.psk")
+	if err := run(context.Background(), []string{"keygen", "--out", path}); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	err := runHost(context.Background(), []string{"--listen", "127.0.0.1:0", "--psk-file", path, "--headless", "--ui", "tui"})
+	if err == nil {
+		t.Fatal("expected headless host to reject --ui")
+	}
+	if !strings.Contains(err.Error(), "headless") || !strings.Contains(err.Error(), "--ui") {
+		t.Fatalf("expected headless/ui validation error, got %q", err.Error())
+	}
+}
+
+func TestRunSkipsBackgroundUpdateCheckForHeadlessHost(t *testing.T) {
+	originalLaunchBackgroundUpdateCheck := launchBackgroundUpdateCheck
+	originalRunHostHeadless := runHostHeadless
+	t.Cleanup(func() {
+		launchBackgroundUpdateCheck = originalLaunchBackgroundUpdateCheck
+		runHostHeadless = originalRunHostHeadless
+	})
+
+	tempDir := t.TempDir()
+	path := filepath.Join(tempDir, "chatbox.psk")
+	if err := run(context.Background(), []string{"keygen", "--out", path}); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	launched := false
+	launchBackgroundUpdateCheck = func(context.Context) {
+		launched = true
+	}
+	runHostHeadless = func(_ context.Context, _ *session.Host, _ string, _ []byte) error {
+		return nil
+	}
+
+	if err := run(context.Background(), []string{"host", "--listen", "127.0.0.1:0", "--psk-file", path, "--name", "tester", "--headless"}); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	if launched {
+		t.Fatal("expected headless host to skip background update checks")
+	}
+}
+
 func TestRunJoinPassesAlertModeToLauncher(t *testing.T) {
 	tempDir := t.TempDir()
 	path := filepath.Join(tempDir, "chatbox.psk")
