@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 
+	"chatbox/internal/headless"
 	"chatbox/internal/keys"
 	"chatbox/internal/session"
 	"chatbox/internal/tui"
@@ -18,8 +21,12 @@ import (
 )
 
 var (
-	runHostUI                   = tui.RunHost
-	runHostHeadless             = func(context.Context, *session.Host, string, []byte) error { return errors.New("headless host is not implemented") }
+	runHostUI       = tui.RunHost
+	runHostHeadless = func(ctx context.Context, host *session.Host, localName string, _ []byte) error {
+		signalCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return headless.RunHost(signalCtx, host, localName, stderr)
+	}
 	runJoinUI                   = tui.RunJoin
 	runSelfUpdateCommand        = runSelfUpdate
 	launchBackgroundUpdateCheck = func(ctx context.Context) {
