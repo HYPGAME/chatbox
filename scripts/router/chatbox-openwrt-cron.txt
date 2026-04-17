@@ -1,0 +1,1 @@
+17 4 * * * /usr/bin/chatbox-openwrt-autoupdate.sh

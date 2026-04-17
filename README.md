@@ -38,7 +38,7 @@ Update to the latest stable GitHub Release for the current platform when self-up
 Update behavior:
 
 - startup checks GitHub Releases asynchronously and prints a hint when a newer stable version exists
-- `self-update` currently supports macOS release archives
+- `self-update` currently supports macOS and Linux `arm64` release archives
 - the archive is verified against `checksums.txt` before extraction
 - `chatbox` tries to replace the current executable in place
 - if the current install location is not writable, the new binary is written next to it and `chatbox` prints a manual replacement path
@@ -65,6 +65,20 @@ If you want the old full-screen viewport UI instead:
 ```bash
 ./chatbox host --listen 0.0.0.0:7331 --psk-file ./chatbox.psk --name alice --ui tui
 ```
+
+For a router or service host, use the non-interactive relay mode:
+
+```bash
+./chatbox host --headless --listen 0.0.0.0:7331 --psk-file ./chatbox.psk --name router
+```
+
+`--headless` is for daemon-style deployment:
+
+- it does not start the scrollback or TUI interface
+- it does not read stdin
+- it logs only service-level events such as startup and join/leave
+- it does not log chat message bodies
+- it cannot be combined with `--ui`
 
 The host side must be reachable from the internet. In practice that means:
 - a public IP on the Mac, or
@@ -123,6 +137,46 @@ Android-specific notes:
 - macOS Terminal bell/badge notifications do not exist on Android Termux
 - joining a host usually works fine, but hosting from a phone often fails on cellular networks because of carrier NAT or inbound-port restrictions
 - transcript encryption and room history behavior are the same as other platforms
+
+## Router Deployment
+
+For OpenWrt/iStoreOS style deployment, the recommended layout is:
+
+- install the Linux ARM64 binary as `/usr/bin/chatbox`
+- keep the PSK in `/etc/chatbox/chatbox.psk`
+- run the service as `chatbox host --headless ...`
+- use the router's init system to keep it running
+
+Example service command:
+
+```bash
+/usr/bin/chatbox host --headless --listen 0.0.0.0:7331 --psk-file /etc/chatbox/chatbox.psk --name iStoreOS
+```
+
+## Router Auto-Update
+
+On OpenWrt/iStoreOS, `chatbox` can update itself daily from stable GitHub Releases.
+
+Files in this repo:
+
+- `scripts/router/chatbox-openwrt-autoupdate.sh`
+- `scripts/router/chatbox-openwrt-cron.txt`
+
+Suggested install:
+
+```bash
+cp scripts/router/chatbox-openwrt-autoupdate.sh /usr/bin/chatbox-openwrt-autoupdate.sh
+chmod +x /usr/bin/chatbox-openwrt-autoupdate.sh
+cat scripts/router/chatbox-openwrt-cron.txt >> /etc/crontabs/root
+/etc/init.d/cron restart
+```
+
+Behavior:
+
+- runs `chatbox self-update`
+- verifies the binary using release checksums
+- restarts `/etc/init.d/chatbox` only when the local version actually changed
+- does not restart when already current, when the update fails, or when the updater falls back to a manual `.new` file
 
 ## Minimal Group Chat
 
@@ -186,6 +240,7 @@ Release assets:
 
 - `chatbox_darwin_arm64.tar.gz`
 - `chatbox_darwin_amd64.tar.gz`
+- `chatbox_linux_arm64.tar.gz`
 - `chatbox_android_arm64.tar.gz`
 - `checksums.txt`
 
@@ -223,7 +278,7 @@ The script:
 
 - requires a clean `main` branch
 - runs `go test ./...`
-- builds both macOS release archives
+- builds macOS, Linux ARM64, and Android release archives
 - generates `checksums.txt`
 - pushes `main`
 - creates and pushes the tag
