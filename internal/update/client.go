@@ -47,12 +47,12 @@ func (c Client) LatestRelease(ctx context.Context) (Release, error) {
 func (c Client) SelfUpdate(ctx context.Context) (SelfUpdateResult, error) {
 	if c.goos() == "android" {
 		return SelfUpdateResult{
-			CurrentVersion: c.CurrentVersion,
-		}, fmt.Errorf(
-			"self-update is not supported on android; download chatbox_android_arm64.tar.gz from GitHub Releases and replace the binary manually: %s/%s/releases/latest",
-			strings.TrimRight(c.webBaseURL(), "/"),
-			c.repository(),
-		)
+				CurrentVersion: c.CurrentVersion,
+			}, fmt.Errorf(
+				"self-update is not supported on android; download chatbox_android_arm64.tar.gz from GitHub Releases and replace the binary manually: %s/%s/releases/latest",
+				strings.TrimRight(c.webBaseURL(), "/"),
+				c.repository(),
+			)
 	}
 
 	release, err := c.LatestRelease(ctx)
@@ -245,6 +245,10 @@ func (c Client) latestReleaseViaRedirect(ctx context.Context) (Release, error) {
 			{
 				Name:        "chatbox_darwin_amd64.tar.gz",
 				DownloadURL: strings.TrimRight(c.webBaseURL(), "/") + "/" + c.repository() + "/releases/latest/download/chatbox_darwin_amd64.tar.gz",
+			},
+			{
+				Name:        "chatbox_linux_arm64.tar.gz",
+				DownloadURL: strings.TrimRight(c.webBaseURL(), "/") + "/" + c.repository() + "/releases/latest/download/chatbox_linux_arm64.tar.gz",
 			},
 			{
 				Name:        "checksums.txt",

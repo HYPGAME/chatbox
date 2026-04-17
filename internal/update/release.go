@@ -127,6 +127,8 @@ func selectAssetName(goos string, goarch string) (string, error) {
 		return "chatbox_darwin_arm64.tar.gz", nil
 	case goos == "darwin" && goarch == "amd64":
 		return "chatbox_darwin_amd64.tar.gz", nil
+	case goos == "linux" && goarch == "arm64":
+		return "chatbox_linux_arm64.tar.gz", nil
 	case goos == "android" && goarch == "arm64":
 		return "chatbox_android_arm64.tar.gz", nil
 	default:

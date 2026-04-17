@@ -18,6 +18,7 @@ func ArtifactNames() []string {
 	return []string{
 		"chatbox_darwin_arm64.tar.gz",
 		"chatbox_darwin_amd64.tar.gz",
+		"chatbox_linux_arm64.tar.gz",
 		"chatbox_android_arm64.tar.gz",
 		"checksums.txt",
 	}

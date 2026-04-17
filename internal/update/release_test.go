@@ -97,3 +97,15 @@ func TestSelectAssetNameSupportsAndroidArm64(t *testing.T) {
 		t.Fatalf("expected android arm64 asset, got %q", name)
 	}
 }
+
+func TestSelectAssetNameSupportsLinuxArm64(t *testing.T) {
+	t.Parallel()
+
+	name, err := selectAssetName("linux", "arm64")
+	if err != nil {
+		t.Fatalf("selectAssetName returned error: %v", err)
+	}
+	if name != "chatbox_linux_arm64.tar.gz" {
+		t.Fatalf("expected linux arm64 asset, got %q", name)
+	}
+}
