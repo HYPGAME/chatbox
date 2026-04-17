@@ -81,8 +81,9 @@ func (c *promptConsole) handleRune(r rune) (string, bool, bool) {
 		c.buffer = nil
 		c.cursor = 0
 		c.clearLocked()
-		_, _ = fmt.Fprint(c.out, "\r\n")
-		c.renderPromptLocked()
+		if strings.TrimSpace(line) == "" {
+			c.renderPromptLocked()
+		}
 		return line, true, false
 	case 127, '\b':
 		c.exitHistoryLocked()

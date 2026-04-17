@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"strings"
 	"time"
 
@@ -146,6 +147,17 @@ var (
 	statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 	errorStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 	inputStyle  = lipgloss.NewStyle().BorderTop(true).BorderForeground(lipgloss.Color("8"))
+
+	senderPalette = []lipgloss.Color{
+		"#5C7993",
+		"#6A7F5F",
+		"#8A6C4A",
+		"#7C658A",
+		"#5F7F83",
+		"#8B5E6D",
+		"#6D6F8C",
+		"#7D7A5B",
+	}
 
 	bubbleTeaRunner  = runProgram
 	scrollbackRunner = runScrollback
@@ -876,19 +888,45 @@ func renderScrollbackEntry(entry historyEntry) string {
 }
 
 func renderEntryWithStatus(entry historyEntry, status string) string {
+	timestamp := entry.at.Local().Format("2006-01-02 15:04:05")
 	switch entry.kind {
 	case historyKindSystem:
-		return fmt.Sprintf("system [%s]: %s", entry.at.Local().Format("2006-01-02 15:04:05"), entry.body)
+		return systemLineStyle().Render(fmt.Sprintf("system [%s]: %s", timestamp, entry.body))
 	case historyKindError:
-		return errorStyle.Render(fmt.Sprintf("error [%s]: %s", entry.at.Local().Format("2006-01-02 15:04:05"), entry.body))
+		return historyErrorStyle().Render(fmt.Sprintf("error [%s]: %s", timestamp, entry.body))
 	default:
 		label := entry.from
 		statusSuffix := ""
 		if entry.outgoing && status != "" {
 			statusSuffix = fmt.Sprintf(" [%s]", status)
 		}
-		return fmt.Sprintf("[%s] %s: %s%s", entry.at.Local().Format("2006-01-02 15:04:05"), label, entry.body, statusSuffix)
+		coloredLabel := senderMessageStyle(label).Render(label)
+		coloredTimestamp := timestampStyle().Render(fmt.Sprintf("[%s]", timestamp))
+		return fmt.Sprintf("%s %s: %s%s", coloredTimestamp, coloredLabel, entry.body, statusSuffix)
 	}
+}
+
+func timestampStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280"))
+}
+
+func systemLineStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#66707A"))
+}
+
+func historyErrorStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#8A666A"))
+}
+
+func senderMessageStyle(sender string) lipgloss.Style {
+	normalized := strings.TrimSpace(strings.ToLower(sender))
+	if normalized == "" || len(senderPalette) == 0 {
+		return lipgloss.NewStyle()
+	}
+
+	hasher := fnv.New32a()
+	_, _ = hasher.Write([]byte(normalized))
+	return lipgloss.NewStyle().Foreground(senderPalette[int(hasher.Sum32()%uint32(len(senderPalette)))])
 }
 
 func programOptionsForMode(uiMode string) []tea.ProgramOption {

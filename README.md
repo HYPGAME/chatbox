@@ -78,6 +78,12 @@ The host side must be reachable from the internet. In practice that means:
 
 `join` also accepts `--ui tui` if you prefer the full-screen mode.
 
+## Compatibility Notes
+
+- Peers are expected to run the same released version when joining the same room.
+- The wire handshake performs a strict protocol-version check, so incompatible builds fail to connect instead of degrading gracefully.
+- If one side updates and the other side cannot reconnect, verify both sides with `./chatbox version` first.
+
 ## Android / Termux
 
 Android support is CLI-only through Termux. There is no APK or native Android UI.
@@ -152,6 +158,7 @@ This is intentionally a minimal host-relayed room, not a mesh network or a featu
 - Transcript encryption reuses the chat PSK.
 - Transcript history is keyed by room: host mode uses the listen address, join mode uses the target host address.
 - When you reconnect to the same room with the same PSK, previous messages are loaded automatically.
+- If the host IP or port changes, chatbox treats that as a different room for transcript loading, even if the PSK stays the same.
 
 ## Delivery Behavior
 
@@ -228,6 +235,15 @@ chatbox self-update
 ```
 
 On Android/Termux, download the latest `chatbox_android_arm64.tar.gz` release and replace the binary manually instead.
+
+Recommended post-release smoke check:
+
+```bash
+./chatbox self-update
+./chatbox version
+```
+
+Then do one quick `host` and `join` test with a shared PSK before telling others to upgrade.
 
 ## Limitations
 

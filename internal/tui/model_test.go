@@ -5,16 +5,25 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"chatbox/internal/room"
 	"chatbox/internal/session"
 	"chatbox/internal/transcript"
 )
+
+var ansiEscapePattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func stripANSI(s string) string {
+	return ansiEscapePattern.ReplaceAllString(s, "")
+}
 
 func TestModelShowsConnectedStatusAndIncomingMessage(t *testing.T) {
 	t.Parallel()
@@ -41,7 +50,7 @@ func TestModelShowsConnectedStatusAndIncomingMessage(t *testing.T) {
 	})
 	uiModel = updated.(model)
 
-	view := uiModel.View()
+	view := stripANSI(uiModel.View())
 	if !strings.Contains(view, "connected") {
 		t.Fatalf("expected connected status in view, got %q", view)
 	}
@@ -90,8 +99,87 @@ func TestModelSendsTypedMessageOnEnter(t *testing.T) {
 		receipt: session.Receipt{MessageID: fake.sent[0].ID},
 	})
 	uiModel = updated.(model)
-	if !strings.Contains(uiModel.View(), "[sent]") {
-		t.Fatalf("expected local message to transition to sent state, got %q", uiModel.View())
+	if got := stripANSI(uiModel.View()); !strings.Contains(got, "[sent]") {
+		t.Fatalf("expected local message to transition to sent state, got %q", got)
+	}
+}
+
+func TestRenderEntryWithStatusColorsOnlySenderLabel(t *testing.T) {
+	oldProfile := lipgloss.ColorProfile()
+	oldDarkBackground := lipgloss.HasDarkBackground()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	lipgloss.SetHasDarkBackground(true)
+	defer lipgloss.SetColorProfile(oldProfile)
+	defer lipgloss.SetHasDarkBackground(oldDarkBackground)
+
+	entry := historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: "hello",
+		at:   time.Date(2026, 4, 17, 11, 30, 0, 0, time.Local),
+	}
+
+	rendered := renderEntryWithStatus(entry, "")
+	plain := "[2026-04-17 11:30:00] alice: hello"
+
+	if rendered == plain {
+		t.Fatalf("expected colored sender output, got plain rendering %q", rendered)
+	}
+	if !strings.Contains(rendered, "alice") {
+		t.Fatalf("expected rendered output to contain sender label, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "\x1b[0m: hello") {
+		t.Fatalf("expected only sender label to be colored, got %q", rendered)
+	}
+}
+
+func TestRenderEntryWithStatusUsesMutedTimestampAndSecondaryLines(t *testing.T) {
+	oldProfile := lipgloss.ColorProfile()
+	oldDarkBackground := lipgloss.HasDarkBackground()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	lipgloss.SetHasDarkBackground(true)
+	defer lipgloss.SetColorProfile(oldProfile)
+	defer lipgloss.SetHasDarkBackground(oldDarkBackground)
+
+	message := historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: "hello",
+		at:   time.Date(2026, 4, 17, 15, 10, 0, 0, time.Local),
+	}
+	system := historyEntry{
+		kind: historyKindSystem,
+		body: "alice joined",
+		at:   time.Date(2026, 4, 17, 15, 11, 0, 0, time.Local),
+	}
+	errorEntry := historyEntry{
+		kind: historyKindError,
+		body: "network down",
+		at:   time.Date(2026, 4, 17, 15, 12, 0, 0, time.Local),
+	}
+
+	renderedMessage := renderEntryWithStatus(message, "")
+	if !strings.HasPrefix(renderedMessage, "\x1b[") {
+		t.Fatalf("expected timestamp to be colorized at the start of the line, got %q", renderedMessage)
+	}
+	if got := stripANSI(renderedMessage); got != "[2026-04-17 15:10:00] alice: hello" {
+		t.Fatalf("expected message text to remain stable after stripping ANSI, got %q", got)
+	}
+
+	renderedSystem := renderEntryWithStatus(system, "")
+	if renderedSystem == "system [2026-04-17 15:11:00]: alice joined" {
+		t.Fatalf("expected system line to use muted styling, got %q", renderedSystem)
+	}
+	if got := stripANSI(renderedSystem); got != "system [2026-04-17 15:11:00]: alice joined" {
+		t.Fatalf("expected system text to remain stable after stripping ANSI, got %q", got)
+	}
+
+	renderedError := renderEntryWithStatus(errorEntry, "")
+	if strings.Contains(renderedError, "\x1b[91m") {
+		t.Fatalf("expected error line to avoid the old bright red style, got %q", renderedError)
+	}
+	if got := stripANSI(renderedError); got != "error [2026-04-17 15:12:00]: network down" {
+		t.Fatalf("expected error text to remain stable after stripping ANSI, got %q", got)
 	}
 }
 
@@ -538,7 +626,7 @@ func TestPromptConsolePrintLineRedrawsTypedInput(t *testing.T) {
 	}
 }
 
-func TestPromptConsoleEnterUsesCRLF(t *testing.T) {
+func TestPromptConsoleEnterWithTextDoesNotEmitBlankLine(t *testing.T) {
 	t.Parallel()
 
 	var output bytes.Buffer
@@ -556,8 +644,8 @@ func TestPromptConsoleEnterUsesCRLF(t *testing.T) {
 	if line != "draft" {
 		t.Fatalf("expected submitted line %q, got %q", "draft", line)
 	}
-	if !strings.Contains(output.String(), "\r\n") {
-		t.Fatalf("expected CRLF output, got %q", output.String())
+	if strings.Contains(output.String(), "\r\n") {
+		t.Fatalf("expected submitted text not to emit a blank line before printing the message, got %q", output.String())
 	}
 }
 
@@ -682,7 +770,7 @@ func TestScrollbackSessionReadyPrintsTranscriptAndNewMessages(t *testing.T) {
 	})
 	uiModel = updated.(model)
 
-	joined := strings.Join(printed, "\n")
+	joined := stripANSI(strings.Join(printed, "\n"))
 	if !strings.Contains(joined, "from disk") {
 		t.Fatalf("expected transcript line to be printed, got %q", joined)
 	}
@@ -752,7 +840,7 @@ func TestScrollbackOutgoingReceiptDoesNotPrintDeliveryStatuses(t *testing.T) {
 	updated, _ := uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	uiModel = updated.(model)
 
-	joined := strings.Join(printed, "\n")
+	joined := stripANSI(strings.Join(printed, "\n"))
 	if !strings.Contains(joined, "alice: oi") {
 		t.Fatalf("expected outgoing message to be printed, got %q", joined)
 	}
@@ -772,7 +860,7 @@ func TestScrollbackOutgoingReceiptDoesNotPrintDeliveryStatuses(t *testing.T) {
 	if len(printed) != beforeReceipt {
 		t.Fatalf("expected receipt to avoid printing duplicate delivery line, got %q", printed)
 	}
-	if strings.Contains(strings.Join(printed, "\n"), "[sent]") {
+	if strings.Contains(stripANSI(strings.Join(printed, "\n")), "[sent]") {
 		t.Fatalf("expected scrollback to hide sent status, got %q", printed)
 	}
 }
@@ -804,7 +892,7 @@ func TestScrollbackReconnectPrintsRetryMarkerForPendingMessage(t *testing.T) {
 	updated, _ = uiModel.Update(sessionReadyMsg{session: second})
 	uiModel = updated.(model)
 
-	joined := strings.Join(printed, "\n")
+	joined := stripANSI(strings.Join(printed, "\n"))
 	if !strings.Contains(joined, "alice: reliable hello [retrying]") {
 		t.Fatalf("expected retry marker in scrollback output, got %q", joined)
 	}
