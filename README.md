@@ -139,6 +139,7 @@ Behavior:
 - the host acts as the room relay
 - every joiner connects only to the host, not to each other
 - host status shows the current peer count
+- `/status` shows the current online roster to both the host and all joiners
 - the host view shows `joined` and `left` system lines as members connect or disconnect
 
 This is intentionally a minimal host-relayed room, not a mesh network or a feature-rich chat server.
@@ -146,7 +147,7 @@ This is intentionally a minimal host-relayed room, not a mesh network or a featu
 ## In-Session Commands
 
 - `/help`
-- `/status`
+- `/status` shows the local connection status and current online participant list
 - `/quit`
 
 ## History and Navigation

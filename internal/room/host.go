@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,6 +31,7 @@ type Event struct {
 
 type memberSession interface {
 	Messages() <-chan session.Message
+	Receipts() <-chan session.Receipt
 	Done() <-chan struct{}
 	Err() error
 	Close() error
@@ -219,6 +222,21 @@ func (r *HostRoom) PeerCount() int {
 	return len(r.members)
 }
 
+func (r *HostRoom) ParticipantNames() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	names := make([]string, 0, len(r.members)+1)
+	if strings.TrimSpace(r.localName) != "" {
+		names = append(names, r.localName)
+	}
+	for _, member := range r.members {
+		names = append(names, member.session.PeerName())
+	}
+	sort.Strings(names)
+	return names
+}
+
 func (r *HostRoom) runMember(member trackedMember) {
 	for {
 		select {
@@ -227,10 +245,17 @@ func (r *HostRoom) runMember(member trackedMember) {
 		case <-member.session.Done():
 			r.removeMember(member)
 			return
+		case _, ok := <-member.session.Receipts():
+			if !ok {
+				continue
+			}
 		case message, ok := <-member.session.Messages():
 			if !ok {
 				r.removeMember(member)
 				return
+			}
+			if r.handleStatusRequest(member, message) {
+				continue
 			}
 			if err := r.broadcast(message, member.id); err != nil {
 				continue
@@ -238,6 +263,25 @@ func (r *HostRoom) runMember(member trackedMember) {
 			r.publishMessage(message)
 		}
 	}
+}
+
+func (r *HostRoom) handleStatusRequest(member trackedMember, message session.Message) bool {
+	if !IsStatusRequest(message.Body) {
+		return false
+	}
+
+	messageID, err := generateMessageID()
+	if err != nil {
+		return true
+	}
+	response := session.Message{
+		ID:   messageID,
+		From: r.localName,
+		Body: StatusResponseBody(r.ParticipantNames()),
+		At:   time.Now(),
+	}
+	_ = member.session.Resend(response)
+	return true
 }
 
 func (r *HostRoom) broadcast(message session.Message, excludeMemberID uint64) error {

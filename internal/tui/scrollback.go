@@ -495,7 +495,7 @@ func handleScrollbackLine(m *model, text string) bool {
 			m.addSystemEntry("commands: /help /status /quit")
 			m.flushScrollbackCmd()
 		case "/status":
-			m.addSystemEntry(m.status)
+			m.handleStatusCommand()
 			m.flushScrollbackCmd()
 		case "/quit":
 			m.failPendingMessages()

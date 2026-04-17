@@ -95,10 +95,43 @@ func TestHostRoomEmitsJoinAndLeaveEvents(t *testing.T) {
 	}
 }
 
+func TestHostRoomInterceptsStatusRequestsAndRepliesOnlyToRequester(t *testing.T) {
+	t.Parallel()
+
+	room := NewHostRoom("host")
+	defer room.Close()
+
+	memberA := newFakeMember("bbb")
+	memberB := newFakeMember("aaa")
+	room.AddMember(memberA)
+	room.AddMember(memberB)
+	drainJoinEvents(t, room, 2)
+
+	memberA.messages <- session.Message{
+		ID:   "status-1",
+		From: "bbb",
+		Body: StatusRequestBody(),
+		At:   time.Date(2026, 4, 17, 16, 0, 0, 0, time.UTC),
+	}
+
+	response := waitForResentMessage(t, memberA.resent)
+	line, ok := ParseStatusResponse(response.Body)
+	if !ok {
+		t.Fatalf("expected hidden status response, got %#v", response)
+	}
+	if line != "online (3): aaa, bbb, host" {
+		t.Fatalf("expected sorted online roster, got %q", line)
+	}
+
+	assertNoResentMessage(t, memberB.resent)
+	assertNoRoomMessage(t, room.Messages())
+}
+
 type fakeMember struct {
 	peerName string
 	messages chan session.Message
 	resent   chan session.Message
+	receipts chan session.Receipt
 	done     chan struct{}
 }
 
@@ -107,11 +140,13 @@ func newFakeMember(peerName string) *fakeMember {
 		peerName: peerName,
 		messages: make(chan session.Message, 8),
 		resent:   make(chan session.Message, 8),
+		receipts: make(chan session.Receipt, 8),
 		done:     make(chan struct{}),
 	}
 }
 
 func (f *fakeMember) Messages() <-chan session.Message { return f.messages }
+func (f *fakeMember) Receipts() <-chan session.Receipt { return f.receipts }
 func (f *fakeMember) Done() <-chan struct{}            { return f.done }
 func (f *fakeMember) Err() error                       { return nil }
 func (f *fakeMember) Close() error {
@@ -137,6 +172,16 @@ func waitForRoomMessage(t *testing.T, messages <-chan session.Message) session.M
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for room message")
 		return session.Message{}
+	}
+}
+
+func assertNoRoomMessage(t *testing.T, messages <-chan session.Message) {
+	t.Helper()
+
+	select {
+	case message := <-messages:
+		t.Fatalf("expected no room message, got %#v", message)
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 

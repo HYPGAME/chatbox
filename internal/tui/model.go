@@ -46,6 +46,7 @@ type modelOptions struct {
 	session          sessionClient
 	roomEvents       <-chan room.Event
 	peerCount        func() int
+	peerNames        func() []string
 	sessionReady     <-chan sessionResult
 	connect          connectFunc
 	reconnectDelay   time.Duration
@@ -111,6 +112,7 @@ type model struct {
 	session          sessionClient
 	roomEvents       <-chan room.Event
 	peerCountValue   int
+	peerNames        func() []string
 	sessionReady     <-chan sessionResult
 	connect          connectFunc
 	reconnectDelay   time.Duration
@@ -119,10 +121,10 @@ type model struct {
 	historyPrinter   historyPrinterFunc
 	alertNotifier    alertNotifierFunc
 
-	transcript                 transcriptStore
-	transcriptConversationKey  string
-	currentConversationKey     string
-	currentPeer                string
+	transcript                transcriptStore
+	transcriptConversationKey string
+	currentConversationKey    string
+	currentPeer               string
 
 	history      []historyEntry
 	printedCount int
@@ -175,6 +177,7 @@ func RunHost(host *session.Host, localName string, psk []byte, uiMode string, al
 		session:          hostRoom,
 		roomEvents:       hostRoom.Events(),
 		peerCount:        hostRoom.PeerCount,
+		peerNames:        hostRoom.ParticipantNames,
 		transcriptOpener: defaultTranscriptOpener(localName, psk),
 	}))
 }
@@ -234,6 +237,7 @@ func newModel(opts modelOptions) model {
 		sessionReady:     opts.sessionReady,
 		connect:          opts.connect,
 		reconnectDelay:   opts.reconnectDelay,
+		peerNames:        opts.peerNames,
 		transcriptKey:    opts.transcriptKey,
 		transcriptOpener: opts.transcriptOpener,
 		historyPrinter:   opts.historyPrinter,
@@ -503,7 +507,7 @@ func (m *model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 			m.addSystemEntry("commands: /help /status /quit")
 			return *m, m.flushScrollbackCmd()
 		case "/status":
-			m.addSystemEntry(m.status)
+			m.handleStatusCommand()
 			return *m, m.flushScrollbackCmd()
 		case "/quit":
 			m.failPendingMessages()
@@ -539,8 +543,29 @@ func (m *model) handleIncomingMessage(message session.Message) {
 			return
 		}
 	}
+	if line, ok := room.ParseStatusResponse(message.Body); ok {
+		if message.ID != "" {
+			m.seenMessages[message.ID] = struct{}{}
+		}
+		m.addSystemEntry(line)
+		return
+	}
 	m.addMessageEntry(message, false, transcript.StatusSent, true)
 	m.notifyLiveIncomingAlert()
+}
+
+func (m *model) handleStatusCommand() {
+	m.addSystemEntry(m.status)
+	if m.peerNames != nil {
+		m.addSystemEntry(room.FormatOnlineStatus(m.peerNames()))
+		return
+	}
+	if m.session == nil {
+		return
+	}
+	if _, err := m.session.Send(room.StatusRequestBody()); err != nil {
+		m.addErrorEntry(err.Error())
+	}
 }
 
 func (m *model) handleReceipt(receipt session.Receipt) tea.Cmd {

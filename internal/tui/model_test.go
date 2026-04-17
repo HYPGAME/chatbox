@@ -252,6 +252,7 @@ func TestHostModelShowsPeerCountInStatus(t *testing.T) {
 		session:       hostRoom,
 		roomEvents:    hostRoom.Events(),
 		peerCount:     hostRoom.PeerCount,
+		peerNames:     hostRoom.PeerNames,
 		transcriptOpener: func(string) (transcriptStore, error) {
 			return &fakeTranscriptStore{}, nil
 		},
@@ -261,6 +262,89 @@ func TestHostModelShowsPeerCountInStatus(t *testing.T) {
 	uiModel = updated.(model)
 	if !strings.Contains(uiModel.View(), "hosting on 0.0.0.0:7331 (2 peers)") {
 		t.Fatalf("expected host status with peer count, got %q", uiModel.View())
+	}
+}
+
+func TestHostStatusCommandShowsOnlineRoster(t *testing.T) {
+	t.Parallel()
+
+	hostRoom := &fakeHostRoom{
+		fakeSession: fakeSession{peerName: "room"},
+		peerCount:   2,
+		peerNames:   []string{"alice", "bob", "carol"},
+	}
+	uiModel := newModel(modelOptions{
+		mode:          "host",
+		listeningAddr: "0.0.0.0:7331",
+		session:       hostRoom,
+		roomEvents:    hostRoom.Events(),
+		peerCount:     hostRoom.PeerCount,
+		peerNames:     hostRoom.PeerNames,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	uiModel = updated.(model)
+	uiModel.input.SetValue("/status")
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	uiModel = updated.(model)
+
+	view := stripANSI(uiModel.View())
+	if !strings.Contains(view, "hosting on 0.0.0.0:7331 (2 peers)") {
+		t.Fatalf("expected host status line, got %q", view)
+	}
+	if !strings.Contains(view, "online (3): alice, bob, carol") {
+		t.Fatalf("expected online roster line, got %q", view)
+	}
+}
+
+func TestJoinStatusCommandSendsHiddenRequestAndRendersRosterResponse(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeSession{peerName: "host", localName: "bob"}
+	uiModel := newModel(modelOptions{
+		mode:    "join",
+		session: fake,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	uiModel = updated.(model)
+	uiModel.input.SetValue("/status")
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	uiModel = updated.(model)
+
+	if len(fake.sent) != 1 || fake.sent[0].Body != room.StatusRequestBody() {
+		t.Fatalf("expected hidden status request to be sent, got %#v", fake.sent)
+	}
+	view := stripANSI(uiModel.View())
+	if !strings.Contains(view, "connected to host") {
+		t.Fatalf("expected local status line, got %q", view)
+	}
+	if strings.Contains(view, room.StatusRequestBody()) {
+		t.Fatalf("expected hidden request body to stay out of view, got %q", view)
+	}
+
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "status-response-1",
+			From: "host",
+			Body: room.StatusResponseBody([]string{"alice", "bob", "carol"}),
+			At:   time.Date(2026, 4, 17, 16, 10, 0, 0, time.Local),
+		},
+	})
+	uiModel = updated.(model)
+
+	view = stripANSI(uiModel.View())
+	if !strings.Contains(view, "online (3): alice, bob, carol") {
+		t.Fatalf("expected online roster response in view, got %q", view)
+	}
+	if strings.Contains(view, room.StatusControlPrefix()) {
+		t.Fatalf("expected hidden response payload to stay out of view, got %q", view)
 	}
 }
 
@@ -1017,6 +1101,7 @@ type fakeHostRoom struct {
 	fakeSession
 	events    chan room.Event
 	peerCount int
+	peerNames []string
 }
 
 func (f *fakeSession) Messages() <-chan session.Message { return nil }
@@ -1055,6 +1140,10 @@ func (f *fakeHostRoom) Events() <-chan room.Event {
 
 func (f *fakeHostRoom) PeerCount() int {
 	return f.peerCount
+}
+
+func (f *fakeHostRoom) PeerNames() []string {
+	return append([]string(nil), f.peerNames...)
 }
 
 type fakeTranscriptStore struct {
