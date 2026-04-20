@@ -42,6 +42,7 @@ type memberSession interface {
 type trackedMember struct {
 	id      uint64
 	session memberSession
+	syncCapable bool
 }
 
 type HostRoom struct {
@@ -257,6 +258,9 @@ func (r *HostRoom) runMember(member trackedMember) {
 			if r.handleStatusRequest(member, message) {
 				continue
 			}
+			if r.handleHistorySyncControl(member, message) {
+				continue
+			}
 			if err := r.broadcast(message, member.id); err != nil {
 				continue
 			}
@@ -284,9 +288,40 @@ func (r *HostRoom) handleStatusRequest(member trackedMember, message session.Mes
 	return true
 }
 
+func (r *HostRoom) handleHistorySyncControl(member trackedMember, message session.Message) bool {
+	if hello, ok := ParseHistorySyncHello(message.Body); ok {
+		if hello.IdentityID == "" {
+			return true
+		}
+		r.markMemberSyncCapable(member.id, true)
+		_ = r.broadcastHistorySync(message, member.id)
+		return true
+	}
+	if !IsHistorySyncControl(message.Body) {
+		return false
+	}
+	_ = r.broadcastHistorySync(message, member.id)
+	return true
+}
+
 func (r *HostRoom) broadcast(message session.Message, excludeMemberID uint64) error {
 	for _, member := range r.memberSnapshot() {
 		if excludeMemberID != 0 && member.id == excludeMemberID {
+			continue
+		}
+		if err := member.session.Resend(message); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *HostRoom) broadcastHistorySync(message session.Message, excludeMemberID uint64) error {
+	for _, member := range r.memberSnapshot() {
+		if excludeMemberID != 0 && member.id == excludeMemberID {
+			continue
+		}
+		if !member.syncCapable {
 			continue
 		}
 		if err := member.session.Resend(message); err != nil {
@@ -305,6 +340,17 @@ func (r *HostRoom) memberSnapshot() []trackedMember {
 		members = append(members, member)
 	}
 	return members
+}
+
+func (r *HostRoom) markMemberSyncCapable(memberID uint64, syncCapable bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	member, ok := r.members[memberID]
+	if !ok {
+		return
+	}
+	member.syncCapable = syncCapable
+	r.members[memberID] = member
 }
 
 func (r *HostRoom) removeMember(member trackedMember) {

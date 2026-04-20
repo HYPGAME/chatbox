@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -14,6 +15,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
+	"chatbox/internal/historymeta"
+	"chatbox/internal/identity"
 	"chatbox/internal/room"
 	"chatbox/internal/session"
 	"chatbox/internal/transcript"
@@ -59,6 +62,37 @@ func TestModelShowsConnectedStatusAndIncomingMessage(t *testing.T) {
 	}
 	if !strings.Contains(view, "2026-04-14 20:30:45") {
 		t.Fatalf("expected formatted timestamp in view, got %q", view)
+	}
+}
+
+func TestModelSessionReadyCreatesLocalIdentity(t *testing.T) {
+	t.Parallel()
+
+	configDir := t.TempDir()
+	originalUserConfigDir := os.Getenv("XDG_CONFIG_HOME")
+	if err := os.Setenv("XDG_CONFIG_HOME", configDir); err != nil {
+		t.Fatalf("Setenv returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if originalUserConfigDir == "" {
+			_ = os.Unsetenv("XDG_CONFIG_HOME")
+		} else {
+			_ = os.Setenv("XDG_CONFIG_HOME", originalUserConfigDir)
+		}
+	})
+
+	uiModel := newModel(modelOptions{
+		mode:    "join",
+		session: &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: &fakeSession{peerName: "host"}})
+	uiModel = updated.(model)
+	if uiModel.identityID == "" {
+		t.Fatal("expected session ready to load a local identity")
 	}
 }
 
@@ -345,6 +379,367 @@ func TestJoinStatusCommandSendsHiddenRequestAndRendersRosterResponse(t *testing.
 	}
 	if strings.Contains(view, room.StatusControlPrefix()) {
 		t.Fatalf("expected hidden response payload to stay out of view, got %q", view)
+	}
+}
+
+func TestModelMarksPeerSyncCapableOnHistorySyncHello(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		session:       &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: &fakeSession{peerName: "host"}})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "sync-hello-1",
+			From: "host",
+			Body: room.HistorySyncHelloBody(room.HistorySyncHello{
+				Version:    1,
+				IdentityID: "identity-host",
+				RoomKey:    transcript.JoinRoomKey("203.0.113.10:7331"),
+			}),
+			At: time.Date(2026, 4, 20, 21, 0, 0, 0, time.UTC),
+		},
+	})
+	uiModel = updated.(model)
+
+	if !uiModel.syncCapablePeers["host"] {
+		t.Fatal("expected peer to be marked sync-capable after sync hello")
+	}
+}
+
+func TestModelHidesHistorySyncControlMessagesFromViewAndTranscript(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeTranscriptStore{}
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		session:       &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return store, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: &fakeSession{peerName: "host"}})
+	uiModel = updated.(model)
+	controlBody := room.HistorySyncOfferBody(room.HistorySyncOffer{
+		Version:        1,
+		SourceIdentity: "identity-host",
+		TargetIdentity: "identity-local",
+		RoomKey:        transcript.JoinRoomKey("203.0.113.10:7331"),
+	})
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "sync-offer-1",
+			From: "host",
+			Body: controlBody,
+			At:   time.Date(2026, 4, 20, 21, 1, 0, 0, time.UTC),
+		},
+	})
+	uiModel = updated.(model)
+
+	view := stripANSI(uiModel.View())
+	if strings.Contains(view, controlBody) {
+		t.Fatalf("expected history sync control message to stay out of view, got %q", view)
+	}
+	if len(store.appends) != 0 {
+		t.Fatalf("expected history sync control message not to persist to transcript, got %#v", store.appends)
+	}
+}
+
+func TestModelSendsHistorySyncHelloAfterSessionReady(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeSession{peerName: "host", localName: "alice"}
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		session:       fake,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-local", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{
+				RoomKey:    roomKey,
+				IdentityID: identityID,
+				JoinedAt:   time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC),
+			}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
+	uiModel = updated.(model)
+
+	if len(fake.sent) == 0 {
+		t.Fatal("expected sync hello to be sent after session ready")
+	}
+	hello, ok := room.ParseHistorySyncHello(fake.sent[len(fake.sent)-1].Body)
+	if !ok {
+		t.Fatalf("expected last sent payload to be sync hello, got %#v", fake.sent[len(fake.sent)-1])
+	}
+	if hello.IdentityID != "identity-local" {
+		t.Fatalf("expected sync hello identity %q, got %#v", "identity-local", hello)
+	}
+	if hello.RoomKey != transcript.JoinRoomKey("203.0.113.10:7331") {
+		t.Fatalf("expected sync hello room key %q, got %#v", transcript.JoinRoomKey("203.0.113.10:7331"), hello)
+	}
+}
+
+func TestModelRespondsToHistorySyncHelloWithOfferWhenItHasMoreHistory(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeSession{peerName: "host", localName: "alice"}
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		session:       fake,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-local", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{
+				RoomKey:    roomKey,
+				IdentityID: identityID,
+				JoinedAt:   time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC),
+			}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
+	uiModel = updated.(model)
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: "local history",
+		at:   time.Date(2026, 4, 20, 20, 30, 0, 0, time.UTC),
+	})
+	initialSent := len(fake.sent)
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "sync-hello-2",
+			From: "host",
+			Body: room.HistorySyncHelloBody(room.HistorySyncHello{
+				Version:    1,
+				IdentityID: "identity-host",
+				RoomKey:    transcript.JoinRoomKey("203.0.113.10:7331"),
+				Summary:    room.HistorySyncSummary{Count: 0},
+			}),
+			At: time.Date(2026, 4, 20, 21, 0, 0, 0, time.UTC),
+		},
+	})
+	uiModel = updated.(model)
+
+	if len(fake.sent) <= initialSent {
+		t.Fatal("expected sync offer to be sent")
+	}
+	offer, ok := room.ParseHistorySyncOffer(fake.sent[len(fake.sent)-1].Body)
+	if !ok {
+		t.Fatalf("expected last sent payload to be sync offer, got %#v", fake.sent[len(fake.sent)-1])
+	}
+	if offer.SourceIdentity != "identity-local" || offer.TargetIdentity != "identity-host" {
+		t.Fatalf("expected offer identities to be populated, got %#v", offer)
+	}
+}
+
+func TestModelRequestsHistoryFromMatchingOffer(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeSession{peerName: "host", localName: "alice"}
+	joinedAt := time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC)
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		session:       fake,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-local", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{
+				RoomKey:    roomKey,
+				IdentityID: identityID,
+				JoinedAt:   joinedAt,
+			}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
+	uiModel = updated.(model)
+	initialSent := len(fake.sent)
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "sync-offer-2",
+			From: "host",
+			Body: room.HistorySyncOfferBody(room.HistorySyncOffer{
+				Version:        1,
+				SourceIdentity: "identity-host",
+				TargetIdentity: "identity-local",
+				RoomKey:        transcript.JoinRoomKey("203.0.113.10:7331"),
+				Summary:        room.HistorySyncSummary{Count: 3},
+			}),
+			At: time.Date(2026, 4, 20, 21, 0, 0, 0, time.UTC),
+		},
+	})
+	uiModel = updated.(model)
+
+	if len(fake.sent) <= initialSent {
+		t.Fatal("expected sync request to be sent")
+	}
+	request, ok := room.ParseHistorySyncRequest(fake.sent[len(fake.sent)-1].Body)
+	if !ok {
+		t.Fatalf("expected last sent payload to be sync request, got %#v", fake.sent[len(fake.sent)-1])
+	}
+	if request.SourceIdentity != "identity-host" || request.TargetIdentity != "identity-local" {
+		t.Fatalf("expected request identities to be populated, got %#v", request)
+	}
+	if !request.Since.Equal(joinedAt) {
+		t.Fatalf("expected request since %v, got %v", joinedAt, request.Since)
+	}
+}
+
+func TestModelSendsHistorySyncChunkForAuthorizedRequest(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeSession{peerName: "host", localName: "alice"}
+	joinedAt := time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC)
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		session:       fake,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-local", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{RoomKey: roomKey, IdentityID: identityID, JoinedAt: joinedAt}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
+	uiModel = updated.(model)
+	uiModel.addHistoryEntry(historyEntry{
+		kind:      historyKindMessage,
+		messageID: "old-hidden",
+		from:      "alice",
+		body:      "too old",
+		at:        joinedAt.Add(-time.Minute),
+		status:    transcript.StatusSent,
+	})
+	uiModel.addHistoryEntry(historyEntry{
+		kind:      historyKindMessage,
+		messageID: "new-visible",
+		from:      "alice",
+		body:      "sync me",
+		at:        joinedAt.Add(time.Minute),
+		status:    transcript.StatusSent,
+	})
+	initialSent := len(fake.sent)
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "sync-request-1",
+			From: "host",
+			Body: room.HistorySyncRequestBody(room.HistorySyncRequest{
+				Version:        1,
+				SourceIdentity: "identity-local",
+				TargetIdentity: "identity-host",
+				RoomKey:        transcript.JoinRoomKey("203.0.113.10:7331"),
+				Since:          joinedAt,
+			}),
+			At: time.Date(2026, 4, 20, 21, 0, 0, 0, time.UTC),
+		},
+	})
+	uiModel = updated.(model)
+
+	if len(fake.sent) <= initialSent {
+		t.Fatal("expected sync chunk to be sent")
+	}
+	chunk, ok := room.ParseHistorySyncChunk(fake.sent[len(fake.sent)-1].Body)
+	if !ok {
+		t.Fatalf("expected last sent payload to be sync chunk, got %#v", fake.sent[len(fake.sent)-1])
+	}
+	if len(chunk.Records) != 1 || chunk.Records[0].MessageID != "new-visible" {
+		t.Fatalf("expected only authorized record to be sent, got %#v", chunk.Records)
+	}
+}
+
+func TestModelReplaysHistorySyncChunkIntoTranscript(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeTranscriptStore{}
+	joinedAt := time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC)
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		session:       &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return store, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-local", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{RoomKey: roomKey, IdentityID: identityID, JoinedAt: joinedAt}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: &fakeSession{peerName: "host"}})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "sync-chunk-1",
+			From: "host",
+			Body: room.HistorySyncChunkBody(room.HistorySyncChunk{
+				Version:        1,
+				SourceIdentity: "identity-host",
+				TargetIdentity: "identity-local",
+				RoomKey:        transcript.JoinRoomKey("203.0.113.10:7331"),
+				Records: []transcript.Record{
+					{
+						MessageID: "too-old",
+						Direction: transcript.DirectionIncoming,
+						From:      "bob",
+						Body:      "old",
+						At:        joinedAt.Add(-time.Minute),
+						Status:    transcript.StatusSent,
+					},
+					{
+						MessageID: "replayed-1",
+						Direction: transcript.DirectionIncoming,
+						From:      "bob",
+						Body:      "replayed history",
+						At:        joinedAt.Add(time.Minute),
+						Status:    transcript.StatusSent,
+					},
+				},
+			}),
+			At: time.Date(2026, 4, 20, 21, 0, 0, 0, time.UTC),
+		},
+	})
+	uiModel = updated.(model)
+
+	if len(store.appends) != 1 || store.appends[0].MessageID != "replayed-1" {
+		t.Fatalf("expected authorized replay to persist once, got %#v", store.appends)
+	}
+	if !strings.Contains(stripANSI(uiModel.View()), "replayed history") {
+		t.Fatalf("expected replayed history in view, got %q", stripANSI(uiModel.View()))
 	}
 }
 
@@ -717,6 +1112,35 @@ func TestJoinTranscriptUsesTargetScopedKey(t *testing.T) {
 	want := transcript.JoinRoomKey("203.0.113.10:7331")
 	if len(opened) != 1 || opened[0] != want {
 		t.Fatalf("expected join transcript opener to use %q, got %#v", want, opened)
+	}
+}
+
+func TestModelSessionReadyCreatesRoomAuthorization(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		session:       &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-1", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{RoomKey: roomKey, IdentityID: identityID}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: &fakeSession{peerName: "host"}})
+	uiModel = updated.(model)
+
+	if uiModel.roomAuthorization.RoomKey != transcript.JoinRoomKey("203.0.113.10:7331") {
+		t.Fatalf("expected room authorization to be loaded for join room, got %#v", uiModel.roomAuthorization)
+	}
+	if uiModel.roomAuthorization.IdentityID != "identity-1" {
+		t.Fatalf("expected room authorization identity %q, got %#v", "identity-1", uiModel.roomAuthorization)
 	}
 }
 

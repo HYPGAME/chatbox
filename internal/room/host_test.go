@@ -127,6 +127,89 @@ func TestHostRoomInterceptsStatusRequestsAndRepliesOnlyToRequester(t *testing.T)
 	assertNoRoomMessage(t, room.Messages())
 }
 
+func TestHostRoomRoutesHistorySyncMessagesOnlyToSyncCapableMembers(t *testing.T) {
+	t.Parallel()
+
+	room := NewHostRoom("host")
+	defer room.Close()
+
+	memberA := newFakeMember("aaa")
+	memberB := newFakeMember("bbb")
+	room.AddMember(memberA)
+	room.AddMember(memberB)
+	drainJoinEvents(t, room, 2)
+
+	memberA.messages <- session.Message{
+		ID:   "sync-hello-1",
+		From: "aaa",
+		Body: HistorySyncHelloBody(HistorySyncHello{
+			Version:    1,
+			IdentityID: "identity-a",
+			RoomKey:    "room",
+		}),
+		At: time.Date(2026, 4, 20, 21, 0, 0, 0, time.UTC),
+	}
+
+	assertNoResentMessage(t, memberB.resent)
+	assertNoRoomMessage(t, room.Messages())
+
+	memberA.messages <- session.Message{
+		ID:   "sync-offer-1",
+		From: "aaa",
+		Body: HistorySyncOfferBody(HistorySyncOffer{
+			Version:        1,
+			SourceIdentity: "identity-a",
+			TargetIdentity: "identity-b",
+			RoomKey:        "room",
+			Summary:        HistorySyncSummary{Count: 1},
+		}),
+		At: time.Date(2026, 4, 20, 21, 1, 0, 0, time.UTC),
+	}
+
+	assertNoResentMessage(t, memberB.resent)
+	assertNoRoomMessage(t, room.Messages())
+}
+
+func TestHostRoomForwardsHistorySyncMessagesToMembersWhoAnnouncedHello(t *testing.T) {
+	t.Parallel()
+
+	room := NewHostRoom("host")
+	defer room.Close()
+
+	memberA := newFakeMember("aaa")
+	memberB := newFakeMember("bbb")
+	room.AddMember(memberA)
+	room.AddMember(memberB)
+	drainJoinEvents(t, room, 2)
+
+	memberB.messages <- session.Message{
+		ID:   "sync-hello-b",
+		From: "bbb",
+		Body: HistorySyncHelloBody(HistorySyncHello{
+			Version:    1,
+			IdentityID: "identity-b",
+			RoomKey:    "room",
+		}),
+		At: time.Date(2026, 4, 20, 21, 0, 0, 0, time.UTC),
+	}
+	assertNoResentMessage(t, memberA.resent)
+
+	memberA.messages <- session.Message{
+		ID:   "sync-hello-a",
+		From: "aaa",
+		Body: HistorySyncHelloBody(HistorySyncHello{
+			Version:    1,
+			IdentityID: "identity-a",
+			RoomKey:    "room",
+		}),
+		At: time.Date(2026, 4, 20, 21, 0, 10, 0, time.UTC),
+	}
+	if got := waitForResentMessage(t, memberB.resent); got.Body == "" || !IsHistorySyncControl(got.Body) {
+		t.Fatalf("expected sync-capable member to receive sync control, got %#v", got)
+	}
+	assertNoRoomMessage(t, room.Messages())
+}
+
 type fakeMember struct {
 	peerName string
 	messages chan session.Message
