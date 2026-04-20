@@ -335,7 +335,11 @@ func TestHostStatusCommandShowsOnlineRoster(t *testing.T) {
 }
 
 func TestHostEventsCommandShowsJoinLeaveLog(t *testing.T) {
-	t.Parallel()
+	oldLocal := time.Local
+	time.Local = time.FixedZone("CST", 8*60*60)
+	t.Cleanup(func() {
+		time.Local = oldLocal
+	})
 
 	hostRoom := &fakeHostRoom{fakeSession: fakeSession{peerName: "room"}, peerCount: 0}
 	uiModel := newModel(modelOptions{
@@ -369,10 +373,10 @@ func TestHostEventsCommandShowsJoinLeaveLog(t *testing.T) {
 	uiModel = updated.(model)
 
 	view := stripANSI(uiModel.View())
-	if !strings.Contains(view, "events: aaa joined at 2026-04-20 18:00:00") {
+	if !strings.Contains(view, "events: aaa joined at 2026-04-21 02:00:00") {
 		t.Fatalf("expected joined event line, got %q", view)
 	}
-	if !strings.Contains(view, "events: aaa left at 2026-04-20 18:05:00") {
+	if !strings.Contains(view, "events: aaa left at 2026-04-21 02:05:00") {
 		t.Fatalf("expected left event line, got %q", view)
 	}
 }
@@ -426,7 +430,11 @@ func TestJoinStatusCommandSendsHiddenRequestAndRendersRosterResponse(t *testing.
 }
 
 func TestJoinEventsCommandSendsHiddenRequestAndRendersResponse(t *testing.T) {
-	t.Parallel()
+	oldLocal := time.Local
+	time.Local = time.FixedZone("CST", 8*60*60)
+	t.Cleanup(func() {
+		time.Local = oldLocal
+	})
 
 	fake := &fakeSession{peerName: "host", localName: "bob"}
 	uiModel := newModel(modelOptions{
@@ -464,7 +472,7 @@ func TestJoinEventsCommandSendsHiddenRequestAndRendersResponse(t *testing.T) {
 	uiModel = updated.(model)
 
 	view := stripANSI(uiModel.View())
-	if !strings.Contains(view, "events: aaa joined at 2026-04-20 18:00:00") {
+	if !strings.Contains(view, "events: aaa joined at 2026-04-21 02:00:00") {
 		t.Fatalf("expected events response in view, got %q", view)
 	}
 	if strings.Contains(view, "\x00chatbox:events:") {

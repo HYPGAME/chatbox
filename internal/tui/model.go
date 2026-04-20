@@ -865,7 +865,7 @@ func (m *model) addEventsEntries(events []room.Event) {
 		default:
 			continue
 		}
-		m.addSystemEntry(fmt.Sprintf("events: %s %s at %s", event.PeerName, action, event.At.Format("2006-01-02 15:04:05")))
+		m.addSystemEntry(fmt.Sprintf("events: %s %s at %s", event.PeerName, action, event.At.Local().Format("2006-01-02 15:04:05")))
 	}
 }
 
