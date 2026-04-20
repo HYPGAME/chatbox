@@ -348,6 +348,76 @@ func TestJoinStatusCommandSendsHiddenRequestAndRendersRosterResponse(t *testing.
 	}
 }
 
+func TestModelShowsSlashCommandSuggestions(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:    "join",
+		session: &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	uiModel = updated.(model)
+
+	uiModel.input.SetValue("/")
+	view := stripANSI(uiModel.View())
+	if !strings.Contains(view, "/help -- 显示支持的命令") {
+		t.Fatalf("expected /help suggestion, got %q", view)
+	}
+	if !strings.Contains(view, "/status -- 查询在线成员信息") {
+		t.Fatalf("expected /status suggestion, got %q", view)
+	}
+	if !strings.Contains(view, "/quit -- 退出当前会话") {
+		t.Fatalf("expected /quit suggestion, got %q", view)
+	}
+
+	uiModel.input.SetValue("/st")
+	view = stripANSI(uiModel.View())
+	if !strings.Contains(view, "/status -- 查询在线成员信息") {
+		t.Fatalf("expected filtered /status suggestion, got %q", view)
+	}
+	if strings.Contains(view, "/help -- 显示支持的命令") {
+		t.Fatalf("expected /help to be filtered out, got %q", view)
+	}
+	if strings.Contains(view, "/quit -- 退出当前会话") {
+		t.Fatalf("expected /quit to be filtered out, got %q", view)
+	}
+
+	uiModel.input.SetValue("hello")
+	view = stripANSI(uiModel.View())
+	if strings.Contains(view, "/status -- 查询在线成员信息") {
+		t.Fatalf("expected suggestions to hide for normal text, got %q", view)
+	}
+}
+
+func TestScrollbackModeHidesSlashCommandSuggestions(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:    "join",
+		uiMode:  uiModeScrollback,
+		session: &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	uiModel.input.SetValue("/")
+	view := stripANSI(uiModel.View())
+	if strings.Contains(view, "/help -- 显示支持的命令") {
+		t.Fatalf("expected scrollback mode to hide command suggestions, got %q", view)
+	}
+	if strings.Contains(view, "/status -- 查询在线成员信息") {
+		t.Fatalf("expected scrollback mode to hide command suggestions, got %q", view)
+	}
+	if strings.Contains(view, "/quit -- 退出当前会话") {
+		t.Fatalf("expected scrollback mode to hide command suggestions, got %q", view)
+	}
+}
+
 func TestHostModelRendersJoinAndLeaveSystemEvents(t *testing.T) {
 	t.Parallel()
 

@@ -104,6 +104,11 @@ type historyEntry struct {
 	status    string
 }
 
+type slashCommandSuggestion struct {
+	command     string
+	description string
+}
+
 type model struct {
 	mode             string
 	uiMode           string
@@ -149,6 +154,7 @@ var (
 	statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 	errorStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 	inputStyle  = lipgloss.NewStyle().BorderTop(true).BorderForeground(lipgloss.Color("8"))
+	slashSuggestionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
 
 	senderPalette = []lipgloss.Color{
 		"#5C7993",
@@ -163,6 +169,12 @@ var (
 
 	bubbleTeaRunner  = runProgram
 	scrollbackRunner = runScrollback
+
+	slashCommandSuggestions = []slashCommandSuggestion{
+		{command: "/help", description: "显示支持的命令"},
+		{command: "/status", description: "查询在线成员信息"},
+		{command: "/quit", description: "退出当前会话"},
+	}
 )
 
 func RunHost(host *session.Host, localName string, psk []byte, uiMode string, alertMode string) error {
@@ -335,6 +347,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyEnter:
 			text := strings.TrimSpace(m.input.Value())
 			m.input.Reset()
+			m.resize()
 			if text == "" {
 				return m, nil
 			}
@@ -356,6 +369,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	m.resize()
 	return m, cmd
 }
 
@@ -375,12 +389,15 @@ func (m model) View() string {
 		}, "\n")
 	}
 
-	return strings.Join([]string{
+	lines := []string{
 		header,
 		status,
-		m.viewport.View(),
-		inputStyle.Render(m.input.View()),
-	}, "\n")
+	}
+	if suggestions := m.renderSlashCommandSuggestions(); suggestions != "" {
+		lines = append(lines, suggestions)
+	}
+	lines = append(lines, m.viewport.View(), inputStyle.Render(m.input.View()))
+	return strings.Join(lines, "\n")
 }
 
 func (m *model) handleSessionReady(msg sessionReadyMsg) (tea.Model, tea.Cmd) {
@@ -591,7 +608,8 @@ func (m *model) resize() {
 	}
 
 	inputHeight := 3
-	viewportHeight := m.height - inputHeight - 3
+	suggestionHeight := len(m.activeSlashCommandSuggestions())
+	viewportHeight := m.height - inputHeight - 3 - suggestionHeight
 	if viewportHeight < 5 {
 		viewportHeight = 5
 	}
@@ -601,6 +619,38 @@ func (m *model) resize() {
 	}
 	m.viewport.Height = viewportHeight
 	m.refreshViewport(m.viewport.AtBottom())
+}
+
+func (m model) activeSlashCommandSuggestions() []slashCommandSuggestion {
+	if m.uiMode != uiModeTUI {
+		return nil
+	}
+
+	value := strings.TrimSpace(m.input.Value())
+	if !strings.HasPrefix(value, "/") {
+		return nil
+	}
+
+	matches := make([]slashCommandSuggestion, 0, len(slashCommandSuggestions))
+	for _, suggestion := range slashCommandSuggestions {
+		if value == "/" || strings.HasPrefix(suggestion.command, value) {
+			matches = append(matches, suggestion)
+		}
+	}
+	return matches
+}
+
+func (m model) renderSlashCommandSuggestions() string {
+	suggestions := m.activeSlashCommandSuggestions()
+	if len(suggestions) == 0 {
+		return ""
+	}
+
+	lines := make([]string, 0, len(suggestions))
+	for _, suggestion := range suggestions {
+		lines = append(lines, slashSuggestionStyle.Render(fmt.Sprintf("%s -- %s", suggestion.command, suggestion.description)))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m *model) addSystemEntry(text string) {
