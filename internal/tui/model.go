@@ -138,6 +138,7 @@ type model struct {
 	currentPeer               string
 	identityID                string
 	roomAuthorization         historymeta.Record
+	roomEventLog              []room.Event
 
 	history      []historyEntry
 	printedCount int
@@ -182,6 +183,7 @@ var (
 	slashCommandSuggestions = []slashCommandSuggestion{
 		{command: "/help", description: "显示支持的命令"},
 		{command: "/status", description: "查询在线成员信息"},
+		{command: "/events", description: "查看成员进出记录"},
 		{command: "/quit", description: "退出当前会话"},
 	}
 )
@@ -601,6 +603,7 @@ func (m *model) handleSessionClosed(err error) (tea.Model, tea.Cmd) {
 func (m *model) handleRoomEvent(event room.Event) (tea.Model, tea.Cmd) {
 	m.peerCountValue = event.PeerCount
 	m.status = m.hostStatus()
+	m.roomEventLog = append(m.roomEventLog, event)
 
 	switch event.Kind {
 	case room.EventPeerJoined:
@@ -624,6 +627,9 @@ func (m *model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 			return *m, m.flushScrollbackCmd()
 		case "/status":
 			m.handleStatusCommand()
+			return *m, m.flushScrollbackCmd()
+		case "/events":
+			m.handleEventsCommand()
 			return *m, m.flushScrollbackCmd()
 		case "/quit":
 			m.failPendingMessages()
@@ -670,6 +676,13 @@ func (m *model) handleIncomingMessage(message session.Message) {
 			m.seenMessages[message.ID] = struct{}{}
 		}
 		m.addSystemEntry(line)
+		return
+	}
+	if events, ok := room.ParseEventsResponse(message.Body); ok {
+		if message.ID != "" {
+			m.seenMessages[message.ID] = struct{}{}
+		}
+		m.addEventsEntries(events)
 		return
 	}
 	m.addMessageEntry(message, false, transcript.StatusSent, true)
@@ -820,6 +833,39 @@ func (m *model) handleStatusCommand() {
 	}
 	if _, err := m.session.Send(room.StatusRequestBody()); err != nil {
 		m.addErrorEntry(err.Error())
+	}
+}
+
+func (m *model) handleEventsCommand() {
+	if m.mode == "host" && m.roomEvents != nil {
+		m.addEventsEntries(m.roomEventLog)
+		return
+	}
+	if m.session == nil {
+		m.addErrorEntry("not connected yet")
+		return
+	}
+	if _, err := m.session.Send(room.EventsRequestBody()); err != nil {
+		m.addErrorEntry(err.Error())
+	}
+}
+
+func (m *model) addEventsEntries(events []room.Event) {
+	if len(events) == 0 {
+		m.addSystemEntry("events: none")
+		return
+	}
+	for _, event := range events {
+		action := ""
+		switch event.Kind {
+		case room.EventPeerJoined:
+			action = "joined"
+		case room.EventPeerLeft:
+			action = "left"
+		default:
+			continue
+		}
+		m.addSystemEntry(fmt.Sprintf("events: %s %s at %s", event.PeerName, action, event.At.Format("2006-01-02 15:04:05")))
 	}
 }
 

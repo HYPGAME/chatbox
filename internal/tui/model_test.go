@@ -334,6 +334,49 @@ func TestHostStatusCommandShowsOnlineRoster(t *testing.T) {
 	}
 }
 
+func TestHostEventsCommandShowsJoinLeaveLog(t *testing.T) {
+	t.Parallel()
+
+	hostRoom := &fakeHostRoom{fakeSession: fakeSession{peerName: "room"}, peerCount: 0}
+	uiModel := newModel(modelOptions{
+		mode:          "host",
+		listeningAddr: "0.0.0.0:7331",
+		session:       hostRoom,
+		roomEvents:    hostRoom.Events(),
+		peerCount:     hostRoom.PeerCount,
+		peerNames:     hostRoom.PeerNames,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(roomEventMsg{event: room.Event{
+		Kind:      room.EventPeerJoined,
+		PeerName:  "aaa",
+		PeerCount: 1,
+		At:        time.Date(2026, 4, 20, 18, 0, 0, 0, time.UTC),
+	}})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(roomEventMsg{event: room.Event{
+		Kind:      room.EventPeerLeft,
+		PeerName:  "aaa",
+		PeerCount: 0,
+		At:        time.Date(2026, 4, 20, 18, 5, 0, 0, time.UTC),
+	}})
+	uiModel = updated.(model)
+	uiModel.input.SetValue("/events")
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	uiModel = updated.(model)
+
+	view := stripANSI(uiModel.View())
+	if !strings.Contains(view, "events: aaa joined at 2026-04-20 18:00:00") {
+		t.Fatalf("expected joined event line, got %q", view)
+	}
+	if !strings.Contains(view, "events: aaa left at 2026-04-20 18:05:00") {
+		t.Fatalf("expected left event line, got %q", view)
+	}
+}
+
 func TestJoinStatusCommandSendsHiddenRequestAndRendersRosterResponse(t *testing.T) {
 	t.Parallel()
 
@@ -379,6 +422,53 @@ func TestJoinStatusCommandSendsHiddenRequestAndRendersRosterResponse(t *testing.
 	}
 	if strings.Contains(view, room.StatusControlPrefix()) {
 		t.Fatalf("expected hidden response payload to stay out of view, got %q", view)
+	}
+}
+
+func TestJoinEventsCommandSendsHiddenRequestAndRendersResponse(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeSession{peerName: "host", localName: "bob"}
+	uiModel := newModel(modelOptions{
+		mode:    "join",
+		session: fake,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	uiModel = updated.(model)
+	uiModel.input.SetValue("/events")
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	uiModel = updated.(model)
+
+	if len(fake.sent) != 1 || fake.sent[0].Body != room.EventsRequestBody() {
+		t.Fatalf("expected hidden events request to be sent, got %#v", fake.sent)
+	}
+
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "events-response-1",
+			From: "host",
+			Body: room.EventsResponseBody([]room.Event{
+				{
+					Kind:     room.EventPeerJoined,
+					PeerName: "aaa",
+					At:       time.Date(2026, 4, 20, 18, 0, 0, 0, time.UTC),
+				},
+			}),
+			At: time.Date(2026, 4, 20, 18, 1, 0, 0, time.UTC),
+		},
+	})
+	uiModel = updated.(model)
+
+	view := stripANSI(uiModel.View())
+	if !strings.Contains(view, "events: aaa joined at 2026-04-20 18:00:00") {
+		t.Fatalf("expected events response in view, got %q", view)
+	}
+	if strings.Contains(view, "\x00chatbox:events:") {
+		t.Fatalf("expected hidden events payload to stay out of view, got %q", view)
 	}
 }
 
@@ -764,6 +854,9 @@ func TestModelShowsSlashCommandSuggestions(t *testing.T) {
 	}
 	if !strings.Contains(view, "/status -- 查询在线成员信息") {
 		t.Fatalf("expected /status suggestion, got %q", view)
+	}
+	if !strings.Contains(view, "/events -- 查看成员进出记录") {
+		t.Fatalf("expected /events suggestion, got %q", view)
 	}
 	if !strings.Contains(view, "/quit -- 退出当前会话") {
 		t.Fatalf("expected /quit suggestion, got %q", view)

@@ -52,6 +52,7 @@ type HostRoom struct {
 	receipts chan session.Receipt
 	events   chan Event
 	done     chan struct{}
+	eventLog []Event
 
 	closeOnce sync.Once
 	memberSeq atomic.Uint64
@@ -258,6 +259,9 @@ func (r *HostRoom) runMember(member trackedMember) {
 			if r.handleStatusRequest(member, message) {
 				continue
 			}
+			if r.handleEventsRequest(member, message) {
+				continue
+			}
 			if r.handleHistorySyncControl(member, message) {
 				continue
 			}
@@ -282,6 +286,25 @@ func (r *HostRoom) handleStatusRequest(member trackedMember, message session.Mes
 		ID:   messageID,
 		From: r.localName,
 		Body: StatusResponseBody(r.ParticipantNames()),
+		At:   time.Now(),
+	}
+	_ = member.session.Resend(response)
+	return true
+}
+
+func (r *HostRoom) handleEventsRequest(member trackedMember, message session.Message) bool {
+	if !IsEventsRequest(message.Body) {
+		return false
+	}
+
+	messageID, err := generateMessageID()
+	if err != nil {
+		return true
+	}
+	response := session.Message{
+		ID:   messageID,
+		From: r.localName,
+		Body: EventsResponseBody(r.EventLog()),
 		At:   time.Now(),
 	}
 	_ = member.session.Resend(response)
@@ -386,10 +409,23 @@ func (r *HostRoom) publishReceipt(receipt session.Receipt) {
 }
 
 func (r *HostRoom) publishEvent(event Event) {
+	r.appendEventLog(event)
 	select {
 	case r.events <- event:
 	case <-r.done:
 	}
+}
+
+func (r *HostRoom) EventLog() []Event {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]Event(nil), r.eventLog...)
+}
+
+func (r *HostRoom) appendEventLog(event Event) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.eventLog = append(r.eventLog, event)
 }
 
 func generateMessageID() (string, error) {

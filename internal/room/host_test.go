@@ -127,6 +127,42 @@ func TestHostRoomInterceptsStatusRequestsAndRepliesOnlyToRequester(t *testing.T)
 	assertNoRoomMessage(t, room.Messages())
 }
 
+func TestHostRoomInterceptsEventsRequestsAndRepliesOnlyToRequester(t *testing.T) {
+	t.Parallel()
+
+	room := NewHostRoom("host")
+	defer room.Close()
+
+	memberA := newFakeMember("aaa")
+	memberB := newFakeMember("bbb")
+	room.AddMember(memberA)
+	room.AddMember(memberB)
+	drainJoinEvents(t, room, 2)
+	close(memberB.done)
+	left := waitForRoomEvent(t, room.Events())
+	if left.Kind != EventPeerLeft || left.PeerName != "bbb" {
+		t.Fatalf("expected bbb left event, got %#v", left)
+	}
+
+	memberA.messages <- session.Message{
+		ID:   "events-1",
+		From: "aaa",
+		Body: EventsRequestBody(),
+		At:   time.Date(2026, 4, 20, 18, 10, 0, 0, time.UTC),
+	}
+
+	response := waitForResentMessage(t, memberA.resent)
+	events, ok := ParseEventsResponse(response.Body)
+	if !ok {
+		t.Fatalf("expected hidden events response, got %#v", response)
+	}
+	if len(events) != 3 {
+		t.Fatalf("expected 3 join/leave events, got %#v", events)
+	}
+	assertNoResentMessage(t, memberB.resent)
+	assertNoRoomMessage(t, room.Messages())
+}
+
 func TestHostRoomRoutesHistorySyncMessagesOnlyToSyncCapableMembers(t *testing.T) {
 	t.Parallel()
 
