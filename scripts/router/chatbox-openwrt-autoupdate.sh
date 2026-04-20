@@ -5,6 +5,7 @@ CHATBOX_BIN="${CHATBOX_BIN:-/usr/bin/chatbox}"
 CHATBOX_SERVICE="${CHATBOX_SERVICE:-chatbox}"
 CHATBOX_INITD_DIR="${CHATBOX_INITD_DIR:-/etc/init.d}"
 OPENCLASH_SERVICE="${OPENCLASH_SERVICE:-openclash}"
+DNSMASQ_SERVICE="${DNSMASQ_SERVICE:-dnsmasq}"
 CHATBOX_OPENCLASH_RETRY_MODE="${CHATBOX_OPENCLASH_RETRY_MODE:-auto}"
 CHATBOX_OPENCLASH_RETRY_SLEEP="${CHATBOX_OPENCLASH_RETRY_SLEEP:-3}"
 LOCKDIR="${LOCKDIR:-/tmp/chatbox-update.lock}"
@@ -49,6 +50,15 @@ openclash_retry_allowed() {
 
 run_self_update() {
 	"$CHATBOX_BIN" self-update 2>&1
+}
+
+restore_local_dns() {
+	if ! service "$DNSMASQ_SERVICE" restart >/dev/null 2>&1; then
+		log "chatbox auto-update warning: failed to restart $DNSMASQ_SERVICE after stopping $OPENCLASH_SERVICE"
+		return 1
+	fi
+	sleep 1
+	return 0
 }
 
 lock_pid_path() {
@@ -121,6 +131,7 @@ if ! output="$(run_self_update)"; then
 		exit 1
 	fi
 	OPENCLASH_WAS_STOPPED=1
+	restore_local_dns || true
 	sleep "$CHATBOX_OPENCLASH_RETRY_SLEEP"
 
 	if ! output="$(run_self_update)"; then
