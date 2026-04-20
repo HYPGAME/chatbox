@@ -144,6 +144,7 @@ type model struct {
 	entryIndex   map[string]int
 	seenMessages map[string]struct{}
 	pending      map[string]session.Message
+	syncCapablePeers map[string]bool
 
 	status string
 
@@ -269,6 +270,7 @@ func newModel(opts modelOptions) model {
 		entryIndex:       make(map[string]int),
 		seenMessages:     make(map[string]struct{}),
 		pending:          make(map[string]session.Message),
+		syncCapablePeers: make(map[string]bool),
 	}
 	if m.uiMode == "" {
 		m.uiMode = uiModeTUI
@@ -424,6 +426,7 @@ func (m *model) handleSessionReady(msg sessionReadyMsg) (tea.Model, tea.Cmd) {
 	if err := m.bindSession(msg.session); err != nil {
 		m.addErrorEntry(err.Error())
 	}
+	m.announceHistorySyncCapability()
 
 	cmds := []tea.Cmd{
 		waitForIncomingMessage(m.session),
@@ -509,6 +512,36 @@ func (m *model) ensureRoomAuthorization(conversationKey string) error {
 	}
 	m.roomAuthorization = record
 	return nil
+}
+
+func (m *model) announceHistorySyncCapability() {
+	if m.session == nil || m.identityID == "" || m.roomAuthorization.RoomKey == "" {
+		return
+	}
+	summary := HistorySyncSummaryForRecords(m.history)
+	_, _ = m.session.Send(room.HistorySyncHelloBody(room.HistorySyncHello{
+		Version:    1,
+		IdentityID: m.identityID,
+		RoomKey:    m.roomAuthorization.RoomKey,
+		Summary:    summary,
+	}))
+}
+
+func HistorySyncSummaryForRecords(history []historyEntry) room.HistorySyncSummary {
+	summary := room.HistorySyncSummary{}
+	for _, entry := range history {
+		if entry.kind != historyKindMessage {
+			continue
+		}
+		summary.Count++
+		if summary.Oldest.IsZero() || entry.at.Before(summary.Oldest) {
+			summary.Oldest = entry.at
+		}
+		if summary.Newest.IsZero() || entry.at.After(summary.Newest) {
+			summary.Newest = entry.at
+		}
+	}
+	return summary
 }
 
 func (m *model) handleReconnectError(err error) (tea.Model, tea.Cmd) {
@@ -625,6 +658,12 @@ func (m *model) handleIncomingMessage(message session.Message) {
 			return
 		}
 	}
+	if m.handleHistorySyncControl(message) {
+		if message.ID != "" {
+			m.seenMessages[message.ID] = struct{}{}
+		}
+		return
+	}
 	if line, ok := room.ParseStatusResponse(message.Body); ok {
 		if message.ID != "" {
 			m.seenMessages[message.ID] = struct{}{}
@@ -634,6 +673,19 @@ func (m *model) handleIncomingMessage(message session.Message) {
 	}
 	m.addMessageEntry(message, false, transcript.StatusSent, true)
 	m.notifyLiveIncomingAlert()
+}
+
+func (m *model) handleHistorySyncControl(message session.Message) bool {
+	if hello, ok := room.ParseHistorySyncHello(message.Body); ok {
+		if hello.IdentityID != "" && strings.TrimSpace(message.From) != "" {
+			m.syncCapablePeers[message.From] = true
+		}
+		return true
+	}
+	if room.IsHistorySyncControl(message.Body) {
+		return true
+	}
+	return false
 }
 
 func (m *model) handleStatusCommand() {
