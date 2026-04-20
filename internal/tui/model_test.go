@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -59,6 +60,37 @@ func TestModelShowsConnectedStatusAndIncomingMessage(t *testing.T) {
 	}
 	if !strings.Contains(view, "2026-04-14 20:30:45") {
 		t.Fatalf("expected formatted timestamp in view, got %q", view)
+	}
+}
+
+func TestModelSessionReadyCreatesLocalIdentity(t *testing.T) {
+	t.Parallel()
+
+	configDir := t.TempDir()
+	originalUserConfigDir := os.Getenv("XDG_CONFIG_HOME")
+	if err := os.Setenv("XDG_CONFIG_HOME", configDir); err != nil {
+		t.Fatalf("Setenv returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if originalUserConfigDir == "" {
+			_ = os.Unsetenv("XDG_CONFIG_HOME")
+		} else {
+			_ = os.Setenv("XDG_CONFIG_HOME", originalUserConfigDir)
+		}
+	})
+
+	uiModel := newModel(modelOptions{
+		mode:    "join",
+		session: &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: &fakeSession{peerName: "host"}})
+	uiModel = updated.(model)
+	if uiModel.identityID == "" {
+		t.Fatal("expected session ready to load a local identity")
 	}
 }
 

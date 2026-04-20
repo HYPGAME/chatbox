@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"chatbox/internal/identity"
 	"chatbox/internal/room"
 	"chatbox/internal/session"
 	"chatbox/internal/transcript"
@@ -54,6 +55,7 @@ type modelOptions struct {
 	transcriptOpener func(peerName string) (transcriptStore, error)
 	historyPrinter   historyPrinterFunc
 	alertNotifier    alertNotifierFunc
+	identityLoader   func() (identity.Store, error)
 }
 
 type sessionResult struct {
@@ -125,11 +127,13 @@ type model struct {
 	transcriptOpener func(peerName string) (transcriptStore, error)
 	historyPrinter   historyPrinterFunc
 	alertNotifier    alertNotifierFunc
+	identityLoader   func() (identity.Store, error)
 
 	transcript                transcriptStore
 	transcriptConversationKey string
 	currentConversationKey    string
 	currentPeer               string
+	identityID                string
 
 	history      []historyEntry
 	printedCount int
@@ -254,6 +258,7 @@ func newModel(opts modelOptions) model {
 		transcriptOpener: opts.transcriptOpener,
 		historyPrinter:   opts.historyPrinter,
 		alertNotifier:    opts.alertNotifier,
+		identityLoader:   opts.identityLoader,
 		viewport:         viewport.New(80, 20),
 		input:            input,
 		entryIndex:       make(map[string]int),
@@ -265,6 +270,9 @@ func newModel(opts modelOptions) model {
 	}
 	if m.historyPrinter == nil {
 		m.historyPrinter = defaultHistoryPrinter
+	}
+	if m.identityLoader == nil {
+		m.identityLoader = defaultIdentityLoader
 	}
 	m.viewport.MouseWheelEnabled = true
 	m.viewport.MouseWheelDelta = 3
@@ -419,6 +427,10 @@ func (m *model) handleSessionReady(msg sessionReadyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) bindSession(conn sessionClient) error {
+	if err := m.ensureIdentityLoaded(); err != nil {
+		return err
+	}
+
 	peerName := conn.PeerName()
 	conversationKey := m.conversationKeyForPeer(peerName)
 	conversationChanged := m.currentConversationKey != "" && m.currentConversationKey != conversationKey
@@ -443,6 +455,26 @@ func (m *model) bindSession(conn sessionClient) error {
 		}
 	}
 	m.resendPendingMessages()
+	return nil
+}
+
+func defaultIdentityLoader() (identity.Store, error) {
+	baseDir, err := identity.DefaultBaseDir()
+	if err != nil {
+		return identity.Store{}, err
+	}
+	return identity.OpenOrCreate(baseDir)
+}
+
+func (m *model) ensureIdentityLoaded() error {
+	if m.identityID != "" || m.identityLoader == nil {
+		return nil
+	}
+	store, err := m.identityLoader()
+	if err != nil {
+		return fmt.Errorf("load identity: %w", err)
+	}
+	m.identityID = store.IdentityID
 	return nil
 }
 
