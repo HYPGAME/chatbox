@@ -680,12 +680,132 @@ func (m *model) handleHistorySyncControl(message session.Message) bool {
 		if hello.IdentityID != "" && strings.TrimSpace(message.From) != "" {
 			m.syncCapablePeers[message.From] = true
 		}
+		m.maybeOfferHistorySync(hello)
+		return true
+	}
+	if offer, ok := room.ParseHistorySyncOffer(message.Body); ok {
+		m.maybeRequestHistorySync(offer)
+		return true
+	}
+	if request, ok := room.ParseHistorySyncRequest(message.Body); ok {
+		m.maybeSendHistorySyncChunk(request)
+		return true
+	}
+	if chunk, ok := room.ParseHistorySyncChunk(message.Body); ok {
+		m.replayHistorySyncChunk(chunk)
 		return true
 	}
 	if room.IsHistorySyncControl(message.Body) {
 		return true
 	}
 	return false
+}
+
+func (m *model) maybeOfferHistorySync(hello room.HistorySyncHello) {
+	if m.session == nil || m.identityID == "" || m.roomAuthorization.RoomKey == "" {
+		return
+	}
+	if hello.IdentityID == "" || hello.RoomKey != m.roomAuthorization.RoomKey {
+		return
+	}
+	summary := HistorySyncSummaryForRecords(m.history)
+	if summary.Count <= hello.Summary.Count {
+		return
+	}
+	_, _ = m.session.Send(room.HistorySyncOfferBody(room.HistorySyncOffer{
+		Version:        1,
+		SourceIdentity: m.identityID,
+		TargetIdentity: hello.IdentityID,
+		RoomKey:        m.roomAuthorization.RoomKey,
+		Summary:        summary,
+	}))
+}
+
+func (m *model) maybeRequestHistorySync(offer room.HistorySyncOffer) {
+	if m.session == nil || m.identityID == "" || m.roomAuthorization.RoomKey == "" {
+		return
+	}
+	if offer.TargetIdentity != m.identityID || offer.RoomKey != m.roomAuthorization.RoomKey {
+		return
+	}
+	if offer.Summary.Count <= HistorySyncSummaryForRecords(m.history).Count {
+		return
+	}
+	_, _ = m.session.Send(room.HistorySyncRequestBody(room.HistorySyncRequest{
+		Version:        1,
+		SourceIdentity: offer.SourceIdentity,
+		TargetIdentity: m.identityID,
+		RoomKey:        m.roomAuthorization.RoomKey,
+		Since:          m.roomAuthorization.JoinedAt,
+	}))
+}
+
+func (m *model) maybeSendHistorySyncChunk(request room.HistorySyncRequest) {
+	if m.session == nil || m.identityID == "" || m.roomAuthorization.RoomKey == "" {
+		return
+	}
+	if request.SourceIdentity != m.identityID || request.RoomKey != m.roomAuthorization.RoomKey {
+		return
+	}
+
+	records := make([]transcript.Record, 0)
+	for _, entry := range m.history {
+		if entry.kind != historyKindMessage || entry.messageID == "" || entry.at.Before(request.Since) {
+			continue
+		}
+		records = append(records, transcript.Record{
+			MessageID: entry.messageID,
+			Direction: transcript.DirectionIncoming,
+			From:      entry.from,
+			Body:      entry.body,
+			At:        entry.at,
+			Status:    transcript.StatusSent,
+		})
+	}
+	if len(records) == 0 {
+		return
+	}
+	_, _ = m.session.Send(room.HistorySyncChunkBody(room.HistorySyncChunk{
+		Version:        1,
+		SourceIdentity: m.identityID,
+		TargetIdentity: request.TargetIdentity,
+		RoomKey:        m.roomAuthorization.RoomKey,
+		Records:        records,
+	}))
+}
+
+func (m *model) replayHistorySyncChunk(chunk room.HistorySyncChunk) {
+	if m.identityID == "" || m.roomAuthorization.RoomKey == "" {
+		return
+	}
+	if chunk.TargetIdentity != m.identityID || chunk.RoomKey != m.roomAuthorization.RoomKey {
+		return
+	}
+
+	added := 0
+	for _, record := range chunk.Records {
+		if record.MessageID == "" || record.At.Before(m.roomAuthorization.JoinedAt) {
+			continue
+		}
+		if _, ok := m.seenMessages[record.MessageID]; ok {
+			continue
+		}
+		if _, ok := m.entryIndex[record.MessageID]; ok {
+			continue
+		}
+		message := session.Message{
+			ID:   record.MessageID,
+			From: record.From,
+			Body: record.Body,
+			At:   record.At,
+		}
+		m.addMessageEntry(message, record.Direction == transcript.DirectionOutgoing, transcript.StatusSent, true)
+		m.seenMessages[record.MessageID] = struct{}{}
+		added++
+	}
+	if added > 0 {
+		m.addSystemEntry(fmt.Sprintf("history synced: %d messages", added))
+	}
 }
 
 func (m *model) handleStatusCommand() {
