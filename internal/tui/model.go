@@ -393,10 +393,11 @@ func (m model) View() string {
 		header,
 		status,
 	}
+	lines = append(lines, m.viewport.View())
 	if suggestions := m.renderSlashCommandSuggestions(); suggestions != "" {
 		lines = append(lines, suggestions)
 	}
-	lines = append(lines, m.viewport.View(), inputStyle.Render(m.input.View()))
+	lines = append(lines, inputStyle.Render(m.input.View()))
 	return strings.Join(lines, "\n")
 }
 

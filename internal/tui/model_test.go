@@ -393,6 +393,39 @@ func TestModelShowsSlashCommandSuggestions(t *testing.T) {
 	}
 }
 
+func TestModelRendersSlashCommandSuggestionsAboveInput(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:    "join",
+		session: &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	uiModel = updated.(model)
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "host",
+		body: "older message",
+		at:   time.Date(2026, 4, 20, 18, 0, 0, 0, time.Local),
+	})
+	uiModel.input.SetValue("/")
+
+	view := stripANSI(uiModel.View())
+	messageIndex := strings.Index(view, "host: older message")
+	suggestionIndex := strings.Index(view, "/help -- 显示支持的命令")
+	inputIndex := strings.LastIndex(view, "/")
+	if messageIndex == -1 || suggestionIndex == -1 || inputIndex == -1 {
+		t.Fatalf("expected message, suggestion, and input in view, got %q", view)
+	}
+	if !(messageIndex < suggestionIndex && suggestionIndex < inputIndex) {
+		t.Fatalf("expected suggestions between history and input, got %q", view)
+	}
+}
+
 func TestScrollbackModeHidesSlashCommandSuggestions(t *testing.T) {
 	t.Parallel()
 
