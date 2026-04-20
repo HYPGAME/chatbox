@@ -15,6 +15,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
+	"chatbox/internal/historymeta"
+	"chatbox/internal/identity"
 	"chatbox/internal/room"
 	"chatbox/internal/session"
 	"chatbox/internal/transcript"
@@ -716,6 +718,35 @@ func TestJoinTranscriptUsesTargetScopedKey(t *testing.T) {
 	want := transcript.JoinRoomKey("203.0.113.10:7331")
 	if len(opened) != 1 || opened[0] != want {
 		t.Fatalf("expected join transcript opener to use %q, got %#v", want, opened)
+	}
+}
+
+func TestModelSessionReadyCreatesRoomAuthorization(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		session:       &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-1", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{RoomKey: roomKey, IdentityID: identityID}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: &fakeSession{peerName: "host"}})
+	uiModel = updated.(model)
+
+	if uiModel.roomAuthorization.RoomKey != transcript.JoinRoomKey("203.0.113.10:7331") {
+		t.Fatalf("expected room authorization to be loaded for join room, got %#v", uiModel.roomAuthorization)
+	}
+	if uiModel.roomAuthorization.IdentityID != "identity-1" {
+		t.Fatalf("expected room authorization identity %q, got %#v", "identity-1", uiModel.roomAuthorization)
 	}
 }
 

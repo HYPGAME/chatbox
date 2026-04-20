@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"chatbox/internal/historymeta"
 	"chatbox/internal/identity"
 	"chatbox/internal/room"
 	"chatbox/internal/session"
@@ -56,6 +57,7 @@ type modelOptions struct {
 	historyPrinter   historyPrinterFunc
 	alertNotifier    alertNotifierFunc
 	identityLoader   func() (identity.Store, error)
+	roomAuthLoader   func(roomKey, identityID string) (historymeta.Record, error)
 }
 
 type sessionResult struct {
@@ -128,12 +130,14 @@ type model struct {
 	historyPrinter   historyPrinterFunc
 	alertNotifier    alertNotifierFunc
 	identityLoader   func() (identity.Store, error)
+	roomAuthLoader   func(roomKey, identityID string) (historymeta.Record, error)
 
 	transcript                transcriptStore
 	transcriptConversationKey string
 	currentConversationKey    string
 	currentPeer               string
 	identityID                string
+	roomAuthorization         historymeta.Record
 
 	history      []historyEntry
 	printedCount int
@@ -259,6 +263,7 @@ func newModel(opts modelOptions) model {
 		historyPrinter:   opts.historyPrinter,
 		alertNotifier:    opts.alertNotifier,
 		identityLoader:   opts.identityLoader,
+		roomAuthLoader:   opts.roomAuthLoader,
 		viewport:         viewport.New(80, 20),
 		input:            input,
 		entryIndex:       make(map[string]int),
@@ -273,6 +278,9 @@ func newModel(opts modelOptions) model {
 	}
 	if m.identityLoader == nil {
 		m.identityLoader = defaultIdentityLoader
+	}
+	if m.roomAuthLoader == nil {
+		m.roomAuthLoader = defaultRoomAuthorizationLoader
 	}
 	m.viewport.MouseWheelEnabled = true
 	m.viewport.MouseWheelDelta = 3
@@ -430,9 +438,11 @@ func (m *model) bindSession(conn sessionClient) error {
 	if err := m.ensureIdentityLoaded(); err != nil {
 		return err
 	}
-
 	peerName := conn.PeerName()
 	conversationKey := m.conversationKeyForPeer(peerName)
+	if err := m.ensureRoomAuthorization(conversationKey); err != nil {
+		return err
+	}
 	conversationChanged := m.currentConversationKey != "" && m.currentConversationKey != conversationKey
 	if conversationChanged {
 		m.failPendingMessages()
@@ -475,6 +485,29 @@ func (m *model) ensureIdentityLoaded() error {
 		return fmt.Errorf("load identity: %w", err)
 	}
 	m.identityID = store.IdentityID
+	return nil
+}
+
+func defaultRoomAuthorizationLoader(roomKey, identityID string) (historymeta.Record, error) {
+	baseDir, err := historymeta.DefaultBaseDir()
+	if err != nil {
+		return historymeta.Record{}, err
+	}
+	return historymeta.OpenOrCreateRoomAuthorization(baseDir, roomKey, identityID, time.Now)
+}
+
+func (m *model) ensureRoomAuthorization(conversationKey string) error {
+	if m.roomAuthLoader == nil || conversationKey == "" || m.identityID == "" {
+		return nil
+	}
+	if m.roomAuthorization.RoomKey == conversationKey && m.roomAuthorization.IdentityID == m.identityID {
+		return nil
+	}
+	record, err := m.roomAuthLoader(conversationKey, m.identityID)
+	if err != nil {
+		return fmt.Errorf("load room authorization: %w", err)
+	}
+	m.roomAuthorization = record
 	return nil
 }
 
