@@ -179,6 +179,7 @@ Behavior:
 - does not restart when already current, when the update fails, or when the updater falls back to a manual `.new` file
 - if the first update attempt fails and OpenClash is enabled with `router_self_proxy=1`, the script temporarily stops OpenClash and retries once over the router's direct WAN path
 - during that OpenClash bypass retry, the script also restarts `dnsmasq` once so router-local DNS stops pointing at OpenClash's `127.0.0.1:7874`
+- before the retry, the script probes `https://github.com/` until direct HTTPS really comes back, instead of assuming a fixed wait is enough
 - set `CHATBOX_OPENCLASH_RETRY_MODE=off` if you want to disable that OpenClash bypass retry
 
 ## Minimal Group Chat

@@ -8,6 +8,9 @@ OPENCLASH_SERVICE="${OPENCLASH_SERVICE:-openclash}"
 DNSMASQ_SERVICE="${DNSMASQ_SERVICE:-dnsmasq}"
 CHATBOX_OPENCLASH_RETRY_MODE="${CHATBOX_OPENCLASH_RETRY_MODE:-auto}"
 CHATBOX_OPENCLASH_RETRY_SLEEP="${CHATBOX_OPENCLASH_RETRY_SLEEP:-3}"
+CHATBOX_OPENCLASH_PROBE_URL="${CHATBOX_OPENCLASH_PROBE_URL:-https://github.com/}"
+CHATBOX_OPENCLASH_PROBE_MAX_ATTEMPTS="${CHATBOX_OPENCLASH_PROBE_MAX_ATTEMPTS:-20}"
+CHATBOX_OPENCLASH_PROBE_TIMEOUT="${CHATBOX_OPENCLASH_PROBE_TIMEOUT:-5}"
 LOCKDIR="${LOCKDIR:-/tmp/chatbox-update.lock}"
 OPENCLASH_WAS_STOPPED=0
 
@@ -59,6 +62,23 @@ restore_local_dns() {
 	fi
 	sleep 1
 	return 0
+}
+
+wait_for_bypass_probe() {
+	attempt=1
+	while [ "$attempt" -le "$CHATBOX_OPENCLASH_PROBE_MAX_ATTEMPTS" ]; do
+		if command -v curl >/dev/null 2>&1; then
+			if curl -sSI --max-time "$CHATBOX_OPENCLASH_PROBE_TIMEOUT" "$CHATBOX_OPENCLASH_PROBE_URL" >/dev/null 2>&1; then
+				return 0
+			fi
+		elif wget -q -T "$CHATBOX_OPENCLASH_PROBE_TIMEOUT" -t 1 --spider "$CHATBOX_OPENCLASH_PROBE_URL" >/dev/null 2>&1; then
+			return 0
+		fi
+		sleep 1
+		attempt=$((attempt + 1))
+	done
+	log "chatbox auto-update warning: bypass probe did not succeed after $CHATBOX_OPENCLASH_PROBE_MAX_ATTEMPTS attempts"
+	return 1
 }
 
 lock_pid_path() {
@@ -133,6 +153,7 @@ if ! output="$(run_self_update)"; then
 	OPENCLASH_WAS_STOPPED=1
 	restore_local_dns || true
 	sleep "$CHATBOX_OPENCLASH_RETRY_SLEEP"
+	wait_for_bypass_probe || true
 
 	if ! output="$(run_self_update)"; then
 		log "chatbox auto-update failed after $OPENCLASH_SERVICE bypass retry: $output"
