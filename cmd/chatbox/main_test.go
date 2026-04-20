@@ -97,6 +97,85 @@ func TestRunSelfUpdateDelegatesToUpdater(t *testing.T) {
 	}
 }
 
+func TestRunIdentityExportAndImport(t *testing.T) {
+	originalLaunchBackgroundUpdateCheck := launchBackgroundUpdateCheck
+	t.Cleanup(func() {
+		launchBackgroundUpdateCheck = originalLaunchBackgroundUpdateCheck
+	})
+	launchBackgroundUpdateCheck = func(context.Context) {}
+
+	configDir := t.TempDir()
+	originalConfigHome := os.Getenv("XDG_CONFIG_HOME")
+	if err := os.Setenv("XDG_CONFIG_HOME", configDir); err != nil {
+		t.Fatalf("Setenv returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if originalConfigHome == "" {
+			_ = os.Unsetenv("XDG_CONFIG_HOME")
+		} else {
+			_ = os.Setenv("XDG_CONFIG_HOME", originalConfigHome)
+		}
+	})
+
+	exportPath := filepath.Join(t.TempDir(), "identity.json")
+	if err := run(context.Background(), []string{"identity", "export", "--out", exportPath}); err != nil {
+		t.Fatalf("identity export returned error: %v", err)
+	}
+	first, err := os.ReadFile(exportPath)
+	if err != nil {
+		t.Fatalf("ReadFile exported identity returned error: %v", err)
+	}
+
+	if err := os.RemoveAll(filepath.Join(configDir, "chatbox")); err != nil {
+		t.Fatalf("RemoveAll returned error: %v", err)
+	}
+	if err := run(context.Background(), []string{"identity", "import", "--in", exportPath}); err != nil {
+		t.Fatalf("identity import returned error: %v", err)
+	}
+
+	secondExport := filepath.Join(t.TempDir(), "identity-again.json")
+	if err := run(context.Background(), []string{"identity", "export", "--out", secondExport}); err != nil {
+		t.Fatalf("second identity export returned error: %v", err)
+	}
+	second, err := os.ReadFile(secondExport)
+	if err != nil {
+		t.Fatalf("ReadFile second exported identity returned error: %v", err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatalf("expected imported identity to export identically, got %q vs %q", first, second)
+	}
+}
+
+func TestRunIdentityImportRejectsMalformedFile(t *testing.T) {
+	originalLaunchBackgroundUpdateCheck := launchBackgroundUpdateCheck
+	t.Cleanup(func() {
+		launchBackgroundUpdateCheck = originalLaunchBackgroundUpdateCheck
+	})
+	launchBackgroundUpdateCheck = func(context.Context) {}
+
+	configDir := t.TempDir()
+	originalConfigHome := os.Getenv("XDG_CONFIG_HOME")
+	if err := os.Setenv("XDG_CONFIG_HOME", configDir); err != nil {
+		t.Fatalf("Setenv returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if originalConfigHome == "" {
+			_ = os.Unsetenv("XDG_CONFIG_HOME")
+		} else {
+			_ = os.Setenv("XDG_CONFIG_HOME", originalConfigHome)
+		}
+	})
+
+	path := filepath.Join(t.TempDir(), "bad-identity.json")
+	if err := os.WriteFile(path, []byte("{not-json"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	if err := run(context.Background(), []string{"identity", "import", "--in", path}); err == nil {
+		t.Fatal("expected malformed identity import to fail")
+	}
+}
+
 func TestRunSkipsBackgroundUpdateCheckForSelfUpdate(t *testing.T) {
 	originalLaunchBackgroundUpdateCheck := launchBackgroundUpdateCheck
 	originalRunSelfUpdateCommand := runSelfUpdateCommand

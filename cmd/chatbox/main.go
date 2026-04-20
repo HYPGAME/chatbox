@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"chatbox/internal/headless"
+	"chatbox/internal/identity"
 	"chatbox/internal/keys"
 	"chatbox/internal/session"
 	"chatbox/internal/tui"
@@ -61,6 +62,8 @@ func run(ctx context.Context, args []string) error {
 		return runHost(ctx, args[1:])
 	case "join":
 		return runJoin(ctx, args[1:])
+	case "identity":
+		return runIdentity(args[1:])
 	case "version":
 		return runVersion()
 	case "self-update":
@@ -80,6 +83,53 @@ func runKeygen(args []string) error {
 		return errors.New("keygen requires --out")
 	}
 	return keys.GeneratePSKFile(*out)
+}
+
+func runIdentity(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: chatbox identity <export|import> [flags]")
+	}
+	switch args[0] {
+	case "export":
+		return runIdentityExport(args[1:])
+	case "import":
+		return runIdentityImport(args[1:])
+	default:
+		return errors.New("usage: chatbox identity <export|import> [flags]")
+	}
+}
+
+func runIdentityExport(args []string) error {
+	fs := flag.NewFlagSet("identity export", flag.ContinueOnError)
+	out := fs.String("out", "", "Path to write the exported identity file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *out == "" {
+		return errors.New("identity export requires --out")
+	}
+	baseDir, err := identity.DefaultBaseDir()
+	if err != nil {
+		return err
+	}
+	return identity.Export(baseDir, *out)
+}
+
+func runIdentityImport(args []string) error {
+	fs := flag.NewFlagSet("identity import", flag.ContinueOnError)
+	in := fs.String("in", "", "Path to the identity file to import")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *in == "" {
+		return errors.New("identity import requires --in")
+	}
+	baseDir, err := identity.DefaultBaseDir()
+	if err != nil {
+		return err
+	}
+	_, err = identity.Import(baseDir, *in)
+	return err
 }
 
 func runVersion() error {
@@ -211,7 +261,7 @@ func defaultName() string {
 }
 
 func usageError() error {
-	return errors.New("usage: chatbox <keygen|host|join|version|self-update> [flags]")
+	return errors.New("usage: chatbox <keygen|host|join|identity|version|self-update> [flags]")
 }
 
 func shouldLaunchBackgroundUpdateCheck(args []string) bool {
