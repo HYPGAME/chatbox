@@ -153,6 +153,7 @@ type model struct {
 	pending          map[string]session.Message
 	syncCapablePeers map[string]bool
 	requestedHistory map[string]struct{}
+	offeredHistory   map[string]struct{}
 
 	status string
 
@@ -295,6 +296,7 @@ func newModel(opts modelOptions) model {
 		pending:          make(map[string]session.Message),
 		syncCapablePeers: make(map[string]bool),
 		requestedHistory: make(map[string]struct{}),
+		offeredHistory:   make(map[string]struct{}),
 	}
 	if m.uiMode == "" {
 		m.uiMode = uiModeTUI
@@ -468,6 +470,8 @@ func (m *model) bindSession(conn sessionClient) error {
 	if err := m.ensureIdentityLoaded(); err != nil {
 		return err
 	}
+	m.requestedHistory = make(map[string]struct{})
+	m.offeredHistory = make(map[string]struct{})
 	peerName := conn.PeerName()
 	conversationKey := m.conversationKeyForPeer(peerName)
 	if err := m.ensureRoomAuthorization(conversationKey); err != nil {
@@ -762,16 +766,26 @@ func (m *model) maybeOfferHistorySync(hello room.HistorySyncHello) {
 		return
 	}
 	summary := HistorySyncSummaryForRecords(m.history)
-	if !historySummaryHasMore(summary, hello.Summary) {
+	if summary.Count == 0 {
 		return
+	}
+	targetIdentity := strings.TrimSpace(hello.IdentityID)
+	if targetIdentity == "" {
+		return
+	}
+	if _, ok := m.offeredHistory[targetIdentity]; ok {
+		if !historySummaryHasMore(summary, hello.Summary) {
+			return
+		}
 	}
 	_, _ = m.session.Send(room.HistorySyncOfferBody(room.HistorySyncOffer{
 		Version:        1,
 		SourceIdentity: m.identityID,
-		TargetIdentity: hello.IdentityID,
+		TargetIdentity: targetIdentity,
 		RoomKey:        m.roomAuthorization.RoomKey,
 		Summary:        summary,
 	}))
+	m.offeredHistory[targetIdentity] = struct{}{}
 }
 
 func (m *model) maybeRequestHistorySync(offer room.HistorySyncOffer) {
@@ -1247,6 +1261,7 @@ func (m *model) resetConversation() {
 	m.currentConversationKey = ""
 	m.currentPeer = ""
 	m.requestedHistory = make(map[string]struct{})
+	m.offeredHistory = make(map[string]struct{})
 	m.addStartupHints()
 }
 
