@@ -857,6 +857,10 @@ func (m *model) replayHistorySyncChunk(chunk room.HistorySyncChunk) {
 		if _, ok := m.entryIndex[record.MessageID]; ok {
 			continue
 		}
+		if m.hasEquivalentHistoryMessage(record) {
+			m.seenMessages[record.MessageID] = struct{}{}
+			continue
+		}
 		message := session.Message{
 			ID:   record.MessageID,
 			From: record.From,
@@ -870,6 +874,29 @@ func (m *model) replayHistorySyncChunk(chunk room.HistorySyncChunk) {
 	if added > 0 {
 		m.addSystemEntry(fmt.Sprintf("history synced: %d messages", added))
 	}
+}
+
+func (m model) hasEquivalentHistoryMessage(record transcript.Record) bool {
+	for _, entry := range m.history {
+		if entry.kind != historyKindMessage {
+			continue
+		}
+		if entry.from != record.From {
+			continue
+		}
+		if entry.body != record.Body {
+			continue
+		}
+		if !entry.at.Equal(record.At) {
+			continue
+		}
+		outgoing := record.Direction == transcript.DirectionOutgoing
+		if entry.outgoing != outgoing {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func (m *model) handleStatusCommand() {
