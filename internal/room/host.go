@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"chatbox/internal/admins"
 	"chatbox/internal/session"
 )
 
@@ -40,8 +41,8 @@ type memberSession interface {
 }
 
 type trackedMember struct {
-	id      uint64
-	session memberSession
+	id          uint64
+	session     memberSession
 	syncCapable bool
 }
 
@@ -58,9 +59,15 @@ type HostRoom struct {
 	memberSeq atomic.Uint64
 	memberWG  sync.WaitGroup
 
-	mu      sync.Mutex
-	closed  bool
-	members map[uint64]trackedMember
+	mu                 sync.Mutex
+	closed             bool
+	members            map[uint64]trackedMember
+	admins             admins.Store
+	releaseResolver    func(context.Context, string) (string, error)
+	identityByPeerName map[string]string
+	identityByMemberID map[uint64]string
+	processedUpdates   map[string]struct{}
+	activeUpdateStatus map[string]map[string]string
 }
 
 func NewHostRoom(localName string) *HostRoom {
@@ -71,6 +78,13 @@ func NewHostRoom(localName string) *HostRoom {
 		events:    make(chan Event, 64),
 		done:      make(chan struct{}),
 		members:   make(map[uint64]trackedMember),
+		admins: admins.Store{
+			AllowedUpdateIdentities: make(map[string]struct{}),
+		},
+		identityByPeerName: make(map[string]string),
+		identityByMemberID: make(map[uint64]string),
+		processedUpdates:   make(map[string]struct{}),
+		activeUpdateStatus: make(map[string]map[string]string),
 	}
 }
 
@@ -265,6 +279,9 @@ func (r *HostRoom) runMember(member trackedMember) {
 			if r.handleHistorySyncControl(member, message) {
 				continue
 			}
+			if r.handleUpdateControl(member, message) {
+				continue
+			}
 			if err := r.broadcast(message, member.id); err != nil {
 				continue
 			}
@@ -317,6 +334,7 @@ func (r *HostRoom) handleHistorySyncControl(member trackedMember, message sessio
 			return true
 		}
 		r.markMemberSyncCapable(member.id, true)
+		r.rememberMemberIdentity(member.id, member.session.PeerName(), hello.IdentityID)
 		_ = r.broadcastHistorySync(message, member.id)
 		return true
 	}
@@ -325,6 +343,155 @@ func (r *HostRoom) handleHistorySyncControl(member trackedMember, message sessio
 	}
 	_ = r.broadcastHistorySync(message, member.id)
 	return true
+}
+
+func (r *HostRoom) handleUpdateControl(member trackedMember, message session.Message) bool {
+	if request, ok := ParseUpdateRequest(message.Body); ok {
+		r.handleUpdateRequest(member, request)
+		return true
+	}
+	if result, ok := ParseUpdateResult(message.Body); ok {
+		if member.session != nil {
+			result.ReporterName = member.session.PeerName()
+			if identityID := r.memberIdentity(member.id); identityID != "" {
+				result.ReporterID = identityID
+			}
+		}
+		r.handleUpdateResult(result)
+		return true
+	}
+	if _, ok := ParseUpdateExecute(message.Body); ok {
+		return true
+	}
+	return IsUpdateControl(message.Body)
+}
+
+func (r *HostRoom) handleUpdateRequest(member trackedMember, request UpdateRequest) {
+	requesterName := strings.TrimSpace(request.RequesterName)
+	requesterIdentity := strings.TrimSpace(request.RequesterIdentity)
+	if member.session != nil {
+		requesterName = strings.TrimSpace(member.session.PeerName())
+		if mapped := r.memberIdentity(member.id); mapped != "" {
+			requesterIdentity = mapped
+		} else if requesterIdentity != "" {
+			r.rememberMemberIdentity(member.id, requesterName, requesterIdentity)
+		}
+	}
+
+	if requesterName != r.localName && !r.admins.Allows(requesterIdentity) {
+		r.sendUpdateResult(member.session, UpdateResult{
+			Version:       1,
+			RequestID:     request.RequestID,
+			RoomKey:       request.RoomKey,
+			ReporterName:  r.localName,
+			ReporterID:    "",
+			TargetVersion: strings.TrimSpace(request.TargetVersion),
+			Status:        "permission-denied",
+			At:            time.Now(),
+		}, true)
+		return
+	}
+
+	targetVersion, err := r.resolveTargetVersion(strings.TrimSpace(request.TargetVersion))
+	if err != nil {
+		r.sendUpdateResult(member.session, UpdateResult{
+			Version:        1,
+			RequestID:      request.RequestID,
+			RoomKey:        request.RoomKey,
+			ReporterName:   r.localName,
+			ReporterID:     "",
+			TargetVersion:  strings.TrimSpace(request.TargetVersion),
+			Status:         "resolve-latest-failed",
+			Detail:         err.Error(),
+			CurrentVersion: "",
+			At:             time.Now(),
+		}, true)
+		return
+	}
+
+	if !r.markUpdateRequestStarted(request.RequestID) {
+		return
+	}
+
+	execute := UpdateExecute{
+		Version:           1,
+		RequestID:         request.RequestID,
+		RoomKey:           request.RoomKey,
+		InitiatorIdentity: requesterIdentity,
+		InitiatorName:     requesterName,
+		TargetVersion:     targetVersion,
+		At:                time.Now(),
+	}
+	message := session.Message{
+		ID:   controlMessageID(request.RequestID + "-execute"),
+		From: r.localName,
+		Body: UpdateExecuteBody(execute),
+		At:   execute.At,
+	}
+	if err := r.broadcast(message, 0); err != nil {
+		r.sendUpdateResult(member.session, UpdateResult{
+			Version:       1,
+			RequestID:     request.RequestID,
+			RoomKey:       request.RoomKey,
+			ReporterName:  r.localName,
+			TargetVersion: targetVersion,
+			Status:        "dispatch-failed",
+			Detail:        err.Error(),
+			At:            time.Now(),
+		}, true)
+		return
+	}
+	r.publishMessage(message)
+}
+
+func (r *HostRoom) handleUpdateResult(result UpdateResult) {
+	r.mu.Lock()
+	statuses := r.activeUpdateStatus[result.RequestID]
+	if statuses == nil {
+		statuses = make(map[string]string)
+		r.activeUpdateStatus[result.RequestID] = statuses
+	}
+	statuses[result.ReporterName] = result.Status
+	r.mu.Unlock()
+
+	message := session.Message{
+		ID:   controlMessageID(result.RequestID + "-result"),
+		From: r.localName,
+		Body: UpdateResultBody(result),
+		At:   result.At,
+	}
+	if err := r.broadcast(message, 0); err == nil {
+		r.publishMessage(message)
+	}
+}
+
+func (r *HostRoom) resolveTargetVersion(targetVersion string) (string, error) {
+	targetVersion = strings.TrimSpace(targetVersion)
+	if targetVersion != "" {
+		return targetVersion, nil
+	}
+	if r.releaseResolver == nil {
+		return "", errors.New("latest release resolver is not configured")
+	}
+	return r.releaseResolver(context.Background(), "")
+}
+
+func (r *HostRoom) sendUpdateResult(member memberSession, result UpdateResult, publish bool) {
+	if result.At.IsZero() {
+		result.At = time.Now()
+	}
+	message := session.Message{
+		ID:   controlMessageID(result.RequestID + "-result"),
+		From: r.localName,
+		Body: UpdateResultBody(result),
+		At:   result.At,
+	}
+	if member != nil {
+		_ = member.Resend(message)
+	}
+	if publish {
+		r.publishMessage(message)
+	}
 }
 
 func (r *HostRoom) broadcast(message session.Message, excludeMemberID uint64) error {
@@ -383,6 +550,7 @@ func (r *HostRoom) removeMember(member trackedMember) {
 		return
 	}
 	delete(r.members, member.id)
+	delete(r.identityByMemberID, member.id)
 	peerCount := len(r.members)
 	r.mu.Unlock()
 
@@ -426,6 +594,50 @@ func (r *HostRoom) appendEventLog(event Event) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.eventLog = append(r.eventLog, event)
+}
+
+func (r *HostRoom) rememberMemberIdentity(memberID uint64, peerName, identityID string) {
+	identityID = strings.TrimSpace(identityID)
+	if identityID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.identityByMemberID[memberID] = identityID
+	if peerName = strings.TrimSpace(peerName); peerName != "" {
+		r.identityByPeerName[peerName] = identityID
+	}
+}
+
+func (r *HostRoom) memberIdentity(memberID uint64) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.identityByMemberID[memberID]
+}
+
+func (r *HostRoom) markUpdateRequestStarted(requestID string) bool {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.processedUpdates[requestID]; ok {
+		return false
+	}
+	r.processedUpdates[requestID] = struct{}{}
+	if _, ok := r.activeUpdateStatus[requestID]; !ok {
+		r.activeUpdateStatus[requestID] = make(map[string]string)
+	}
+	return true
+}
+
+func controlMessageID(fallback string) string {
+	messageID, err := generateMessageID()
+	if err == nil {
+		return messageID
+	}
+	return fallback
 }
 
 func generateMessageID() (string, error) {

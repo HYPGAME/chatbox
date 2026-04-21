@@ -1,9 +1,11 @@
 package room
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"chatbox/internal/admins"
 	"chatbox/internal/session"
 )
 
@@ -244,6 +246,140 @@ func TestHostRoomForwardsHistorySyncMessagesToMembersWhoAnnouncedHello(t *testin
 		t.Fatalf("expected sync-capable member to receive sync control, got %#v", got)
 	}
 	assertNoRoomMessage(t, room.Messages())
+}
+
+func TestHostRoomAcceptsAuthorizedUpdateRequestAndBroadcastsExecute(t *testing.T) {
+	t.Parallel()
+
+	room := NewHostRoom("host")
+	defer room.Close()
+
+	member := newFakeMember("alice")
+	room.admins = admins.Store{
+		AllowedUpdateIdentities: map[string]struct{}{"identity-a": {}},
+	}
+	room.identityByPeerName["alice"] = "identity-a"
+	room.releaseResolver = func(context.Context, string) (string, error) {
+		return "v0.1.24", nil
+	}
+	room.AddMember(member)
+	drainJoinEvents(t, room, 1)
+
+	member.messages <- session.Message{
+		ID:   "req-1",
+		From: "alice",
+		Body: UpdateRequestBody(UpdateRequest{
+			Version:           1,
+			RequestID:         "update-1",
+			RoomKey:           "join:203.0.113.10:7331",
+			RequesterIdentity: "identity-a",
+			RequesterName:     "alice",
+		}),
+		At: time.Date(2026, 4, 21, 14, 0, 0, 0, time.UTC),
+	}
+
+	message := waitForResentMessage(t, member.resent)
+	execute, ok := ParseUpdateExecute(message.Body)
+	if !ok {
+		t.Fatalf("expected execute message, got %#v", message)
+	}
+	if execute.TargetVersion != "v0.1.24" {
+		t.Fatalf("expected resolved target version %q, got %#v", "v0.1.24", execute)
+	}
+
+	hostMessage := waitForRoomMessage(t, room.Messages())
+	if hostMessage.Body != message.Body {
+		t.Fatalf("expected host stream to receive execute control, got %#v", hostMessage)
+	}
+}
+
+func TestHostRoomRejectsUnauthorizedUpdateRequest(t *testing.T) {
+	t.Parallel()
+
+	room := NewHostRoom("host")
+	defer room.Close()
+
+	member := newFakeMember("eve")
+	room.identityByPeerName["eve"] = "identity-eve"
+	room.AddMember(member)
+	drainJoinEvents(t, room, 1)
+
+	member.messages <- session.Message{
+		ID:   "req-1",
+		From: "eve",
+		Body: UpdateRequestBody(UpdateRequest{
+			Version:           1,
+			RequestID:         "update-1",
+			RoomKey:           "join:203.0.113.10:7331",
+			RequesterIdentity: "identity-eve",
+			RequesterName:     "eve",
+			TargetVersion:     "v0.1.24",
+		}),
+		At: time.Date(2026, 4, 21, 14, 1, 0, 0, time.UTC),
+	}
+
+	message := waitForResentMessage(t, member.resent)
+	result, ok := ParseUpdateResult(message.Body)
+	if !ok {
+		t.Fatalf("expected update result, got %#v", message)
+	}
+	if result.Status != "permission-denied" {
+		t.Fatalf("expected permission-denied result, got %#v", result)
+	}
+
+	hostMessage := waitForRoomMessage(t, room.Messages())
+	if hostMessage.Body != message.Body {
+		t.Fatalf("expected host stream to receive denial result, got %#v", hostMessage)
+	}
+}
+
+func TestHostRoomBroadcastsUpdateResultsToRoom(t *testing.T) {
+	t.Parallel()
+
+	room := NewHostRoom("host")
+	defer room.Close()
+
+	memberA := newFakeMember("alice")
+	memberB := newFakeMember("bob")
+	room.identityByPeerName["alice"] = "identity-a"
+	room.identityByPeerName["bob"] = "identity-b"
+	room.AddMember(memberA)
+	room.AddMember(memberB)
+	drainJoinEvents(t, room, 2)
+
+	memberA.messages <- session.Message{
+		ID:   "result-1",
+		From: "alice",
+		Body: UpdateResultBody(UpdateResult{
+			Version:        1,
+			RequestID:      "update-1",
+			RoomKey:        "join:203.0.113.10:7331",
+			ReporterName:   "alice",
+			ReporterID:     "identity-a",
+			TargetVersion:  "v0.1.24",
+			Status:         "success",
+			CurrentVersion: "v0.1.23",
+		}),
+		At: time.Date(2026, 4, 21, 14, 2, 0, 0, time.UTC),
+	}
+
+	rebroadcast := waitForResentMessage(t, memberA.resent)
+	if _, ok := ParseUpdateResult(rebroadcast.Body); !ok {
+		t.Fatalf("expected sender to receive broadcast update result, got %#v", rebroadcast)
+	}
+	other := waitForResentMessage(t, memberB.resent)
+	result, ok := ParseUpdateResult(other.Body)
+	if !ok {
+		t.Fatalf("expected other member to receive update result, got %#v", other)
+	}
+	if result.ReporterName != "alice" || result.ReporterID != "identity-a" || result.Status != "success" {
+		t.Fatalf("expected broadcast result details to round-trip, got %#v", result)
+	}
+
+	hostMessage := waitForRoomMessage(t, room.Messages())
+	if hostMessage.Body != other.Body {
+		t.Fatalf("expected host stream to receive broadcast result, got %#v", hostMessage)
+	}
 }
 
 type fakeMember struct {
