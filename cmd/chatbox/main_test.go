@@ -472,6 +472,71 @@ func TestRunSkipsBackgroundUpdateCheckForHeadlessHost(t *testing.T) {
 	}
 }
 
+func TestRunSkipsStderrBackgroundUpdateCheckForTUIJoin(t *testing.T) {
+	originalLaunchBackgroundUpdateCheck := launchBackgroundUpdateCheck
+	originalRunJoinUI := runJoinUI
+	originalRunJoinUIWithUpdates := runJoinUIWithUpdates
+	t.Cleanup(func() {
+		launchBackgroundUpdateCheck = originalLaunchBackgroundUpdateCheck
+		runJoinUI = originalRunJoinUI
+		runJoinUIWithUpdates = originalRunJoinUIWithUpdates
+	})
+
+	tempDir := t.TempDir()
+	path := filepath.Join(tempDir, "chatbox.psk")
+	if err := run(context.Background(), []string{"keygen", "--out", path}); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	psk, err := keys.LoadPSKFromFile(path)
+	if err != nil {
+		t.Fatalf("LoadPSKFromFile returned error: %v", err)
+	}
+
+	host, err := session.Listen("127.0.0.1:0", session.Config{
+		Name: "host",
+		PSK:  psk,
+	})
+	if err != nil {
+		t.Fatalf("Listen returned error: %v", err)
+	}
+	defer host.Close()
+
+	acceptDone := make(chan error, 1)
+	go func() {
+		conn, err := host.Accept(context.Background())
+		if err == nil && conn != nil {
+			_ = conn.Close()
+		}
+		acceptDone <- err
+	}()
+
+	launched := false
+	launchBackgroundUpdateCheck = func(context.Context) {
+		launched = true
+	}
+	runJoinUIWithUpdates = func(_ *session.Session, _ string, _ string, _ session.Config, _ string, _ string, notices <-chan string) error {
+		if notices == nil {
+			t.Fatal("expected update notices channel for tui join")
+		}
+		return nil
+	}
+	runJoinUI = func(_ *session.Session, _ string, _ string, _ session.Config, _ string, _ string) error {
+		t.Fatal("expected legacy join ui launcher to stay unused for tui mode")
+		return nil
+	}
+
+	if err := run(context.Background(), []string{"join", "--peer", host.Addr(), "--psk-file", path, "--name", "tester", "--ui", "tui"}); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	if err := <-acceptDone; err != nil {
+		t.Fatalf("Accept returned error: %v", err)
+	}
+	if launched {
+		t.Fatal("expected tui join to skip stderr background update checks")
+	}
+}
+
 func TestRunJoinPassesAlertModeToLauncher(t *testing.T) {
 	tempDir := t.TempDir()
 	path := filepath.Join(tempDir, "chatbox.psk")

@@ -206,6 +206,7 @@ This is intentionally a minimal host-relayed room, not a mesh network or a featu
 
 - `/help`
 - `/status` shows the local connection status and current online participant list
+- `/events` shows join/leave event history visible to the current client
 - `/quit`
 
 ## History and Navigation

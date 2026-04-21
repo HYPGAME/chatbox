@@ -88,6 +88,99 @@ func TestModelRendersCompactStatusBar(t *testing.T) {
 	if !strings.Contains(firstLine, "/help") {
 		t.Fatalf("expected compact status bar to include help hint, got %q", firstLine)
 	}
+	if !strings.Contains(stripANSI(uiModel.View()), "commands: /help /status /events /quit") {
+		t.Fatalf("expected startup hints to include /events, got %q", stripANSI(uiModel.View()))
+	}
+}
+
+func TestModelShowsUpdateNoticeInTUIView(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		uiMode:        "tui",
+		listeningAddr: "127.0.0.1:7331",
+		session:       &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	uiModel.addSystemEntry("new version available: v0.1.18 (current: dev-91cd3e3)")
+	uiModel.addSystemEntry("run: chatbox self-update")
+
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	uiModel = updated.(model)
+
+	view := stripANSI(uiModel.View())
+	if !strings.Contains(view, "new version available: v0.1.18 (current: dev-91cd3e3)") {
+		t.Fatalf("expected update notice in TUI view, got %q", view)
+	}
+	if !strings.Contains(view, "run: chatbox self-update") {
+		t.Fatalf("expected self-update hint in TUI view, got %q", view)
+	}
+}
+
+func TestTUIHelpCommandListsEvents(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:    "join",
+		uiMode:  uiModeTUI,
+		session: &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	uiModel = updated.(model)
+	uiModel.input.SetValue("/help")
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	uiModel = updated.(model)
+
+	view := stripANSI(uiModel.View())
+	if !strings.Contains(view, "commands: /help /status /events /quit") {
+		t.Fatalf("expected help output to include /events, got %q", view)
+	}
+}
+
+func TestModelInitReceivesBackgroundUpdateNotice(t *testing.T) {
+	t.Parallel()
+
+	notices := make(chan string, 1)
+	notices <- "new version available: v0.1.18 (current: dev-91cd3e3)\nrun: chatbox self-update"
+	close(notices)
+
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		uiMode:        "tui",
+		listeningAddr: "127.0.0.1:7331",
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+		updateNotices: notices,
+	})
+
+	cmd := uiModel.Init()
+	if cmd == nil {
+		t.Fatal("expected init command to wait for background update notices")
+	}
+
+	msg := cmd()
+	if msg == nil {
+		t.Fatal("expected background update notice message")
+	}
+	updated, _ := uiModel.Update(msg)
+	uiModel = updated.(model)
+
+	view := stripANSI(uiModel.View())
+	if !strings.Contains(view, "new version available: v0.1.18 (current: dev-91cd3e3)") {
+		t.Fatalf("expected update notice in TUI view, got %q", view)
+	}
+	if !strings.Contains(view, "run: chatbox self-update") {
+		t.Fatalf("expected self-update hint in TUI view, got %q", view)
+	}
 }
 
 func TestModelSessionReadyCreatesLocalIdentity(t *testing.T) {
@@ -1914,6 +2007,63 @@ func TestScrollbackOutgoingReceiptDoesNotPrintDeliveryStatuses(t *testing.T) {
 	}
 	if strings.Contains(stripANSI(strings.Join(printed, "\n")), "[sent]") {
 		t.Fatalf("expected scrollback to hide sent status, got %q", printed)
+	}
+}
+
+func TestScrollbackEventsCommandSendsHiddenRequestAndRendersResponse(t *testing.T) {
+	oldLocal := time.Local
+	time.Local = time.FixedZone("CST", 8*60*60)
+	t.Cleanup(func() {
+		time.Local = oldLocal
+	})
+
+	fake := &fakeSession{peerName: "host", localName: "alice"}
+	var printed []string
+	uiModel := newModel(modelOptions{
+		mode:    "join",
+		uiMode:  uiModeScrollback,
+		session: fake,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+		historyPrinter: func(lines []string) tea.Cmd {
+			printed = append(printed, lines...)
+			return nil
+		},
+	})
+
+	if quit := handleScrollbackLine(&uiModel, "/events"); quit {
+		t.Fatal("expected /events not to quit")
+	}
+	if len(fake.sent) != 1 || fake.sent[0].Body != room.EventsRequestBody() {
+		t.Fatalf("expected hidden events request to be sent, got %#v", fake.sent)
+	}
+
+	updated, _ := uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "events-response-1",
+			From: "host",
+			Body: room.EventsResponseBody([]room.Event{
+				{
+					Kind:     room.EventPeerJoined,
+					PeerName: "aaa",
+					At:       time.Date(2026, 4, 20, 18, 0, 0, 0, time.UTC),
+				},
+			}),
+			At: time.Date(2026, 4, 20, 18, 1, 0, 0, time.UTC),
+		},
+	})
+	uiModel = updated.(model)
+
+	joined := stripANSI(strings.Join(printed, "\n"))
+	if !strings.Contains(joined, "events: aaa joined at 2026-04-21 02:00:00") {
+		t.Fatalf("expected events response to print in scrollback, got %q", joined)
+	}
+	if strings.Contains(joined, "\x00chatbox:events:") {
+		t.Fatalf("expected hidden events payload to stay out of scrollback, got %q", joined)
+	}
+	if strings.Contains(joined, "unknown command") {
+		t.Fatalf("expected /events not to be treated as unknown command, got %q", joined)
 	}
 }
 

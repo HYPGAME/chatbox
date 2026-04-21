@@ -79,7 +79,7 @@ func isNewerRelease(currentVersion string, latestVersion string) bool {
 
 func parseComparableVersion(raw string) (comparableVersion, bool) {
 	raw = strings.TrimSpace(raw)
-	if raw == "dev" {
+	if raw == "dev" || strings.HasPrefix(raw, "dev-") {
 		return comparableVersion{prerelease: true}, true
 	}
 

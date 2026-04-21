@@ -58,6 +58,7 @@ type modelOptions struct {
 	alertNotifier    alertNotifierFunc
 	identityLoader   func() (identity.Store, error)
 	roomAuthLoader   func(roomKey, identityID string) (historymeta.Record, error)
+	updateNotices    <-chan string
 }
 
 type sessionResult struct {
@@ -84,6 +85,10 @@ type roomEventMsg struct {
 
 type sessionClosedMsg struct {
 	err error
+}
+
+type updateNoticeMsg struct {
+	text string
 }
 
 type historyKind string
@@ -131,6 +136,7 @@ type model struct {
 	alertNotifier    alertNotifierFunc
 	identityLoader   func() (identity.Store, error)
 	roomAuthLoader   func(roomKey, identityID string) (historymeta.Record, error)
+	updateNotices    <-chan string
 
 	transcript                transcriptStore
 	transcriptConversationKey string
@@ -192,6 +198,10 @@ var (
 )
 
 func RunHost(host *session.Host, localName string, psk []byte, uiMode string, alertMode string) error {
+	return RunHostWithUpdateNotices(host, localName, psk, uiMode, alertMode, nil)
+}
+
+func RunHostWithUpdateNotices(host *session.Host, localName string, psk []byte, uiMode string, alertMode string, updateNotices <-chan string) error {
 	hostRoom := room.NewHostRoom(localName)
 	go hostRoom.Serve(context.Background(), host)
 
@@ -205,10 +215,15 @@ func RunHost(host *session.Host, localName string, psk []byte, uiMode string, al
 		peerCount:        hostRoom.PeerCount,
 		peerNames:        hostRoom.ParticipantNames,
 		transcriptOpener: defaultTranscriptOpener(localName, psk),
+		updateNotices:    updateNotices,
 	}))
 }
 
 func RunJoin(conn *session.Session, localName string, peerAddr string, cfg session.Config, uiMode string, alertMode string) error {
+	return RunJoinWithUpdateNotices(conn, localName, peerAddr, cfg, uiMode, alertMode, nil)
+}
+
+func RunJoinWithUpdateNotices(conn *session.Session, localName string, peerAddr string, cfg session.Config, uiMode string, alertMode string, updateNotices <-chan string) error {
 	return runUI(newModel(modelOptions{
 		mode:          "join",
 		uiMode:        uiMode,
@@ -219,6 +234,7 @@ func RunJoin(conn *session.Session, localName string, peerAddr string, cfg sessi
 			return session.Dial(ctx, peerAddr, cfg)
 		},
 		transcriptOpener: defaultTranscriptOpener(localName, cfg.PSK),
+		updateNotices:    updateNotices,
 	}))
 }
 
@@ -270,6 +286,7 @@ func newModel(opts modelOptions) model {
 		alertNotifier:    opts.alertNotifier,
 		identityLoader:   opts.identityLoader,
 		roomAuthLoader:   opts.roomAuthLoader,
+		updateNotices:    opts.updateNotices,
 		viewport:         viewport.New(80, 20),
 		input:            input,
 		entryIndex:       make(map[string]int),
@@ -327,6 +344,9 @@ func (m model) Init() tea.Cmd {
 	if m.roomEvents != nil {
 		cmds = append(cmds, waitForRoomEvent(m.roomEvents))
 	}
+	if m.updateNotices != nil {
+		cmds = append(cmds, waitForUpdateNotice(m.updateNotices))
+	}
 	if len(cmds) == 0 {
 		return nil
 	}
@@ -357,6 +377,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(waitForReceipt(m.session), receiptCmd)
 	case roomEventMsg:
 		return m.handleRoomEvent(msg.event)
+	case updateNoticeMsg:
+		return m.handleUpdateNotice(msg.text)
 	case sessionClosedMsg:
 		return m.handleSessionClosed(msg.err)
 	case tea.KeyMsg:
@@ -619,11 +641,26 @@ func (m *model) handleRoomEvent(event room.Event) (tea.Model, tea.Cmd) {
 	return *m, tea.Batch(cmds...)
 }
 
+func (m *model) handleUpdateNotice(text string) (tea.Model, tea.Cmd) {
+	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		m.addSystemEntry(line)
+	}
+
+	if m.updateNotices == nil {
+		return *m, m.flushScrollbackCmd()
+	}
+	return *m, tea.Batch(waitForUpdateNotice(m.updateNotices), m.flushScrollbackCmd())
+}
+
 func (m *model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 	if strings.HasPrefix(text, "/") {
 		switch text {
 		case "/help":
-			m.addSystemEntry("commands: /help /status /quit")
+			m.addSystemEntry("commands: /help /status /events /quit")
 			return *m, m.flushScrollbackCmd()
 		case "/status":
 			m.handleStatusCommand()
@@ -1199,7 +1236,7 @@ func (m *model) addStartupHints() {
 	if m.uiMode == uiModeScrollback {
 		return
 	}
-	m.addSystemEntry("commands: /help /status /quit")
+	m.addSystemEntry("commands: /help /status /events /quit")
 }
 
 func (m *model) addRetryEntry(message session.Message) {
@@ -1308,6 +1345,16 @@ func waitForSessionClose(conn sessionClient) tea.Cmd {
 	return func() tea.Msg {
 		<-conn.Done()
 		return sessionClosedMsg{err: conn.Err()}
+	}
+}
+
+func waitForUpdateNotice(notices <-chan string) tea.Cmd {
+	return func() tea.Msg {
+		text, ok := <-notices
+		if !ok {
+			return nil
+		}
+		return updateNoticeMsg{text: text}
 	}
 }
 

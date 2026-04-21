@@ -46,6 +46,32 @@ func TestBackgroundUpdateCheckDoesNothingWhenAlreadyCurrent(t *testing.T) {
 	}
 }
 
+func TestBackgroundUpdateCheckChannelEmitsHintForNewerStableRelease(t *testing.T) {
+	t.Parallel()
+
+	output := make(chan string, 1)
+	client := fakeLatestReleaseSource{
+		release: Release{
+			TagName: "v0.2.0",
+			HTMLURL: "https://github.com/HYPGAME/chatbox/releases/tag/v0.2.0",
+		},
+	}
+
+	checkAndNotifyChannel(context.Background(), client, "dev-91cd3e3", output)
+
+	select {
+	case rendered := <-output:
+		if !strings.Contains(rendered, "new version available: v0.2.0 (current: dev-91cd3e3)") {
+			t.Fatalf("expected upgrade hint, got %q", rendered)
+		}
+		if !strings.Contains(rendered, "run: chatbox self-update") {
+			t.Fatalf("expected self-update hint, got %q", rendered)
+		}
+	default:
+		t.Fatal("expected background update notice on channel")
+	}
+}
+
 type fakeLatestReleaseSource struct {
 	release Release
 	err     error

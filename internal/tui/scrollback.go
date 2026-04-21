@@ -492,10 +492,13 @@ func handleScrollbackLine(m *model, text string) bool {
 	if strings.HasPrefix(text, "/") {
 		switch text {
 		case "/help":
-			m.addSystemEntry("commands: /help /status /quit")
+			m.addSystemEntry("commands: /help /status /events /quit")
 			m.flushScrollbackCmd()
 		case "/status":
 			m.handleStatusCommand()
+			m.flushScrollbackCmd()
+		case "/events":
+			m.handleEventsCommand()
 			m.flushScrollbackCmd()
 		case "/quit":
 			m.failPendingMessages()

@@ -23,18 +23,28 @@ import (
 
 var (
 	runHostUI       = tui.RunHost
+	runHostUIWithUpdates = tui.RunHostWithUpdateNotices
 	runHostHeadless = func(ctx context.Context, host *session.Host, localName string, _ []byte) error {
 		signalCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		return headless.RunHost(signalCtx, host, localName, stderr)
 	}
 	runJoinUI                   = tui.RunJoin
+	runJoinUIWithUpdates        = tui.RunJoinWithUpdateNotices
 	runSelfUpdateCommand        = runSelfUpdate
 	launchBackgroundUpdateCheck = func(ctx context.Context) {
 		update.StartBackgroundCheck(ctx, update.Client{
 			Repository:     "HYPGAME/chatbox",
 			CurrentVersion: version.Version,
 		}, version.Version, stderr)
+	}
+	backgroundUpdateNoticeChannel = func(ctx context.Context) <-chan string {
+		notices := make(chan string, 1)
+		update.StartBackgroundCheckChannel(ctx, update.Client{
+			Repository:     "HYPGAME/chatbox",
+			CurrentVersion: version.Version,
+		}, version.Version, notices)
+		return notices
 	}
 	stdout io.Writer = os.Stdout
 	stderr io.Writer = os.Stderr
@@ -237,6 +247,9 @@ func runHost(ctx context.Context, args []string) error {
 	if *headless {
 		return runHostHeadless(ctx, host, *name, psk)
 	}
+	if uiMode == "tui" {
+		return runHostUIWithUpdates(host, *name, psk, uiMode, alertMode, backgroundUpdateNoticeChannel(ctx))
+	}
 	return runHostUI(host, *name, psk, uiMode, alertMode)
 }
 
@@ -279,6 +292,13 @@ func runJoin(ctx context.Context, args []string) error {
 	}
 	defer conn.Close()
 
+	if uiMode == "tui" {
+		return runJoinUIWithUpdates(conn, *name, *peer, session.Config{
+			Name: *name,
+			PSK:  psk,
+		}, uiMode, alertMode, backgroundUpdateNoticeChannel(ctx))
+	}
+
 	return runJoinUI(conn, *name, *peer, session.Config{
 		Name: *name,
 		PSK:  psk,
@@ -304,10 +324,27 @@ func shouldLaunchBackgroundUpdateCheck(args []string) bool {
 	if args[0] == "self-update" {
 		return false
 	}
-	if args[0] != "host" {
+	if args[0] != "host" && args[0] != "join" {
 		return true
 	}
+	if explicitTUIModeRequested(args[1:]) {
+		return false
+	}
 	return !hostHeadlessRequested(args[1:])
+}
+
+func explicitTUIModeRequested(args []string) bool {
+	for i, arg := range args {
+		switch {
+		case arg == "--ui":
+			if i+1 < len(args) && strings.EqualFold(strings.TrimSpace(args[i+1]), "tui") {
+				return true
+			}
+		case strings.HasPrefix(arg, "--ui="):
+			return strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(arg, "--ui=")), "tui")
+		}
+	}
+	return false
 }
 
 func hostHeadlessRequested(args []string) bool {
