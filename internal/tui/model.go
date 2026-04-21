@@ -826,7 +826,7 @@ func (m *model) replayHistorySyncChunk(chunk room.HistorySyncChunk) {
 			Body: record.Body,
 			At:   record.At,
 		}
-		m.addMessageEntry(message, record.Direction == transcript.DirectionOutgoing, transcript.StatusSent, true)
+		m.addHistoricalMessageEntry(message, record.Direction == transcript.DirectionOutgoing, transcript.StatusSent, true)
 		m.seenMessages[record.MessageID] = struct{}{}
 		added++
 	}
@@ -983,10 +983,40 @@ func (m *model) addMessageEntry(message session.Message, outgoing bool, status s
 
 	m.addHistoryEntry(entry)
 	if message.ID != "" {
-		m.seenMessages[message.ID] = struct{}{}
-		m.entryIndex[message.ID] = len(m.history) - 1
+		m.reindexHistoryMessageIDs()
+	}
+	if persist && m.transcript != nil {
+		record := transcript.Record{
+			MessageID: message.ID,
+			Direction: transcript.DirectionIncoming,
+			From:      message.From,
+			Body:      message.Body,
+			At:        message.At,
+			Status:    status,
+		}
+		if outgoing {
+			record.Direction = transcript.DirectionOutgoing
+		}
+		_ = m.transcript.AppendMessage(record)
+	}
+}
+
+func (m *model) addHistoricalMessageEntry(message session.Message, outgoing bool, status string, persist bool) {
+	entry := historyEntry{
+		kind:      historyKindMessage,
+		messageID: message.ID,
+		from:      message.From,
+		body:      message.Body,
+		at:        message.At,
+		outgoing:  outgoing,
+		status:    status,
 	}
 
+	m.insertHistoryEntryChronologically(entry)
+	if message.ID != "" {
+		m.seenMessages[message.ID] = struct{}{}
+		m.reindexHistoryMessageIDs()
+	}
 	if persist && m.transcript != nil {
 		record := transcript.Record{
 			MessageID: message.ID,
@@ -1007,6 +1037,30 @@ func (m *model) addHistoryEntry(entry historyEntry) {
 	stickToBottom := m.viewport.AtBottom() || len(m.history) == 0
 	m.history = append(m.history, entry)
 	m.refreshViewport(stickToBottom)
+}
+
+func (m *model) insertHistoryEntryChronologically(entry historyEntry) {
+	stickToBottom := m.viewport.AtBottom() || len(m.history) == 0
+	index := len(m.history)
+	for i, existing := range m.history {
+		if existing.at.After(entry.at) {
+			index = i
+			break
+		}
+	}
+	m.history = append(m.history, historyEntry{})
+	copy(m.history[index+1:], m.history[index:])
+	m.history[index] = entry
+	m.refreshViewport(stickToBottom)
+}
+
+func (m *model) reindexHistoryMessageIDs() {
+	m.entryIndex = make(map[string]int, len(m.history))
+	for i, entry := range m.history {
+		if entry.messageID != "" {
+			m.entryIndex[entry.messageID] = i
+		}
+	}
 }
 
 func (m *model) refreshViewport(stickToBottom bool) {
@@ -1091,7 +1145,7 @@ func (m *model) ensureTranscriptLoaded(conversationKey string) error {
 			record.Status = transcript.StatusFailed
 			_ = m.transcript.UpdateStatus(record.MessageID, transcript.StatusFailed)
 		}
-		m.addMessageEntry(session.Message{
+		m.addHistoricalMessageEntry(session.Message{
 			ID:   record.MessageID,
 			From: record.From,
 			Body: record.Body,

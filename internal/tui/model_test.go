@@ -1042,6 +1042,71 @@ func TestModelReplaysHistorySyncChunkIntoTranscript(t *testing.T) {
 	}
 }
 
+func TestModelReplaysHistorySyncChunkInChronologicalOrder(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeTranscriptStore{}
+	joinedAt := time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC)
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		session:       &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return store, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-local", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{RoomKey: roomKey, IdentityID: identityID, JoinedAt: joinedAt}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: &fakeSession{peerName: "host"}})
+	uiModel = updated.(model)
+	uiModel.addMessageEntry(session.Message{
+		ID:   "live-2",
+		From: "c",
+		Body: "latest live",
+		At:   joinedAt.Add(20 * time.Minute),
+	}, false, transcript.StatusSent, true)
+
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "sync-chunk-ordered",
+			From: "host",
+			Body: room.HistorySyncChunkBody(room.HistorySyncChunk{
+				Version:        1,
+				SourceIdentity: "identity-host",
+				TargetIdentity: "identity-local",
+				RoomKey:        transcript.JoinRoomKey("203.0.113.10:7331"),
+				Records: []transcript.Record{
+					{
+						MessageID: "offline-1",
+						Direction: transcript.DirectionIncoming,
+						From:      "b",
+						Body:      "offline earlier",
+						At:        joinedAt.Add(10 * time.Minute),
+						Status:    transcript.StatusSent,
+					},
+				},
+			}),
+			At: joinedAt.Add(21 * time.Minute),
+		},
+	})
+	uiModel = updated.(model)
+
+	view := stripANSI(uiModel.View())
+	offlineIndex := strings.Index(view, "offline earlier")
+	liveIndex := strings.Index(view, "latest live")
+	if offlineIndex == -1 || liveIndex == -1 {
+		t.Fatalf("expected both offline and live messages in view, got %q", view)
+	}
+	if offlineIndex > liveIndex {
+		t.Fatalf("expected offline synced message to be inserted before newer live message, got %q", view)
+	}
+}
+
 func TestModelLoadsHistoryAcrossDisplayNameChangesForSameRoom(t *testing.T) {
 	t.Parallel()
 
