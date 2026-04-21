@@ -1005,6 +1005,128 @@ func TestModelRequestsHistoryWhenOfferHasNewerHistoryDespiteSameCount(t *testing
 	}
 }
 
+func TestModelRequestsHistoryFromEachPeerOncePerConnectionEvenWithoutNewerSummary(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeSession{peerName: "host", localName: "alice"}
+	joinedAt := time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC)
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		session:       fake,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-local", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{
+				RoomKey:    roomKey,
+				IdentityID: identityID,
+				JoinedAt:   joinedAt,
+			}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
+	uiModel = updated.(model)
+	uiModel.addHistoryEntry(historyEntry{
+		kind:      historyKindMessage,
+		messageID: "local-1",
+		from:      "alice",
+		body:      "already have newer message",
+		at:        time.Date(2026, 4, 20, 22, 0, 0, 0, time.UTC),
+		status:    transcript.StatusSent,
+	})
+
+	initialSent := len(fake.sent)
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "sync-offer-peer-a",
+			From: "host",
+			Body: room.HistorySyncOfferBody(room.HistorySyncOffer{
+				Version:        1,
+				SourceIdentity: "identity-peer-a",
+				TargetIdentity: "identity-local",
+				RoomKey:        transcript.JoinRoomKey("203.0.113.10:7331"),
+				Summary: room.HistorySyncSummary{
+					Count:  1,
+					Newest: time.Date(2026, 4, 20, 21, 0, 0, 0, time.UTC),
+				},
+			}),
+			At: time.Date(2026, 4, 20, 22, 1, 0, 0, time.UTC),
+		},
+	})
+	uiModel = updated.(model)
+
+	if len(fake.sent) <= initialSent {
+		t.Fatal("expected first peer offer to trigger sync request even without newer summary")
+	}
+	requestA, ok := room.ParseHistorySyncRequest(fake.sent[len(fake.sent)-1].Body)
+	if !ok {
+		t.Fatalf("expected sync request for first peer, got %#v", fake.sent[len(fake.sent)-1])
+	}
+	if requestA.SourceIdentity != "identity-peer-a" {
+		t.Fatalf("expected first request to target peer-a, got %#v", requestA)
+	}
+
+	sentAfterA := len(fake.sent)
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "sync-offer-peer-b",
+			From: "host",
+			Body: room.HistorySyncOfferBody(room.HistorySyncOffer{
+				Version:        1,
+				SourceIdentity: "identity-peer-b",
+				TargetIdentity: "identity-local",
+				RoomKey:        transcript.JoinRoomKey("203.0.113.10:7331"),
+				Summary: room.HistorySyncSummary{
+					Count:  1,
+					Newest: time.Date(2026, 4, 20, 21, 0, 0, 0, time.UTC),
+				},
+			}),
+			At: time.Date(2026, 4, 20, 22, 2, 0, 0, time.UTC),
+		},
+	})
+	uiModel = updated.(model)
+
+	if len(fake.sent) <= sentAfterA {
+		t.Fatal("expected second peer offer to also trigger one sync request")
+	}
+	requestB, ok := room.ParseHistorySyncRequest(fake.sent[len(fake.sent)-1].Body)
+	if !ok {
+		t.Fatalf("expected sync request for second peer, got %#v", fake.sent[len(fake.sent)-1])
+	}
+	if requestB.SourceIdentity != "identity-peer-b" {
+		t.Fatalf("expected second request to target peer-b, got %#v", requestB)
+	}
+
+	sentAfterB := len(fake.sent)
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "sync-offer-peer-b-repeat",
+			From: "host",
+			Body: room.HistorySyncOfferBody(room.HistorySyncOffer{
+				Version:        1,
+				SourceIdentity: "identity-peer-b",
+				TargetIdentity: "identity-local",
+				RoomKey:        transcript.JoinRoomKey("203.0.113.10:7331"),
+				Summary: room.HistorySyncSummary{
+					Count:  1,
+					Newest: time.Date(2026, 4, 20, 21, 0, 0, 0, time.UTC),
+				},
+			}),
+			At: time.Date(2026, 4, 20, 22, 3, 0, 0, time.UTC),
+		},
+	})
+	uiModel = updated.(model)
+
+	if len(fake.sent) != sentAfterB {
+		t.Fatalf("expected repeated offer from same peer not to trigger duplicate request, sent=%#v", fake.sent[sentAfterB:])
+	}
+}
+
 func TestModelSendsHistorySyncChunkForAuthorizedRequest(t *testing.T) {
 	t.Parallel()
 
