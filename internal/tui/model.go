@@ -33,6 +33,7 @@ type sessionClient interface {
 type transcriptStore interface {
 	Load() ([]transcript.Record, error)
 	AppendMessage(transcript.Record) error
+	AppendRevoke(transcript.RevokeRecord) error
 	UpdateStatus(messageID, status string) error
 }
 
@@ -104,13 +105,16 @@ const (
 )
 
 type historyEntry struct {
-	kind      historyKind
-	messageID string
-	from      string
-	body      string
-	at        time.Time
-	outgoing  bool
-	status    string
+	kind           historyKind
+	messageID      string
+	from           string
+	body           string
+	authorIdentity string
+	at             time.Time
+	outgoing       bool
+	status         string
+	revoked        bool
+	revokedAt      time.Time
 }
 
 type slashCommandSuggestion struct {
@@ -146,14 +150,17 @@ type model struct {
 	roomAuthorization         historymeta.Record
 	roomEventLog              []room.Event
 
-	history          []historyEntry
-	printedCount     int
-	entryIndex       map[string]int
-	seenMessages     map[string]struct{}
-	pending          map[string]session.Message
-	syncCapablePeers map[string]bool
-	requestedHistory map[string]struct{}
-	offeredHistory   map[string]struct{}
+	history                []historyEntry
+	printedCount           int
+	pendingScrollbackLines []string
+	entryIndex             map[string]int
+	seenMessages           map[string]struct{}
+	pending                map[string]session.Message
+	pendingRevokes         map[string][]transcript.RevokeRecord
+	peerIdentities         map[string]string
+	syncCapablePeers       map[string]bool
+	requestedHistory       map[string]struct{}
+	offeredHistory         map[string]struct{}
 
 	status string
 
@@ -165,6 +172,10 @@ type model struct {
 
 	draggingViewport bool
 	lastMouseY       int
+
+	revokeMode       bool
+	revokeCandidates []int
+	revokeSelection  int
 }
 
 var (
@@ -294,6 +305,8 @@ func newModel(opts modelOptions) model {
 		entryIndex:       make(map[string]int),
 		seenMessages:     make(map[string]struct{}),
 		pending:          make(map[string]session.Message),
+		pendingRevokes:   make(map[string][]transcript.RevokeRecord),
+		peerIdentities:   make(map[string]string),
 		syncCapablePeers: make(map[string]bool),
 		requestedHistory: make(map[string]struct{}),
 		offeredHistory:   make(map[string]struct{}),
@@ -386,6 +399,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionClosedMsg:
 		return m.handleSessionClosed(msg.err)
 	case tea.KeyMsg:
+		if m.revokeMode {
+			return m.handleRevokeKey(msg)
+		}
 		switch msg.Type {
 		case tea.KeyCtrlC:
 			m.failPendingMessages()
@@ -393,6 +409,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				_ = m.session.Close()
 			}
 			return m, tea.Quit
+		case tea.KeyCtrlR:
+			m.enterRevokeMode()
+			return m, nil
 		case tea.KeyEnter:
 			text := strings.TrimSpace(m.input.Value())
 			m.input.Reset()
@@ -666,7 +685,7 @@ func (m *model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 	if strings.HasPrefix(text, "/") {
 		switch text {
 		case "/help":
-			m.addSystemEntry("commands: /help /status /events /quit")
+			m.addSystemEntry("commands: /help /status /events /quit | Ctrl+R revoke")
 			return *m, m.flushScrollbackCmd()
 		case "/status":
 			m.handleStatusCommand()
@@ -702,13 +721,107 @@ func (m *model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 	return *m, m.flushScrollbackCmd()
 }
 
+func (m *model) handleRevokeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.exitRevokeMode()
+		return *m, nil
+	case tea.KeyUp:
+		if m.revokeSelection > 0 {
+			m.revokeSelection--
+			m.refreshViewport(false)
+		}
+		return *m, nil
+	case tea.KeyDown:
+		if m.revokeSelection+1 < len(m.revokeCandidates) {
+			m.revokeSelection++
+			m.refreshViewport(false)
+		}
+		return *m, nil
+	case tea.KeyEnter:
+		return m.confirmSelectedRevoke()
+	default:
+		return *m, nil
+	}
+}
+
+func (m *model) enterRevokeMode() {
+	m.rebuildRevokeCandidates()
+	if len(m.revokeCandidates) == 0 {
+		m.addSystemEntry("revoke: no eligible messages")
+		return
+	}
+	m.revokeMode = true
+	m.revokeSelection = len(m.revokeCandidates) - 1
+	m.refreshViewport(false)
+}
+
+func (m *model) exitRevokeMode() {
+	if !m.revokeMode {
+		return
+	}
+	m.revokeMode = false
+	m.revokeCandidates = nil
+	m.revokeSelection = 0
+	m.refreshViewport(false)
+}
+
+func (m *model) rebuildRevokeCandidates() {
+	m.revokeCandidates = m.revokeCandidates[:0]
+	for i, entry := range m.history {
+		if entry.kind != historyKindMessage || entry.messageID == "" || !entry.outgoing || entry.revoked {
+			continue
+		}
+		if entry.authorIdentity == "" || entry.status != transcript.StatusSent {
+			continue
+		}
+		m.revokeCandidates = append(m.revokeCandidates, i)
+	}
+}
+
+func (m *model) confirmSelectedRevoke() (tea.Model, tea.Cmd) {
+	if !m.revokeMode {
+		return *m, nil
+	}
+	index := m.selectedRevokeHistoryIndex()
+	if index < 0 || index >= len(m.history) {
+		m.exitRevokeMode()
+		return *m, nil
+	}
+	entry := m.history[index]
+	revoke := room.Revoke{
+		Version:          1,
+		RoomKey:          m.roomAuthorization.RoomKey,
+		OperatorIdentity: m.identityID,
+		TargetMessageID:  entry.messageID,
+		At:               time.Now(),
+	}
+	if m.session == nil || revoke.RoomKey == "" || revoke.OperatorIdentity == "" {
+		m.exitRevokeMode()
+		m.addErrorEntry("not connected yet")
+		return *m, nil
+	}
+	if _, err := m.session.Send(room.RevokeBody(revoke)); err != nil {
+		m.exitRevokeMode()
+		m.addErrorEntry(err.Error())
+		return *m, m.flushScrollbackCmd()
+	}
+	m.exitRevokeMode()
+	m.handleRevokeRecord(transcript.RevokeRecord{
+		TargetMessageID:  revoke.TargetMessageID,
+		OperatorIdentity: revoke.OperatorIdentity,
+		At:               revoke.At,
+	}, true)
+	return *m, m.flushScrollbackCmd()
+}
+
 func (m *model) handleIncomingMessage(message session.Message) {
 	if message.ID != "" {
 		if _, ok := m.seenMessages[message.ID]; ok {
 			return
 		}
 	}
-	if m.handleHistorySyncControl(message) {
+	if m.handleControlMessage(message) {
 		if message.ID != "" {
 			m.seenMessages[message.ID] = struct{}{}
 		}
@@ -732,23 +845,46 @@ func (m *model) handleIncomingMessage(message session.Message) {
 	m.notifyLiveIncomingAlert()
 }
 
+func (m *model) handleControlMessage(message session.Message) bool {
+	if m.handleHistorySyncControl(message) {
+		return true
+	}
+	if revoke, ok := room.ParseRevoke(message.Body); ok {
+		if m.roomAuthorization.RoomKey == "" || revoke.RoomKey != m.roomAuthorization.RoomKey {
+			return true
+		}
+		m.rememberPeerIdentity(message.From, revoke.OperatorIdentity)
+		m.handleRevokeRecord(transcript.RevokeRecord{
+			TargetMessageID:  revoke.TargetMessageID,
+			OperatorIdentity: revoke.OperatorIdentity,
+			At:               revoke.At,
+		}, true)
+		return true
+	}
+	return room.IsRevokeControl(message.Body)
+}
+
 func (m *model) handleHistorySyncControl(message session.Message) bool {
 	if hello, ok := room.ParseHistorySyncHello(message.Body); ok {
 		if hello.IdentityID != "" && strings.TrimSpace(message.From) != "" {
 			m.syncCapablePeers[message.From] = true
+			m.rememberPeerIdentity(message.From, hello.IdentityID)
 		}
 		m.maybeOfferHistorySync(hello)
 		return true
 	}
 	if offer, ok := room.ParseHistorySyncOffer(message.Body); ok {
+		m.rememberPeerIdentity(message.From, offer.SourceIdentity)
 		m.maybeRequestHistorySync(offer)
 		return true
 	}
 	if request, ok := room.ParseHistorySyncRequest(message.Body); ok {
+		m.rememberPeerIdentity(message.From, request.TargetIdentity)
 		m.maybeSendHistorySyncChunk(request)
 		return true
 	}
 	if chunk, ok := room.ParseHistorySyncChunk(message.Body); ok {
+		m.rememberPeerIdentity(message.From, chunk.SourceIdentity)
 		m.replayHistorySyncChunk(chunk)
 		return true
 	}
@@ -836,20 +972,35 @@ func (m *model) maybeSendHistorySyncChunk(request room.HistorySyncRequest) {
 	}
 
 	records := make([]transcript.Record, 0)
+	revokes := make([]transcript.RevokeRecord, 0)
 	for _, entry := range m.history {
 		if entry.kind != historyKindMessage || entry.messageID == "" || entry.at.Before(request.Since) {
 			continue
 		}
-		records = append(records, transcript.Record{
-			MessageID: entry.messageID,
-			Direction: transcript.DirectionIncoming,
-			From:      entry.from,
-			Body:      entry.body,
-			At:        entry.at,
-			Status:    transcript.StatusSent,
-		})
+		record := transcript.Record{
+			MessageID:      entry.messageID,
+			Direction:      transcript.DirectionIncoming,
+			From:           entry.from,
+			AuthorIdentity: entry.authorIdentity,
+			Body:           entry.body,
+			At:             entry.at,
+			Status:         entry.status,
+			Revoked:        entry.revoked,
+			RevokedAt:      entry.revokedAt,
+		}
+		if entry.outgoing {
+			record.Direction = transcript.DirectionOutgoing
+		}
+		records = append(records, record)
+		if entry.revoked {
+			revokes = append(revokes, transcript.RevokeRecord{
+				TargetMessageID:  entry.messageID,
+				OperatorIdentity: entry.authorIdentity,
+				At:               entry.revokedAt,
+			})
+		}
 	}
-	if len(records) == 0 {
+	if len(records) == 0 && len(revokes) == 0 {
 		return
 	}
 	_, _ = m.session.Send(room.HistorySyncChunkBody(room.HistorySyncChunk{
@@ -858,6 +1009,7 @@ func (m *model) maybeSendHistorySyncChunk(request room.HistorySyncRequest) {
 		TargetIdentity: request.TargetIdentity,
 		RoomKey:        m.roomAuthorization.RoomKey,
 		Records:        records,
+		Revokes:        revokes,
 	}))
 }
 
@@ -884,15 +1036,15 @@ func (m *model) replayHistorySyncChunk(chunk room.HistorySyncChunk) {
 			m.seenMessages[record.MessageID] = struct{}{}
 			continue
 		}
-		message := session.Message{
-			ID:   record.MessageID,
-			From: record.From,
-			Body: record.Body,
-			At:   record.At,
+		if record.AuthorIdentity == "" && record.Direction == transcript.DirectionOutgoing {
+			record.AuthorIdentity = chunk.SourceIdentity
 		}
-		m.addHistoricalMessageEntry(message, record.Direction == transcript.DirectionOutgoing, transcript.StatusSent, true)
+		m.addHistoricalRecordEntry(record, true)
 		m.seenMessages[record.MessageID] = struct{}{}
 		added++
+	}
+	for _, revoke := range chunk.Revokes {
+		m.handleRevokeRecord(revoke, true)
 	}
 	if added > 0 {
 		m.addSystemEntry(fmt.Sprintf("history synced: %d messages", added))
@@ -1017,7 +1169,7 @@ func (m *model) resize() {
 }
 
 func (m model) activeSlashCommandSuggestions() []slashCommandSuggestion {
-	if m.uiMode != uiModeTUI {
+	if m.uiMode != uiModeTUI || m.revokeMode {
 		return nil
 	}
 
@@ -1066,71 +1218,184 @@ func (m *model) addErrorEntry(text string) {
 }
 
 func (m *model) addMessageEntry(message session.Message, outgoing bool, status string, persist bool) {
-	entry := historyEntry{
-		kind:      historyKindMessage,
-		messageID: message.ID,
-		from:      message.From,
-		body:      message.Body,
-		at:        message.At,
-		outgoing:  outgoing,
-		status:    status,
+	record := transcript.Record{
+		MessageID:      message.ID,
+		Direction:      transcript.DirectionIncoming,
+		From:           message.From,
+		AuthorIdentity: m.authorIdentityForMessage(message, outgoing),
+		Body:           message.Body,
+		At:             message.At,
+		Status:         status,
 	}
-
-	m.addHistoryEntry(entry)
-	if message.ID != "" {
-		m.reindexHistoryMessageIDs()
+	if outgoing {
+		record.Direction = transcript.DirectionOutgoing
 	}
-	if persist && m.transcript != nil {
-		record := transcript.Record{
-			MessageID: message.ID,
-			Direction: transcript.DirectionIncoming,
-			From:      message.From,
-			Body:      message.Body,
-			At:        message.At,
-			Status:    status,
-		}
-		if outgoing {
-			record.Direction = transcript.DirectionOutgoing
-		}
-		_ = m.transcript.AppendMessage(record)
-	}
+	m.addRecordEntry(record, persist, false)
 }
 
 func (m *model) addHistoricalMessageEntry(message session.Message, outgoing bool, status string, persist bool) {
+	record := transcript.Record{
+		MessageID:      message.ID,
+		Direction:      transcript.DirectionIncoming,
+		From:           message.From,
+		AuthorIdentity: m.authorIdentityForMessage(message, outgoing),
+		Body:           message.Body,
+		At:             message.At,
+		Status:         status,
+	}
+	if outgoing {
+		record.Direction = transcript.DirectionOutgoing
+	}
+	m.addRecordEntry(record, persist, true)
+}
+
+func (m *model) addHistoricalRecordEntry(record transcript.Record, persist bool) {
+	m.addRecordEntry(record, persist, true)
+}
+
+func (m *model) addRecordEntry(record transcript.Record, persist bool, chronological bool) {
 	entry := historyEntry{
-		kind:      historyKindMessage,
-		messageID: message.ID,
-		from:      message.From,
-		body:      message.Body,
-		at:        message.At,
-		outgoing:  outgoing,
-		status:    status,
+		kind:           historyKindMessage,
+		messageID:      record.MessageID,
+		from:           record.From,
+		body:           record.Body,
+		authorIdentity: record.AuthorIdentity,
+		at:             record.At,
+		outgoing:       record.Direction == transcript.DirectionOutgoing,
+		status:         record.Status,
+		revoked:        record.Revoked,
+		revokedAt:      record.RevokedAt,
 	}
 
-	m.insertHistoryEntryChronologically(entry)
-	if message.ID != "" {
-		m.seenMessages[message.ID] = struct{}{}
+	if chronological {
+		m.insertHistoryEntryChronologically(entry)
+	} else {
+		m.addHistoryEntry(entry)
+	}
+	if record.MessageID != "" {
+		m.seenMessages[record.MessageID] = struct{}{}
 		m.reindexHistoryMessageIDs()
+		m.applyPendingRevokes(record.MessageID)
 	}
 	if persist && m.transcript != nil {
-		record := transcript.Record{
-			MessageID: message.ID,
-			Direction: transcript.DirectionIncoming,
-			From:      message.From,
-			Body:      message.Body,
-			At:        message.At,
-			Status:    status,
-		}
-		if outgoing {
-			record.Direction = transcript.DirectionOutgoing
-		}
 		_ = m.transcript.AppendMessage(record)
+		if record.Revoked {
+			_ = m.transcript.AppendRevoke(transcript.RevokeRecord{
+				TargetMessageID:  record.MessageID,
+				OperatorIdentity: record.AuthorIdentity,
+				At:               record.RevokedAt,
+			})
+		}
 	}
+}
+
+func (m *model) authorIdentityForMessage(message session.Message, outgoing bool) string {
+	if outgoing {
+		return m.identityID
+	}
+	return m.peerIdentities[strings.TrimSpace(message.From)]
+}
+
+func (m *model) rememberPeerIdentity(peerName, identityID string) {
+	peerName = strings.TrimSpace(peerName)
+	identityID = strings.TrimSpace(identityID)
+	if peerName == "" || identityID == "" {
+		return
+	}
+	if current := m.peerIdentities[peerName]; current == identityID {
+		return
+	}
+	m.peerIdentities[peerName] = identityID
+
+	updated := false
+	for i := range m.history {
+		entry := m.history[i]
+		if entry.kind != historyKindMessage || strings.TrimSpace(entry.from) != peerName || entry.authorIdentity != "" {
+			continue
+		}
+		entry.authorIdentity = identityID
+		m.history[i] = entry
+		if entry.messageID != "" {
+			m.applyPendingRevokes(entry.messageID)
+		}
+		updated = true
+	}
+	if updated {
+		m.refreshViewport(false)
+	}
+}
+
+func (m *model) handleRevokeRecord(revoke transcript.RevokeRecord, persist bool) {
+	applied, pending := m.applyRevokeRecord(revoke, persist)
+	if applied || !pending {
+		return
+	}
+	m.pendingRevokes[revoke.TargetMessageID] = append(m.pendingRevokes[revoke.TargetMessageID], revoke)
+}
+
+func (m *model) applyPendingRevokes(messageID string) {
+	pending := m.pendingRevokes[messageID]
+	if len(pending) == 0 {
+		return
+	}
+	remaining := pending[:0]
+	for _, revoke := range pending {
+		applied, retry := m.applyRevokeRecord(revoke, true)
+		if !applied && retry {
+			remaining = append(remaining, revoke)
+		}
+	}
+	if len(remaining) == 0 {
+		delete(m.pendingRevokes, messageID)
+		return
+	}
+	m.pendingRevokes[messageID] = remaining
+}
+
+func (m *model) applyRevokeRecord(revoke transcript.RevokeRecord, persist bool) (bool, bool) {
+	targetID := strings.TrimSpace(revoke.TargetMessageID)
+	operatorID := strings.TrimSpace(revoke.OperatorIdentity)
+	if targetID == "" || operatorID == "" {
+		return false, false
+	}
+
+	index, ok := m.entryIndex[targetID]
+	if !ok {
+		return false, true
+	}
+	entry := m.history[index]
+	if entry.kind != historyKindMessage {
+		return false, false
+	}
+	if entry.revoked {
+		return true, false
+	}
+	if entry.authorIdentity == "" {
+		return false, true
+	}
+	if entry.authorIdentity != operatorID {
+		return false, false
+	}
+
+	entry.revoked = true
+	entry.revokedAt = revoke.At
+	m.history[index] = entry
+	if m.uiMode == uiModeScrollback {
+		m.pendingScrollbackLines = append(m.pendingScrollbackLines, renderScrollbackEntry(entry))
+	}
+	m.syncRevokeCandidates()
+	m.refreshViewport(false)
+
+	if persist && m.transcript != nil {
+		_ = m.transcript.AppendRevoke(revoke)
+	}
+	return true, false
 }
 
 func (m *model) addHistoryEntry(entry historyEntry) {
 	stickToBottom := m.viewport.AtBottom() || len(m.history) == 0
 	m.history = append(m.history, entry)
+	m.syncRevokeCandidates()
 	m.refreshViewport(stickToBottom)
 }
 
@@ -1146,6 +1411,7 @@ func (m *model) insertHistoryEntryChronologically(entry historyEntry) {
 	m.history = append(m.history, historyEntry{})
 	copy(m.history[index+1:], m.history[index:])
 	m.history[index] = entry
+	m.syncRevokeCandidates()
 	m.refreshViewport(stickToBottom)
 }
 
@@ -1158,17 +1424,40 @@ func (m *model) reindexHistoryMessageIDs() {
 	}
 }
 
+func (m *model) selectedRevokeHistoryIndex() int {
+	if !m.revokeMode || m.revokeSelection < 0 || m.revokeSelection >= len(m.revokeCandidates) {
+		return -1
+	}
+	return m.revokeCandidates[m.revokeSelection]
+}
+
+func (m *model) syncRevokeCandidates() {
+	if !m.revokeMode {
+		return
+	}
+	m.rebuildRevokeCandidates()
+	if len(m.revokeCandidates) == 0 {
+		m.revokeMode = false
+		m.revokeSelection = 0
+		return
+	}
+	if m.revokeSelection >= len(m.revokeCandidates) {
+		m.revokeSelection = len(m.revokeCandidates) - 1
+	}
+}
+
 func (m *model) refreshViewport(stickToBottom bool) {
 	offset := m.viewport.YOffset
 	lines := make([]string, 0, len(m.history)*2)
 	lastDate := ""
-	for _, entry := range m.history {
+	selectedIndex := m.selectedRevokeHistoryIndex()
+	for i, entry := range m.history {
 		entryDate := entry.at.Local().Format("2006-01-02")
 		if entryDate != lastDate {
 			lines = append(lines, renderDateSeparator(entryDate))
 			lastDate = entryDate
 		}
-		lines = append(lines, renderTUIEntry(entry))
+		lines = append(lines, renderTUIEntry(entry, i == selectedIndex))
 	}
 
 	m.viewport.SetContent(strings.Join(lines, "\n"))
@@ -1240,12 +1529,10 @@ func (m *model) ensureTranscriptLoaded(conversationKey string) error {
 			record.Status = transcript.StatusFailed
 			_ = m.transcript.UpdateStatus(record.MessageID, transcript.StatusFailed)
 		}
-		m.addHistoricalMessageEntry(session.Message{
-			ID:   record.MessageID,
-			From: record.From,
-			Body: record.Body,
-			At:   record.At,
-		}, record.Direction == transcript.DirectionOutgoing, record.Status, false)
+		if record.Direction == transcript.DirectionOutgoing && record.AuthorIdentity == "" {
+			record.AuthorIdentity = m.identityID
+		}
+		m.addHistoricalRecordEntry(record, false)
 	}
 	return nil
 }
@@ -1256,12 +1543,17 @@ func (m *model) resetConversation() {
 	m.entryIndex = make(map[string]int)
 	m.seenMessages = make(map[string]struct{})
 	m.pending = make(map[string]session.Message)
+	m.pendingRevokes = make(map[string][]transcript.RevokeRecord)
+	m.peerIdentities = make(map[string]string)
 	m.transcript = nil
 	m.transcriptConversationKey = ""
 	m.currentConversationKey = ""
 	m.currentPeer = ""
 	m.requestedHistory = make(map[string]struct{})
 	m.offeredHistory = make(map[string]struct{})
+	m.revokeMode = false
+	m.revokeCandidates = nil
+	m.revokeSelection = 0
 	m.addStartupHints()
 }
 
@@ -1296,7 +1588,7 @@ func (m *model) addStartupHints() {
 	if m.uiMode == uiModeScrollback {
 		return
 	}
-	m.addSystemEntry("commands: /help /status /events /quit")
+	m.addSystemEntry("commands: /help /status /events /quit | Ctrl+R revoke")
 }
 
 func (m *model) addRetryEntry(message session.Message) {
@@ -1440,16 +1732,16 @@ func renderEntryWithStatus(entry historyEntry, status string) string {
 	default:
 		label := entry.from
 		statusSuffix := ""
-		if entry.outgoing && status != "" {
+		if entry.outgoing && status != "" && !entry.revoked {
 			statusSuffix = fmt.Sprintf(" [%s]", status)
 		}
 		coloredLabel := senderMessageStyle(label).Render(label)
 		coloredTimestamp := timestampStyle().Render(fmt.Sprintf("[%s]", timestamp))
-		return fmt.Sprintf("%s %s: %s%s", coloredTimestamp, coloredLabel, entry.body, statusSuffix)
+		return fmt.Sprintf("%s %s: %s%s", coloredTimestamp, coloredLabel, renderedMessageBody(entry), statusSuffix)
 	}
 }
 
-func renderTUIEntry(entry historyEntry) string {
+func renderTUIEntry(entry historyEntry, selected bool) string {
 	timestamp := entry.at.Local().Format("15:04")
 	switch entry.kind {
 	case historyKindSystem:
@@ -1458,13 +1750,24 @@ func renderTUIEntry(entry historyEntry) string {
 		return historyErrorStyle().Render(fmt.Sprintf("error [%s]: %s", timestamp, entry.body))
 	default:
 		statusSuffix := ""
-		if entry.outgoing && entry.status != "" && entry.status != transcript.StatusSent {
+		if entry.outgoing && entry.status != "" && entry.status != transcript.StatusSent && !entry.revoked {
 			statusSuffix = fmt.Sprintf(" [%s]", entry.status)
 		}
 		coloredLabel := senderMessageStyle(entry.from).Render(entry.from)
 		coloredTimestamp := timestampStyle().Render(fmt.Sprintf("[%s]", timestamp))
-		return fmt.Sprintf("%s %s: %s%s", coloredTimestamp, coloredLabel, entry.body, statusSuffix)
+		line := fmt.Sprintf("%s %s: %s%s", coloredTimestamp, coloredLabel, renderedMessageBody(entry), statusSuffix)
+		if selected {
+			return inputHintStyle.Render("> ") + line
+		}
+		return line
 	}
+}
+
+func renderedMessageBody(entry historyEntry) string {
+	if entry.revoked {
+		return "已撤回一条消息"
+	}
+	return entry.body
 }
 
 func renderDateSeparator(date string) string {
@@ -1481,9 +1784,13 @@ func (m model) renderStatusBar() string {
 }
 
 func (m model) renderInputBox() string {
+	hint := "Enter send / Esc quit / Ctrl+R revoke"
+	if m.revokeMode {
+		hint = "revoke mode: Up/Down select / Enter confirm / Esc cancel"
+	}
 	content := strings.Join([]string{
 		m.input.View(),
-		inputHintStyle.Render("Enter send / Esc quit"),
+		inputHintStyle.Render(hint),
 	}, "\n")
 	return inputStyle.Render(content)
 }
@@ -1540,15 +1847,20 @@ func (m model) hostStatus() string {
 }
 
 func (m *model) flushScrollbackCmd() tea.Cmd {
-	if m.uiMode != uiModeScrollback || m.printedCount >= len(m.history) {
+	if m.uiMode != uiModeScrollback {
+		return nil
+	}
+	if m.printedCount >= len(m.history) && len(m.pendingScrollbackLines) == 0 {
 		return nil
 	}
 
-	lines := make([]string, 0, len(m.history)-m.printedCount)
+	lines := make([]string, 0, len(m.history)-m.printedCount+len(m.pendingScrollbackLines))
 	for _, entry := range m.history[m.printedCount:] {
 		lines = append(lines, renderScrollbackEntry(entry))
 	}
+	lines = append(lines, m.pendingScrollbackLines...)
 	m.printedCount = len(m.history)
+	m.pendingScrollbackLines = nil
 	return m.printLines(lines)
 }
 

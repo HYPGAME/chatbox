@@ -82,6 +82,13 @@ func TestHistorySyncControlChunkRoundTripsTranscriptRecords(t *testing.T) {
 				Status:    transcript.StatusSent,
 			},
 		},
+		Revokes: []transcript.RevokeRecord{
+			{
+				TargetMessageID:  "msg-1",
+				OperatorIdentity: "identity-source",
+				At:               time.Date(2026, 4, 20, 10, 1, 0, 0, time.UTC),
+			},
+		},
 	}
 
 	parsed, ok := ParseHistorySyncChunk(HistorySyncChunkBody(chunk))
@@ -90,6 +97,9 @@ func TestHistorySyncControlChunkRoundTripsTranscriptRecords(t *testing.T) {
 	}
 	if len(parsed.Records) != 1 || parsed.Records[0].MessageID != "msg-1" || parsed.Records[0].Body != "hello" {
 		t.Fatalf("expected chunk records to round-trip, got %#v", parsed)
+	}
+	if len(parsed.Revokes) != 1 || parsed.Revokes[0].TargetMessageID != "msg-1" {
+		t.Fatalf("expected chunk revokes to round-trip, got %#v", parsed)
 	}
 }
 

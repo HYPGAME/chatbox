@@ -22,12 +22,13 @@ func TestStoreEncryptsAndReloadsConversationRecords(t *testing.T) {
 	}
 
 	record := Record{
-		MessageID: "msg-1",
-		Direction: DirectionOutgoing,
-		From:      "alice",
-		Body:      "hello from transcript",
-		At:        time.Date(2026, 4, 14, 21, 30, 0, 0, time.UTC),
-		Status:    StatusSending,
+		MessageID:      "msg-1",
+		Direction:      DirectionOutgoing,
+		From:           "alice",
+		AuthorIdentity: "identity-alice",
+		Body:           "hello from transcript",
+		At:             time.Date(2026, 4, 14, 21, 30, 0, 0, time.UTC),
+		Status:         StatusSending,
 	}
 	if err := store.AppendMessage(record); err != nil {
 		t.Fatalf("AppendMessage returned error: %v", err)
@@ -59,8 +60,109 @@ func TestStoreEncryptsAndReloadsConversationRecords(t *testing.T) {
 	if loaded[0].Body != record.Body {
 		t.Fatalf("expected body %q, got %q", record.Body, loaded[0].Body)
 	}
+	if loaded[0].AuthorIdentity != record.AuthorIdentity {
+		t.Fatalf("expected author identity %q, got %q", record.AuthorIdentity, loaded[0].AuthorIdentity)
+	}
 	if loaded[0].Status != StatusSent {
 		t.Fatalf("expected status %q, got %q", StatusSent, loaded[0].Status)
+	}
+}
+
+func TestStoreReloadsRevokedConversationRecords(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	psk := bytes.Repeat([]byte{0x52}, 32)
+
+	store, err := OpenStore(baseDir, "alice", "bob", psk)
+	if err != nil {
+		t.Fatalf("OpenStore returned error: %v", err)
+	}
+
+	record := Record{
+		MessageID:      "msg-1",
+		Direction:      DirectionOutgoing,
+		From:           "alice",
+		AuthorIdentity: "identity-alice",
+		Body:           "hello from transcript",
+		At:             time.Date(2026, 4, 14, 21, 30, 0, 0, time.UTC),
+		Status:         StatusSent,
+	}
+	if err := store.AppendMessage(record); err != nil {
+		t.Fatalf("AppendMessage returned error: %v", err)
+	}
+	revokeAt := time.Date(2026, 4, 14, 21, 31, 0, 0, time.UTC)
+	if err := store.AppendRevoke(RevokeRecord{
+		TargetMessageID:  "msg-1",
+		OperatorIdentity: "identity-alice",
+		At:               revokeAt,
+	}); err != nil {
+		t.Fatalf("AppendRevoke returned error: %v", err)
+	}
+
+	reopened, err := OpenStore(baseDir, "alice", "bob", psk)
+	if err != nil {
+		t.Fatalf("reopening store returned error: %v", err)
+	}
+
+	loaded, err := reopened.Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected 1 loaded record, got %d", len(loaded))
+	}
+	if !loaded[0].Revoked {
+		t.Fatalf("expected loaded record to be revoked, got %#v", loaded[0])
+	}
+	if !loaded[0].RevokedAt.Equal(revokeAt) {
+		t.Fatalf("expected revoked at %v, got %#v", revokeAt, loaded[0])
+	}
+}
+
+func TestStoreAppliesPendingRevokesWhenMessageArrivesLater(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	psk := bytes.Repeat([]byte{0x52}, 32)
+
+	store, err := OpenStore(baseDir, "alice", "bob", psk)
+	if err != nil {
+		t.Fatalf("OpenStore returned error: %v", err)
+	}
+	messageAt := time.Date(2026, 4, 14, 21, 30, 0, 0, time.UTC)
+	revokeAt := time.Date(2026, 4, 14, 21, 31, 0, 0, time.UTC)
+	if err := store.appendEvent(fileEvent{
+		Type: "revoke",
+		Revoke: RevokeRecord{
+			TargetMessageID:  "msg-1",
+			OperatorIdentity: "identity-alice",
+			At:               revokeAt,
+		},
+	}); err != nil {
+		t.Fatalf("append revoke event: %v", err)
+	}
+	if err := store.AppendMessage(Record{
+		MessageID:      "msg-1",
+		Direction:      DirectionOutgoing,
+		From:           "alice",
+		AuthorIdentity: "identity-alice",
+		Body:           "hello from transcript",
+		At:             messageAt,
+		Status:         StatusSent,
+	}); err != nil {
+		t.Fatalf("AppendMessage returned error: %v", err)
+	}
+
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected 1 loaded record, got %d", len(loaded))
+	}
+	if !loaded[0].Revoked {
+		t.Fatalf("expected late-arriving message to inherit pending revoke, got %#v", loaded[0])
 	}
 }
 

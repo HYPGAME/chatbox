@@ -40,11 +40,12 @@ type HistorySyncRequest struct {
 }
 
 type HistorySyncChunk struct {
-	Version        int                 `json:"version"`
-	SourceIdentity string              `json:"source_identity"`
-	TargetIdentity string              `json:"target_identity"`
-	RoomKey        string              `json:"room_key"`
-	Records        []transcript.Record `json:"records"`
+	Version        int                       `json:"version"`
+	SourceIdentity string                    `json:"source_identity"`
+	TargetIdentity string                    `json:"target_identity"`
+	RoomKey        string                    `json:"room_key"`
+	Records        []transcript.Record       `json:"records"`
+	Revokes        []transcript.RevokeRecord `json:"revokes,omitempty"`
 }
 
 func IsHistorySyncControl(body string) bool {

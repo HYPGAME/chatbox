@@ -345,7 +345,7 @@ func TestRenderTUIEntryUsesCompactTime(t *testing.T) {
 		at:   time.Date(2026, 4, 17, 15, 10, 0, 0, time.Local),
 	}
 
-	if got := stripANSI(renderTUIEntry(entry)); got != "[15:10] alice: hello" {
+	if got := stripANSI(renderTUIEntry(entry, false)); got != "[15:10] alice: hello" {
 		t.Fatalf("expected compact TUI message timestamp, got %q", got)
 	}
 }
@@ -1334,6 +1334,72 @@ func TestModelSendsHistorySyncChunkForAuthorizedRequest(t *testing.T) {
 	}
 }
 
+func TestModelSendsHistorySyncChunkWithRevokes(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeSession{peerName: "host", localName: "alice"}
+	joinedAt := time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC)
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		session:       fake,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-local", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{RoomKey: roomKey, IdentityID: identityID, JoinedAt: joinedAt}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
+	uiModel = updated.(model)
+	uiModel.addHistoryEntry(historyEntry{
+		kind:           historyKindMessage,
+		messageID:      "revoked-visible",
+		from:           "alice",
+		body:           "sync revoked",
+		at:             joinedAt.Add(time.Minute),
+		outgoing:       true,
+		status:         transcript.StatusSent,
+		authorIdentity: "identity-local",
+		revoked:        true,
+		revokedAt:      joinedAt.Add(2 * time.Minute),
+	})
+	initialSent := len(fake.sent)
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "sync-request-revoked",
+			From: "host",
+			Body: room.HistorySyncRequestBody(room.HistorySyncRequest{
+				Version:        1,
+				SourceIdentity: "identity-local",
+				TargetIdentity: "identity-host",
+				RoomKey:        transcript.JoinRoomKey("203.0.113.10:7331"),
+				Since:          joinedAt,
+			}),
+			At: joinedAt.Add(3 * time.Minute),
+		},
+	})
+	uiModel = updated.(model)
+
+	if len(fake.sent) <= initialSent {
+		t.Fatal("expected sync chunk with revoke to be sent")
+	}
+	chunk, ok := room.ParseHistorySyncChunk(fake.sent[len(fake.sent)-1].Body)
+	if !ok {
+		t.Fatalf("expected last sent payload to be sync chunk, got %#v", fake.sent[len(fake.sent)-1])
+	}
+	if len(chunk.Records) != 1 || chunk.Records[0].AuthorIdentity != "identity-local" {
+		t.Fatalf("expected sync chunk record to include author identity, got %#v", chunk.Records)
+	}
+	if len(chunk.Revokes) != 1 || chunk.Revokes[0].TargetMessageID != "revoked-visible" {
+		t.Fatalf("expected sync chunk revoke to be included, got %#v", chunk.Revokes)
+	}
+}
+
 func TestModelReplaysHistorySyncChunkIntoTranscript(t *testing.T) {
 	t.Parallel()
 
@@ -1394,6 +1460,199 @@ func TestModelReplaysHistorySyncChunkIntoTranscript(t *testing.T) {
 	}
 	if !strings.Contains(stripANSI(uiModel.View()), "replayed history") {
 		t.Fatalf("expected replayed history in view, got %q", stripANSI(uiModel.View()))
+	}
+}
+
+func TestModelReplaysHistorySyncChunkRevokesIntoTranscript(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeTranscriptStore{}
+	joinedAt := time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC)
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		session:       &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return store, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-local", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{RoomKey: roomKey, IdentityID: identityID, JoinedAt: joinedAt}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: &fakeSession{peerName: "host"}})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "sync-chunk-revoke-1",
+			From: "host",
+			Body: room.HistorySyncChunkBody(room.HistorySyncChunk{
+				Version:        1,
+				SourceIdentity: "identity-host",
+				TargetIdentity: "identity-local",
+				RoomKey:        transcript.JoinRoomKey("203.0.113.10:7331"),
+				Records: []transcript.Record{
+					{
+						MessageID:      "replayed-revoked-1",
+						Direction:      transcript.DirectionIncoming,
+						From:           "bob",
+						AuthorIdentity: "identity-bob",
+						Body:           "replayed history",
+						At:             joinedAt.Add(time.Minute),
+						Status:         transcript.StatusSent,
+					},
+				},
+				Revokes: []transcript.RevokeRecord{
+					{
+						TargetMessageID:  "replayed-revoked-1",
+						OperatorIdentity: "identity-bob",
+						At:               joinedAt.Add(2 * time.Minute),
+					},
+				},
+			}),
+			At: time.Date(2026, 4, 20, 21, 0, 0, 0, time.UTC),
+		},
+	})
+	uiModel = updated.(model)
+
+	if len(store.appends) != 1 || store.appends[0].AuthorIdentity != "identity-bob" {
+		t.Fatalf("expected replayed message with author identity to persist, got %#v", store.appends)
+	}
+	if len(store.revokes) != 1 || store.revokes[0].TargetMessageID != "replayed-revoked-1" {
+		t.Fatalf("expected replayed revoke to persist, got %#v", store.revokes)
+	}
+	if !strings.Contains(stripANSI(uiModel.View()), "已撤回一条消息") {
+		t.Fatalf("expected revoked replay to render as recalled, got %q", stripANSI(uiModel.View()))
+	}
+}
+
+func TestModelIgnoresIncomingRevokeWithMismatchedIdentity(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeTranscriptStore{
+		loaded: []transcript.Record{
+			{
+				MessageID:      "msg-1",
+				Direction:      transcript.DirectionIncoming,
+				From:           "bob",
+				AuthorIdentity: "identity-bob",
+				Body:           "still here",
+				At:             time.Date(2026, 4, 20, 20, 1, 0, 0, time.UTC),
+				Status:         transcript.StatusSent,
+			},
+		},
+	}
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		session:       &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return store, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-local", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{RoomKey: roomKey, IdentityID: identityID, JoinedAt: time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC)}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: &fakeSession{peerName: "host"}})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "revoke-mismatch",
+			From: "bob",
+			Body: room.RevokeBody(room.Revoke{
+				Version:          1,
+				RoomKey:          transcript.JoinRoomKey("203.0.113.10:7331"),
+				OperatorIdentity: "identity-evil",
+				TargetMessageID:  "msg-1",
+				At:               time.Date(2026, 4, 20, 20, 2, 0, 0, time.UTC),
+			}),
+			At: time.Date(2026, 4, 20, 20, 2, 0, 0, time.UTC),
+		},
+	})
+	uiModel = updated.(model)
+
+	if len(store.revokes) != 0 {
+		t.Fatalf("expected mismatched revoke not to persist, got %#v", store.revokes)
+	}
+	view := stripANSI(uiModel.View())
+	if !strings.Contains(view, "still here") || strings.Contains(view, "已撤回一条消息") {
+		t.Fatalf("expected mismatched revoke to be ignored, got %q", view)
+	}
+}
+
+func TestModelCtrlRRevokesLatestOwnMessage(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeTranscriptStore{}
+	fake := &fakeSession{peerName: "host", localName: "alice"}
+	joinedAt := time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC)
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		uiMode:        uiModeTUI,
+		listeningAddr: "203.0.113.10:7331",
+		session:       fake,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return store, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-local", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{RoomKey: roomKey, IdentityID: identityID, JoinedAt: joinedAt}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(sessionReadyMsg{session: fake})
+	uiModel = updated.(model)
+	uiModel.addHistoryEntry(historyEntry{
+		kind:           historyKindMessage,
+		messageID:      "msg-1",
+		from:           "alice",
+		body:           "older own",
+		at:             joinedAt.Add(time.Minute),
+		outgoing:       true,
+		status:         transcript.StatusSent,
+		authorIdentity: "identity-local",
+	})
+	uiModel.addHistoryEntry(historyEntry{
+		kind:           historyKindMessage,
+		messageID:      "msg-2",
+		from:           "alice",
+		body:           "latest own",
+		at:             joinedAt.Add(2 * time.Minute),
+		outgoing:       true,
+		status:         transcript.StatusSent,
+		authorIdentity: "identity-local",
+	})
+	uiModel.reindexHistoryMessageIDs()
+
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	uiModel = updated.(model)
+
+	last := fake.sent[len(fake.sent)-1]
+	revoke, ok := room.ParseRevoke(last.Body)
+	if !ok {
+		t.Fatalf("expected last sent payload to be revoke control, got %#v", last)
+	}
+	if revoke.TargetMessageID != "msg-2" || revoke.OperatorIdentity != "identity-local" {
+		t.Fatalf("expected latest own message to be revoked, got %#v", revoke)
+	}
+	if len(store.revokes) != 1 || store.revokes[0].TargetMessageID != "msg-2" {
+		t.Fatalf("expected local revoke to persist, got %#v", store.revokes)
+	}
+	if !strings.Contains(stripANSI(uiModel.View()), "已撤回一条消息") {
+		t.Fatalf("expected revoked message in view, got %q", stripANSI(uiModel.View()))
 	}
 }
 
@@ -2419,6 +2678,75 @@ func TestScrollbackOutgoingReceiptDoesNotPrintDeliveryStatuses(t *testing.T) {
 	}
 }
 
+func TestScrollbackIncomingRevokePrintsRecalledPlaceholder(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeTranscriptStore{
+		loaded: []transcript.Record{
+			{
+				MessageID:      "old-1",
+				Direction:      transcript.DirectionIncoming,
+				From:           "bob",
+				AuthorIdentity: "identity-bob",
+				Body:           "from disk",
+				At:             time.Date(2026, 4, 13, 10, 0, 0, 0, time.Local),
+				Status:         transcript.StatusSent,
+			},
+		},
+	}
+
+	var printed []string
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		uiMode:        uiModeScrollback,
+		listeningAddr: "127.0.0.1:7331",
+		session:       &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return store, nil
+		},
+		historyPrinter: func(lines []string) tea.Cmd {
+			printed = append(printed, lines...)
+			return nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-local", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{
+				RoomKey:    roomKey,
+				IdentityID: identityID,
+				JoinedAt:   time.Date(2026, 4, 13, 9, 0, 0, 0, time.Local),
+			}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: &fakeSession{peerName: "host"}})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "revoke-1",
+			From: "bob",
+			Body: room.RevokeBody(room.Revoke{
+				Version:          1,
+				RoomKey:          transcript.JoinRoomKey("127.0.0.1:7331"),
+				OperatorIdentity: "identity-bob",
+				TargetMessageID:  "old-1",
+				At:               time.Date(2026, 4, 13, 10, 5, 0, 0, time.Local),
+			}),
+			At: time.Date(2026, 4, 13, 10, 5, 0, 0, time.Local),
+		},
+	})
+	uiModel = updated.(model)
+
+	joined := stripANSI(strings.Join(printed, "\n"))
+	if !strings.Contains(joined, "bob: from disk") {
+		t.Fatalf("expected original printed message in scrollback, got %q", joined)
+	}
+	if !strings.Contains(joined, "bob: 已撤回一条消息") {
+		t.Fatalf("expected revoke placeholder to be printed in scrollback, got %q", joined)
+	}
+}
+
 func TestScrollbackEventsCommandSendsHiddenRequestAndRendersResponse(t *testing.T) {
 	oldLocal := time.Local
 	time.Local = time.FixedZone("CST", 8*60*60)
@@ -2676,6 +3004,7 @@ func (f *fakeHostRoom) PeerNames() []string {
 type fakeTranscriptStore struct {
 	loaded  []transcript.Record
 	appends []transcript.Record
+	revokes []transcript.RevokeRecord
 	updates []string
 }
 
@@ -2690,5 +3019,10 @@ func (f *fakeTranscriptStore) AppendMessage(record transcript.Record) error {
 
 func (f *fakeTranscriptStore) UpdateStatus(messageID, status string) error {
 	f.updates = append(f.updates, messageID+":"+status)
+	return nil
+}
+
+func (f *fakeTranscriptStore) AppendRevoke(revoke transcript.RevokeRecord) error {
+	f.revokes = append(f.revokes, revoke)
 	return nil
 }

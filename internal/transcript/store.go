@@ -33,12 +33,21 @@ const (
 )
 
 type Record struct {
-	MessageID string    `json:"message_id"`
-	Direction string    `json:"direction"`
-	From      string    `json:"from"`
-	Body      string    `json:"body"`
-	At        time.Time `json:"at"`
-	Status    string    `json:"status"`
+	MessageID      string    `json:"message_id"`
+	Direction      string    `json:"direction"`
+	From           string    `json:"from"`
+	AuthorIdentity string    `json:"author_identity,omitempty"`
+	Body           string    `json:"body"`
+	At             time.Time `json:"at"`
+	Status         string    `json:"status"`
+	Revoked        bool      `json:"revoked,omitempty"`
+	RevokedAt      time.Time `json:"revoked_at,omitempty"`
+}
+
+type RevokeRecord struct {
+	TargetMessageID  string    `json:"target_message_id"`
+	OperatorIdentity string    `json:"operator_identity,omitempty"`
+	At               time.Time `json:"at"`
 }
 
 type Store struct {
@@ -53,10 +62,11 @@ type cipherState interface {
 }
 
 type fileEvent struct {
-	Type      string `json:"type"`
-	MessageID string `json:"message_id,omitempty"`
-	Status    string `json:"status,omitempty"`
-	Record    Record `json:"record,omitempty"`
+	Type      string       `json:"type"`
+	MessageID string       `json:"message_id,omitempty"`
+	Status    string       `json:"status,omitempty"`
+	Record    Record       `json:"record,omitempty"`
+	Revoke    RevokeRecord `json:"revoke,omitempty"`
 }
 
 func OpenStore(baseDir, localName, conversationKey string, psk []byte) (*Store, error) {
@@ -126,6 +136,7 @@ func (s *Store) Load() ([]Record, error) {
 
 	records := make([]Record, 0, 64)
 	indexByID := make(map[string]int)
+	pendingRevokes := make(map[string][]RevokeRecord)
 
 	for {
 		event, err := s.readEvent(file)
@@ -140,13 +151,27 @@ func (s *Store) Load() ([]Record, error) {
 		case "message":
 			records = append(records, event.Record)
 			if event.Record.MessageID != "" {
-				indexByID[event.Record.MessageID] = len(records) - 1
+				idx := len(records) - 1
+				indexByID[event.Record.MessageID] = idx
+				if revokes := pendingRevokes[event.Record.MessageID]; len(revokes) > 0 {
+					for _, revoke := range revokes {
+						applyRevoke(&records[idx], revoke)
+					}
+					delete(pendingRevokes, event.Record.MessageID)
+				}
 			}
 		case "status":
 			idx, ok := indexByID[event.MessageID]
 			if ok {
 				records[idx].Status = event.Status
 			}
+		case "revoke":
+			idx, ok := indexByID[event.Revoke.TargetMessageID]
+			if ok {
+				applyRevoke(&records[idx], event.Revoke)
+				continue
+			}
+			pendingRevokes[event.Revoke.TargetMessageID] = append(pendingRevokes[event.Revoke.TargetMessageID], event.Revoke)
 		default:
 			return nil, fmt.Errorf("unknown transcript event type %q", event.Type)
 		}
@@ -167,6 +192,13 @@ func (s *Store) UpdateStatus(messageID, status string) error {
 		Type:      "status",
 		MessageID: messageID,
 		Status:    status,
+	})
+}
+
+func (s *Store) AppendRevoke(revoke RevokeRecord) error {
+	return s.appendEvent(fileEvent{
+		Type:   "revoke",
+		Revoke: revoke,
 	})
 }
 
@@ -340,6 +372,14 @@ func lockExclusive(file *os.File) error {
 
 func unlockFile(file *os.File) {
 	_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+}
+
+func applyRevoke(record *Record, revoke RevokeRecord) {
+	if record == nil {
+		return
+	}
+	record.Revoked = true
+	record.RevokedAt = revoke.At
 }
 
 func recordDedupKey(record Record) string {
