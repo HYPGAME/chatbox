@@ -20,6 +20,7 @@ type Client struct {
 	WebBaseURL     string
 	Repository     string
 	HTTPClient     *http.Client
+	ReleaseByTag   func(context.Context, string) (Release, error)
 	CurrentVersion string
 	GOOS           string
 	GOARCH         string
