@@ -8,6 +8,7 @@ func TestParseLatestReleaseExtractsStableAssets(t *testing.T) {
 	payload := []byte(`{
 		"tag_name": "v0.1.0",
 		"html_url": "https://github.com/HYPGAME/chatbox/releases/tag/v0.1.0",
+		"body": "## What's New\n- feature a\n- feature b",
 		"assets": [
 			{
 				"name": "chatbox_darwin_arm64.tar.gz",
@@ -29,6 +30,9 @@ func TestParseLatestReleaseExtractsStableAssets(t *testing.T) {
 	}
 	if release.HTMLURL != "https://github.com/HYPGAME/chatbox/releases/tag/v0.1.0" {
 		t.Fatalf("expected html url to be parsed, got %q", release.HTMLURL)
+	}
+	if release.Notes != "## What's New\n- feature a\n- feature b" {
+		t.Fatalf("expected release notes to be parsed, got %q", release.Notes)
 	}
 
 	asset, ok := release.AssetByName("chatbox_darwin_arm64.tar.gz")

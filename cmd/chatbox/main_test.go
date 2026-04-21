@@ -11,6 +11,7 @@ import (
 
 	"chatbox/internal/keys"
 	"chatbox/internal/session"
+	"chatbox/internal/update"
 )
 
 func TestRunKeygenCreatesPSKFile(t *testing.T) {
@@ -94,6 +95,51 @@ func TestRunSelfUpdateDelegatesToUpdater(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("expected self-update command handler to be invoked")
+	}
+}
+
+func TestPrintSelfUpdateResultShowsReleaseNotesForUpdatedVersion(t *testing.T) {
+	var out bytes.Buffer
+
+	err := printSelfUpdateResult(&out, update.SelfUpdateResult{
+		LatestVersion: "v0.2.0",
+		ReleaseNotes:  "## What's New\n- slash command suggestions\n- router auto-update retries",
+		Updated:       true,
+	})
+
+	if err != nil {
+		t.Fatalf("printSelfUpdateResult returned error: %v", err)
+	}
+	rendered := out.String()
+	if !strings.Contains(rendered, "updated chatbox to v0.2.0") {
+		t.Fatalf("expected updated version line, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "what's new:") {
+		t.Fatalf("expected release notes heading, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "slash command suggestions") {
+		t.Fatalf("expected release notes body, got %q", rendered)
+	}
+}
+
+func TestPrintSelfUpdateResultFallsBackToReleaseURLWhenNotesAreEmpty(t *testing.T) {
+	var out bytes.Buffer
+
+	err := printSelfUpdateResult(&out, update.SelfUpdateResult{
+		LatestVersion: "v0.2.0",
+		ReleaseURL:    "https://github.com/HYPGAME/chatbox/releases/tag/v0.2.0",
+		Updated:       true,
+	})
+
+	if err != nil {
+		t.Fatalf("printSelfUpdateResult returned error: %v", err)
+	}
+	rendered := out.String()
+	if !strings.Contains(rendered, "updated chatbox to v0.2.0") {
+		t.Fatalf("expected updated version line, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "release: https://github.com/HYPGAME/chatbox/releases/tag/v0.2.0") {
+		t.Fatalf("expected release URL fallback, got %q", rendered)
 	}
 }
 

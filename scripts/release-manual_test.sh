@@ -61,6 +61,7 @@ set -euo pipefail
 if [[ "${1:-}" == "release" && "${2:-}" == "create" ]]; then
   if [[ -n "${FAKE_LOG_FILE:-}" ]]; then
     echo "gh release create ${3:-}" >>"${FAKE_LOG_FILE}"
+    printf '%s\n' "$*" >"${FAKE_LOG_FILE}.gh.args"
   fi
   if [[ "${FAKE_GH_RELEASE_FAIL:-0}" == "1" ]]; then
     echo "release create failed" >&2
@@ -219,6 +220,9 @@ test_dry_run_prints_publish_plan_without_mutation() {
   if [[ "${output}" != *"dry-run: gh release create v0.1.3"* ]]; then
     fail "expected dry run release output, got: ${output}"
   fi
+  if [[ "${output}" != *"--generate-notes"* ]]; then
+    fail "expected dry run release output to generate notes, got: ${output}"
+  fi
   if [[ "${output}" != *"dist/chatbox_android_arm64.tar.gz"* ]]; then
     fail "expected dry run to include android archive, got: ${output}"
   fi
@@ -248,6 +252,26 @@ test_release_generates_checksums_for_android_archive() {
   rm -rf "${ROOT}/dist"
 }
 
+test_release_uses_generated_notes() {
+  local temp_dir
+  temp_dir="$(mktemp -d)"
+  trap "rm -rf '${temp_dir}'" RETURN
+
+  make_fake_bin "${temp_dir}/bin"
+  : >"${temp_dir}/commands.log"
+
+  local output
+  if ! output="$(FAKE_LOG_FILE="${temp_dir}/commands.log" PATH="${temp_dir}/bin:${PATH}" bash "$SCRIPT" v0.1.3 2>&1)"; then
+    fail "expected command to succeed, got failure: ${output}"
+  fi
+
+  local args
+  args="$(cat "${temp_dir}/commands.log.gh.args")"
+  if [[ "${args}" != *"--generate-notes"* ]]; then
+    fail "expected release create to generate notes, got: ${args}"
+  fi
+}
+
 test_missing_version_fails
 test_dirty_worktree_fails
 test_existing_tag_fails
@@ -255,5 +279,6 @@ test_release_flow_pushes_main_then_tag_then_release
 test_release_create_failure_reports_recovery_steps
 test_dry_run_prints_publish_plan_without_mutation
 test_release_generates_checksums_for_android_archive
+test_release_uses_generated_notes
 
 echo "ok"

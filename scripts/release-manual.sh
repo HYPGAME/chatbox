@@ -105,7 +105,8 @@ if ! run_publish_step gh release create "$VERSION" \
   dist/checksums.txt \
   --target main \
   --title "$VERSION" \
-  --notes "Manual release fallback because GitHub Actions is currently blocked by repository billing status."
+  --notes "Manual release fallback because GitHub Actions is currently blocked by repository billing status." \
+  --generate-notes
 then
   echo "release creation failed for $VERSION" >&2
   echo "recovery options:" >&2

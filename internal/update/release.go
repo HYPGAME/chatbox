@@ -10,6 +10,7 @@ import (
 type Release struct {
 	TagName string
 	HTMLURL string
+	Notes   string
 	Assets  []ReleaseAsset
 }
 
@@ -26,6 +27,7 @@ type comparableVersion struct {
 type githubRelease struct {
 	TagName string         `json:"tag_name"`
 	HTMLURL string         `json:"html_url"`
+	Body    string         `json:"body"`
 	Assets  []ReleaseAsset `json:"assets"`
 }
 
@@ -37,6 +39,7 @@ func parseLatestRelease(payload []byte) (Release, error) {
 	return Release{
 		TagName: raw.TagName,
 		HTMLURL: raw.HTMLURL,
+		Notes:   raw.Body,
 		Assets:  raw.Assets,
 	}, nil
 }

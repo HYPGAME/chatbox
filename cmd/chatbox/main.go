@@ -145,18 +145,33 @@ func runSelfUpdate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	return printSelfUpdateResult(stdout, result)
+}
 
+func printSelfUpdateResult(out io.Writer, result update.SelfUpdateResult) error {
+	var err error
 	switch {
 	case result.Updated && result.FallbackPath != "":
-		_, err = fmt.Fprintf(stdout, "downloaded %s to %s; replace the current binary manually\n", result.LatestVersion, result.FallbackPath)
+		_, err = fmt.Fprintf(out, "downloaded %s to %s; replace the current binary manually\n", result.LatestVersion, result.FallbackPath)
 	case result.Updated:
-		_, err = fmt.Fprintf(stdout, "updated chatbox to %s\n", result.LatestVersion)
+		if _, err = fmt.Fprintf(out, "updated chatbox to %s\n", result.LatestVersion); err != nil {
+			return err
+		}
+		notes := strings.TrimSpace(result.ReleaseNotes)
+		if notes != "" {
+			_, err = fmt.Fprintf(out, "\nwhat's new:\n%s\n", notes)
+			return err
+		}
+		if result.ReleaseURL != "" {
+			_, err = fmt.Fprintf(out, "release: %s\n", result.ReleaseURL)
+			return err
+		}
 	default:
 		current := result.CurrentVersion
 		if current == "" {
 			current = version.Version
 		}
-		_, err = fmt.Fprintf(stdout, "chatbox is already up to date (%s)\n", current)
+		_, err = fmt.Fprintf(out, "chatbox is already up to date (%s)\n", current)
 	}
 	return err
 }

@@ -30,6 +30,7 @@ func TestSelfUpdateDownloadsAndAppliesLatestMatchingRelease(t *testing.T) {
 			_, _ = fmt.Fprintf(w, `{
 				"tag_name": "v0.2.0",
 				"html_url": "%s/releases/tag/v0.2.0",
+				"body": "## What's New\n- offline history sync\n- /events fixes",
 				"assets": [
 					{"name": "chatbox_darwin_arm64.tar.gz", "browser_download_url": "%s/assets/chatbox_darwin_arm64.tar.gz"},
 					{"name": "checksums.txt", "browser_download_url": "%s/assets/checksums.txt"}
@@ -67,6 +68,9 @@ func TestSelfUpdateDownloadsAndAppliesLatestMatchingRelease(t *testing.T) {
 	}
 	if result.LatestVersion != "v0.2.0" {
 		t.Fatalf("expected latest version %q, got %q", "v0.2.0", result.LatestVersion)
+	}
+	if result.ReleaseNotes != "## What's New\n- offline history sync\n- /events fixes" {
+		t.Fatalf("expected release notes to be carried through, got %q", result.ReleaseNotes)
 	}
 	if appliedPath != "/tmp/chatbox" {
 		t.Fatalf("expected apply path to be used, got %q", appliedPath)

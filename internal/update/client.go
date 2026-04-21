@@ -31,6 +31,7 @@ type SelfUpdateResult struct {
 	CurrentVersion string
 	LatestVersion  string
 	ReleaseURL     string
+	ReleaseNotes   string
 	FallbackPath   string
 	Updated        bool
 }
@@ -64,6 +65,7 @@ func (c Client) SelfUpdate(ctx context.Context) (SelfUpdateResult, error) {
 		CurrentVersion: c.CurrentVersion,
 		LatestVersion:  release.TagName,
 		ReleaseURL:     release.HTMLURL,
+		ReleaseNotes:   release.Notes,
 	}
 	if c.CurrentVersion != "" && !isNewerRelease(c.CurrentVersion, release.TagName) {
 		return result, nil
