@@ -3,6 +3,7 @@ package transcript
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -94,5 +95,76 @@ func TestConversationFileNameStillSeparatesDifferentRooms(t *testing.T) {
 	roomB := conversationFileName("alice", JoinRoomKey("127.0.0.1:7444"), psk)
 	if roomA == roomB {
 		t.Fatalf("expected different room addresses to produce different files, got %q", roomA)
+	}
+}
+
+func TestConversationFileNameIgnoresDisplayNameForStableIdentityHistory(t *testing.T) {
+	t.Parallel()
+
+	psk := bytes.Repeat([]byte{0x52}, 32)
+	roomKey := JoinRoomKey("127.0.0.1:7331")
+
+	asAlice := conversationFileName("alice", roomKey, psk)
+	asBob := conversationFileName("bob", roomKey, psk)
+	if asAlice != asBob {
+		t.Fatalf("expected display name changes to keep the same transcript file, got %q vs %q", asAlice, asBob)
+	}
+}
+
+func TestOpenStoreImportsLegacyDisplayNameTranscripts(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	psk := bytes.Repeat([]byte{0x52}, 32)
+	roomKey := JoinRoomKey("127.0.0.1:7331")
+
+	aead, err := newTranscriptCipher(psk)
+	if err != nil {
+		t.Fatalf("newTranscriptCipher returned error: %v", err)
+	}
+	legacyStore := &Store{
+		path: filepath.Join(baseDir, legacyConversationFileName("b", roomKey, psk)),
+		aead: aead,
+	}
+	if err := legacyStore.ensureInitialized(); err != nil {
+		t.Fatalf("initialize legacy store: %v", err)
+	}
+	record := Record{
+		MessageID: "offline-from-b",
+		Direction: DirectionOutgoing,
+		From:      "b",
+		Body:      "message while named b",
+		At:        time.Date(2026, 4, 21, 11, 0, 0, 0, time.UTC),
+		Status:    StatusSent,
+	}
+	if err := legacyStore.AppendMessage(record); err != nil {
+		t.Fatalf("append legacy record: %v", err)
+	}
+
+	store, err := OpenStore(baseDir, "a", roomKey, psk)
+	if err != nil {
+		t.Fatalf("OpenStore returned error: %v", err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected legacy record to be imported once, got %#v", loaded)
+	}
+	if loaded[0].MessageID != record.MessageID || loaded[0].Body != record.Body {
+		t.Fatalf("expected imported legacy record, got %#v", loaded[0])
+	}
+
+	reopened, err := OpenStore(baseDir, "a", roomKey, psk)
+	if err != nil {
+		t.Fatalf("reopen OpenStore returned error: %v", err)
+	}
+	reloaded, err := reopened.Load()
+	if err != nil {
+		t.Fatalf("reloaded Load returned error: %v", err)
+	}
+	if len(reloaded) != 1 {
+		t.Fatalf("expected legacy import to be idempotent, got %#v", reloaded)
 	}
 }

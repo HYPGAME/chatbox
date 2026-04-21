@@ -723,7 +723,7 @@ func (m *model) maybeOfferHistorySync(hello room.HistorySyncHello) {
 		return
 	}
 	summary := HistorySyncSummaryForRecords(m.history)
-	if summary.Count <= hello.Summary.Count {
+	if !historySummaryHasMore(summary, hello.Summary) {
 		return
 	}
 	_, _ = m.session.Send(room.HistorySyncOfferBody(room.HistorySyncOffer{
@@ -742,7 +742,7 @@ func (m *model) maybeRequestHistorySync(offer room.HistorySyncOffer) {
 	if offer.TargetIdentity != m.identityID || offer.RoomKey != m.roomAuthorization.RoomKey {
 		return
 	}
-	if offer.Summary.Count <= HistorySyncSummaryForRecords(m.history).Count {
+	if !historySummaryHasMore(offer.Summary, HistorySyncSummaryForRecords(m.history)) {
 		return
 	}
 	_, _ = m.session.Send(room.HistorySyncRequestBody(room.HistorySyncRequest{
@@ -752,6 +752,19 @@ func (m *model) maybeRequestHistorySync(offer room.HistorySyncOffer) {
 		RoomKey:        m.roomAuthorization.RoomKey,
 		Since:          m.roomAuthorization.JoinedAt,
 	}))
+}
+
+func historySummaryHasMore(candidate room.HistorySyncSummary, current room.HistorySyncSummary) bool {
+	if candidate.Count > current.Count {
+		return true
+	}
+	if current.Newest.IsZero() {
+		return candidate.Count > 0 || !candidate.Newest.IsZero()
+	}
+	if !candidate.Newest.IsZero() && candidate.Newest.After(current.Newest) {
+		return true
+	}
+	return false
 }
 
 func (m *model) maybeSendHistorySyncChunk(request room.HistorySyncRequest) {

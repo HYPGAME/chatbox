@@ -64,13 +64,9 @@ func OpenStore(baseDir, localName, conversationKey string, psk []byte) (*Store, 
 		return nil, fmt.Errorf("create transcript directory: %w", err)
 	}
 
-	key, err := hkdf.Key(sha256.New, psk, nil, "chatbox transcript key", chacha20poly1305.KeySize)
+	aead, err := newTranscriptCipher(psk)
 	if err != nil {
-		return nil, fmt.Errorf("derive transcript key: %w", err)
-	}
-	aead, err := chacha20poly1305.NewX(key)
-	if err != nil {
-		return nil, fmt.Errorf("create transcript cipher: %w", err)
+		return nil, err
 	}
 
 	store := &Store{
@@ -80,7 +76,22 @@ func OpenStore(baseDir, localName, conversationKey string, psk []byte) (*Store, 
 	if err := store.ensureInitialized(); err != nil {
 		return nil, err
 	}
+	if err := store.importLegacyDisplayNameTranscripts(baseDir, localName, conversationKey, psk); err != nil {
+		return nil, err
+	}
 	return store, nil
+}
+
+func newTranscriptCipher(psk []byte) (cipherState, error) {
+	key, err := hkdf.Key(sha256.New, psk, nil, "chatbox transcript key", chacha20poly1305.KeySize)
+	if err != nil {
+		return nil, fmt.Errorf("derive transcript key: %w", err)
+	}
+	aead, err := chacha20poly1305.NewX(key)
+	if err != nil {
+		return nil, fmt.Errorf("create transcript cipher: %w", err)
+	}
+	return aead, nil
 }
 
 func DefaultBaseDir() (string, error) {
@@ -150,6 +161,57 @@ func (s *Store) UpdateStatus(messageID, status string) error {
 		MessageID: messageID,
 		Status:    status,
 	})
+}
+
+func (s *Store) importLegacyDisplayNameTranscripts(baseDir, localName, conversationKey string, psk []byte) error {
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		return fmt.Errorf("read transcript directory: %w", err)
+	}
+
+	currentPath := filepath.Clean(s.path)
+	legacySuffix := "--" + sanitizeName(conversationKey) + "--" + pskFingerprint(psk) + ".cbh"
+	importedIDs := make(map[string]struct{})
+	existing, err := s.Load()
+	if err != nil {
+		return err
+	}
+	for _, record := range existing {
+		if record.MessageID != "" {
+			importedIDs[record.MessageID] = struct{}{}
+		}
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		path := filepath.Join(baseDir, name)
+		if filepath.Clean(path) == currentPath {
+			continue
+		}
+		if !isLegacyConversationFileName(name, legacySuffix) {
+			continue
+		}
+		legacy := &Store{path: path, aead: s.aead}
+		records, err := legacy.Load()
+		if err != nil {
+			continue
+		}
+		for _, record := range records {
+			if record.MessageID != "" {
+				if _, ok := importedIDs[record.MessageID]; ok {
+					continue
+				}
+				importedIDs[record.MessageID] = struct{}{}
+			}
+			if err := s.AppendMessage(record); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (s *Store) ensureInitialized() error {
@@ -260,9 +322,20 @@ func JoinRoomKey(targetAddr string) string {
 }
 
 func conversationFileName(localName, conversationKey string, psk []byte) string {
+	return strings.Join([]string{sanitizeName(conversationKey), pskFingerprint(psk)}, "--") + ".cbh"
+}
+
+func legacyConversationFileName(localName, conversationKey string, psk []byte) string {
+	return strings.Join([]string{sanitizeName(localName), sanitizeName(conversationKey), pskFingerprint(psk)}, "--") + ".cbh"
+}
+
+func isLegacyConversationFileName(name, legacySuffix string) bool {
+	return strings.HasSuffix(name, legacySuffix) && strings.Count(name, "--") >= 2
+}
+
+func pskFingerprint(psk []byte) string {
 	fingerprintBytes := sha256.Sum256(psk)
-	fingerprint := hex.EncodeToString(fingerprintBytes[:6])
-	return strings.Join([]string{sanitizeName(localName), sanitizeName(conversationKey), fingerprint}, "--") + ".cbh"
+	return hex.EncodeToString(fingerprintBytes[:6])
 }
 
 func sanitizeName(name string) string {
