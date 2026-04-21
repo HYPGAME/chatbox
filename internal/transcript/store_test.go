@@ -171,6 +171,123 @@ func TestOpenStoreImportsLegacyDisplayNameTranscripts(t *testing.T) {
 	}
 }
 
+func TestOpenStoreDeduplicatesEquivalentLegacyDisplayNameTranscripts(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	psk := bytes.Repeat([]byte{0x52}, 32)
+	roomKey := JoinRoomKey("127.0.0.1:7331")
+	messageAt := time.Date(2026, 4, 21, 11, 0, 0, 0, time.UTC)
+
+	aead, err := newTranscriptCipher(psk)
+	if err != nil {
+		t.Fatalf("newTranscriptCipher returned error: %v", err)
+	}
+
+	makeLegacy := func(localName string, record Record) {
+		t.Helper()
+		legacyStore := &Store{
+			path: filepath.Join(baseDir, legacyConversationFileName(localName, roomKey, psk)),
+			aead: aead,
+		}
+		if err := legacyStore.ensureInitialized(); err != nil {
+			t.Fatalf("initialize legacy store for %s: %v", localName, err)
+		}
+		if err := legacyStore.AppendMessage(record); err != nil {
+			t.Fatalf("append legacy record for %s: %v", localName, err)
+		}
+	}
+
+	makeLegacy("b", Record{
+		MessageID: "legacy-b",
+		Direction: DirectionOutgoing,
+		From:      "b",
+		Body:      "same logical message",
+		At:        messageAt,
+		Status:    StatusSent,
+	})
+	makeLegacy("a", Record{
+		MessageID: "legacy-a",
+		Direction: DirectionOutgoing,
+		From:      "b",
+		Body:      "same logical message",
+		At:        messageAt,
+		Status:    StatusSent,
+	})
+
+	store, err := OpenStore(baseDir, "c", roomKey, psk)
+	if err != nil {
+		t.Fatalf("OpenStore returned error: %v", err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected equivalent legacy records to deduplicate, got %#v", loaded)
+	}
+	if loaded[0].Body != "same logical message" {
+		t.Fatalf("expected deduplicated record body, got %#v", loaded[0])
+	}
+}
+
+func TestOpenStoreDeduplicatesEquivalentLegacyDisplayNameTranscriptsWithSmallTimestampDrift(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	psk := bytes.Repeat([]byte{0x52}, 32)
+	roomKey := JoinRoomKey("127.0.0.1:7331")
+	messageAt := time.Date(2026, 4, 21, 11, 0, 0, 0, time.UTC)
+
+	aead, err := newTranscriptCipher(psk)
+	if err != nil {
+		t.Fatalf("newTranscriptCipher returned error: %v", err)
+	}
+
+	makeLegacy := func(localName string, record Record) {
+		t.Helper()
+		legacyStore := &Store{
+			path: filepath.Join(baseDir, legacyConversationFileName(localName, roomKey, psk)),
+			aead: aead,
+		}
+		if err := legacyStore.ensureInitialized(); err != nil {
+			t.Fatalf("initialize legacy store for %s: %v", localName, err)
+		}
+		if err := legacyStore.AppendMessage(record); err != nil {
+			t.Fatalf("append legacy record for %s: %v", localName, err)
+		}
+	}
+
+	makeLegacy("b", Record{
+		MessageID: "legacy-b",
+		Direction: DirectionOutgoing,
+		From:      "b",
+		Body:      "same logical message",
+		At:        messageAt,
+		Status:    StatusSent,
+	})
+	makeLegacy("a", Record{
+		MessageID: "legacy-a",
+		Direction: DirectionOutgoing,
+		From:      "b",
+		Body:      "same logical message",
+		At:        messageAt.Add(2 * time.Second),
+		Status:    StatusSent,
+	})
+
+	store, err := OpenStore(baseDir, "c", roomKey, psk)
+	if err != nil {
+		t.Fatalf("OpenStore returned error: %v", err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected drifted equivalent legacy records to deduplicate, got %#v", loaded)
+	}
+}
+
 func TestStoreAppendWaitsForExclusiveFileLock(t *testing.T) {
 	t.Parallel()
 

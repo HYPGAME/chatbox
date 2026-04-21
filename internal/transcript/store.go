@@ -28,6 +28,8 @@ const (
 	StatusSending = "sending"
 	StatusSent    = "sent"
 	StatusFailed  = "failed"
+
+	equivalentRecordTimeWindow = 3 * time.Second
 )
 
 type Record struct {
@@ -177,6 +179,7 @@ func (s *Store) importLegacyDisplayNameTranscripts(baseDir, localName, conversat
 	currentPath := filepath.Clean(s.path)
 	legacySuffix := "--" + sanitizeName(conversationKey) + "--" + pskFingerprint(psk) + ".cbh"
 	importedIDs := make(map[string]struct{})
+	importedEquivalents := make(map[string]struct{})
 	existing, err := s.Load()
 	if err != nil {
 		return err
@@ -185,6 +188,7 @@ func (s *Store) importLegacyDisplayNameTranscripts(baseDir, localName, conversat
 		if record.MessageID != "" {
 			importedIDs[record.MessageID] = struct{}{}
 		}
+		importedEquivalents[recordDedupKey(record)] = struct{}{}
 	}
 
 	for _, entry := range entries {
@@ -205,12 +209,16 @@ func (s *Store) importLegacyDisplayNameTranscripts(baseDir, localName, conversat
 			continue
 		}
 		for _, record := range records {
+			if hasEquivalentRecord(importedEquivalents, record) {
+				continue
+			}
 			if record.MessageID != "" {
 				if _, ok := importedIDs[record.MessageID]; ok {
 					continue
 				}
 				importedIDs[record.MessageID] = struct{}{}
 			}
+			importedEquivalents[recordDedupKey(record)] = struct{}{}
 			if err := s.AppendMessage(record); err != nil {
 				return err
 			}
@@ -332,6 +340,34 @@ func lockExclusive(file *os.File) error {
 
 func unlockFile(file *os.File) {
 	_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+}
+
+func recordDedupKey(record Record) string {
+	return strings.Join([]string{
+		record.Direction,
+		record.From,
+		record.Body,
+		record.At.UTC().Format(time.RFC3339Nano),
+	}, "\x00")
+}
+
+func hasEquivalentRecord(index map[string]struct{}, record Record) bool {
+	for _, candidate := range equivalentRecordKeys(record, equivalentRecordTimeWindow) {
+		if _, ok := index[candidate]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func equivalentRecordKeys(record Record, window time.Duration) []string {
+	keys := make([]string, 0, int(window/time.Second)*2+1)
+	for delta := -window; delta <= window; delta += time.Second {
+		candidate := record
+		candidate.At = record.At.Add(delta)
+		keys = append(keys, recordDedupKey(candidate))
+	}
+	return keys
 }
 
 func HostRoomKey(listenAddr string) string {

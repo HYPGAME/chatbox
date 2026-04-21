@@ -887,7 +887,7 @@ func (m model) hasEquivalentHistoryMessage(record transcript.Record) bool {
 		if entry.body != record.Body {
 			continue
 		}
-		if !entry.at.Equal(record.At) {
+		if !timestampsEquivalent(entry.at, record.At) {
 			continue
 		}
 		outgoing := record.Direction == transcript.DirectionOutgoing
@@ -897,6 +897,14 @@ func (m model) hasEquivalentHistoryMessage(record transcript.Record) bool {
 		return true
 	}
 	return false
+}
+
+func timestampsEquivalent(left, right time.Time) bool {
+	diff := left.Sub(right)
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff <= 3*time.Second
 }
 
 func (m *model) handleStatusCommand() {
