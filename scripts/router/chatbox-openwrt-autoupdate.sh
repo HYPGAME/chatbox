@@ -11,6 +11,8 @@ CHATBOX_OPENCLASH_RETRY_SLEEP="${CHATBOX_OPENCLASH_RETRY_SLEEP:-3}"
 CHATBOX_OPENCLASH_PROBE_URL="${CHATBOX_OPENCLASH_PROBE_URL:-https://github.com/}"
 CHATBOX_OPENCLASH_PROBE_MAX_ATTEMPTS="${CHATBOX_OPENCLASH_PROBE_MAX_ATTEMPTS:-20}"
 CHATBOX_OPENCLASH_PROBE_TIMEOUT="${CHATBOX_OPENCLASH_PROBE_TIMEOUT:-5}"
+CHATBOX_SELF_UPDATE_RETRIES="${CHATBOX_SELF_UPDATE_RETRIES:-3}"
+CHATBOX_SELF_UPDATE_RETRY_SLEEP="${CHATBOX_SELF_UPDATE_RETRY_SLEEP:-2}"
 LOCKDIR="${LOCKDIR:-/tmp/chatbox-update.lock}"
 OPENCLASH_WAS_STOPPED=0
 
@@ -53,6 +55,35 @@ openclash_retry_allowed() {
 
 run_self_update() {
 	"$CHATBOX_BIN" self-update 2>&1
+}
+
+is_transient_self_update_error() {
+	output="$1"
+	case "$output" in
+		*"unexpected EOF"*|*"fetch latest release redirect: EOF"*|*"TLS handshake timeout"*|*"Client.Timeout exceeded"*|*"connection reset by peer"*|*"temporary failure in name resolution"*|*"i/o timeout"*)
+			return 0
+			;;
+	esac
+	return 1
+}
+
+run_self_update_with_retry() {
+	attempt=1
+	while true; do
+		if output="$(run_self_update)"; then
+			printf '%s' "$output"
+			return 0
+		fi
+
+		if [ "$attempt" -ge "$CHATBOX_SELF_UPDATE_RETRIES" ] || ! is_transient_self_update_error "$output"; then
+			printf '%s' "$output"
+			return 1
+		fi
+
+		log "chatbox auto-update retrying self-update after transient failure ($attempt/$CHATBOX_SELF_UPDATE_RETRIES): $output"
+		sleep "$CHATBOX_SELF_UPDATE_RETRY_SLEEP"
+		attempt=$((attempt + 1))
+	done
 }
 
 restore_local_dns() {
@@ -139,7 +170,7 @@ fi
 
 before="$("$CHATBOX_BIN" version 2>/dev/null || printf 'unknown')"
 
-if ! output="$(run_self_update)"; then
+if ! output="$(run_self_update_with_retry)"; then
 	if ! openclash_retry_allowed; then
 		log "chatbox auto-update failed: $output"
 		exit 1
@@ -155,7 +186,7 @@ if ! output="$(run_self_update)"; then
 	sleep "$CHATBOX_OPENCLASH_RETRY_SLEEP"
 	wait_for_bypass_probe || true
 
-	if ! output="$(run_self_update)"; then
+	if ! output="$(run_self_update_with_retry)"; then
 		log "chatbox auto-update failed after $OPENCLASH_SERVICE bypass retry: $output"
 		exit 1
 	fi

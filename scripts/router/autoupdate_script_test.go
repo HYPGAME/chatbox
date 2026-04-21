@@ -45,7 +45,7 @@ self-update)
 	fi
 	count=$((count + 1))
 	printf '%s' "$count" > "$count_file"
-	if [ "$count" -eq 1 ]; then
+	if [ "$count" -le 3 ]; then
 		echo 'fetch latest release redirect: EOF' >&2
 		exit 1
 	fi
@@ -127,6 +127,90 @@ printf '%s\n' "${1:-}" >> "${CHATBOX_STATE_DIR:?}/chatbox-init.log"
 	version := strings.TrimSpace(mustReadFile(t, filepath.Join(stateDir, "version")))
 	if version != "v0.1.9" {
 		t.Fatalf("expected updated version, got %q", version)
+	}
+}
+
+func TestOpenWrtAutoUpdateRetriesTransientEOFBeforeBypass(t *testing.T) {
+	t.Parallel()
+
+	scriptPath, err := filepath.Abs("chatbox-openwrt-autoupdate.sh")
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+
+	tempDir := t.TempDir()
+	binDir := filepath.Join(tempDir, "bin")
+	initdDir := filepath.Join(tempDir, "init.d")
+	stateDir := filepath.Join(tempDir, "state")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("create bin dir: %v", err)
+	}
+	if err := os.MkdirAll(initdDir, 0o755); err != nil {
+		t.Fatalf("create initd dir: %v", err)
+	}
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+
+	mustWriteExecutable(t, filepath.Join(binDir, "chatbox"), `#!/bin/sh
+set -eu
+state="${CHATBOX_STATE_DIR:?}"
+case "${1:-}" in
+version)
+	cat "$state/version"
+	;;
+self-update)
+	count_file="$state/self-update-count"
+	count=0
+	if [ -f "$count_file" ]; then
+		count="$(cat "$count_file")"
+	fi
+	count=$((count + 1))
+	printf '%s' "$count" > "$count_file"
+	if [ "$count" -lt 3 ]; then
+		echo 'download checksums.txt: unexpected EOF' >&2
+		exit 1
+	fi
+	printf '%s\n' 'chatbox is already up to date (v0.1.12)'
+	;;
+*)
+	echo "unexpected command: $*" >&2
+	exit 99
+	;;
+esac
+`)
+	mustWriteExecutable(t, filepath.Join(binDir, "logger"), `#!/bin/sh
+exit 0
+`)
+	mustWriteExecutable(t, filepath.Join(binDir, "sleep"), `#!/bin/sh
+exit 0
+`)
+	mustWriteExecutable(t, filepath.Join(initdDir, "chatbox"), `#!/bin/sh
+set -eu
+printf '%s\n' "${1:-}" >> "${CHATBOX_STATE_DIR:?}/chatbox-init.log"
+`)
+
+	mustWriteFile(t, filepath.Join(stateDir, "version"), []byte("v0.1.12\n"), 0o644)
+
+	cmd := exec.Command("/bin/sh", scriptPath)
+	cmd.Env = append(os.Environ(),
+		"PATH="+binDir+":"+os.Getenv("PATH"),
+		"CHATBOX_BIN="+filepath.Join(binDir, "chatbox"),
+		"CHATBOX_INITD_DIR="+initdDir,
+		"CHATBOX_STATE_DIR="+stateDir,
+		"LOCKDIR="+filepath.Join(tempDir, "lock"),
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run script: %v\n%s", err, output)
+	}
+
+	if got := strings.TrimSpace(mustReadFile(t, filepath.Join(stateDir, "self-update-count"))); got != "3" {
+		t.Fatalf("expected 3 self-update attempts, got %q", got)
+	}
+
+	if _, err := os.Stat(filepath.Join(stateDir, "chatbox-init.log")); !os.IsNotExist(err) {
+		t.Fatalf("expected no service restart for no-op update, stat err=%v", err)
 	}
 }
 
@@ -236,7 +320,7 @@ self-update)
 	fi
 	count=$((count + 1))
 	printf '%s' "$count" > "$count_file"
-	if [ "$count" -eq 1 ]; then
+	if [ "$count" -le 3 ]; then
 		echo 'fetch latest release redirect: EOF' >&2
 		exit 1
 	fi
@@ -355,7 +439,7 @@ self-update)
 	fi
 	count=$((count + 1))
 	printf '%s' "$count" > "$count_file"
-	if [ "$count" -eq 1 ]; then
+	if [ "$count" -le 3 ]; then
 		echo 'fetch latest release redirect: EOF' >&2
 		exit 1
 	fi
