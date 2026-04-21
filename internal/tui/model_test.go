@@ -60,8 +60,33 @@ func TestModelShowsConnectedStatusAndIncomingMessage(t *testing.T) {
 	if !strings.Contains(view, "hello") {
 		t.Fatalf("expected incoming message in view, got %q", view)
 	}
-	if !strings.Contains(view, "2026-04-14 20:30:45") {
-		t.Fatalf("expected formatted timestamp in view, got %q", view)
+	if !strings.Contains(view, "[20:30]") {
+		t.Fatalf("expected compact message timestamp in view, got %q", view)
+	}
+}
+
+func TestModelRendersCompactStatusBar(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:          "host",
+		listeningAddr: "127.0.0.1:7331",
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	uiModel = updated.(model)
+
+	firstLine := strings.Split(stripANSI(uiModel.View()), "\n")[0]
+	if !strings.Contains(firstLine, "chatbox host") {
+		t.Fatalf("expected compact status bar to contain mode, got %q", firstLine)
+	}
+	if !strings.Contains(firstLine, "listening on 127.0.0.1:7331") {
+		t.Fatalf("expected compact status bar to contain status, got %q", firstLine)
+	}
+	if !strings.Contains(firstLine, "/help") {
+		t.Fatalf("expected compact status bar to include help hint, got %q", firstLine)
 	}
 }
 
@@ -133,8 +158,8 @@ func TestModelSendsTypedMessageOnEnter(t *testing.T) {
 		receipt: session.Receipt{MessageID: fake.sent[0].ID},
 	})
 	uiModel = updated.(model)
-	if got := stripANSI(uiModel.View()); !strings.Contains(got, "[sent]") {
-		t.Fatalf("expected local message to transition to sent state, got %q", got)
+	if got := stripANSI(uiModel.View()); strings.Contains(got, "[sent]") || strings.Contains(got, "[sending]") {
+		t.Fatalf("expected sent messages to hide delivery status, got %q", got)
 	}
 }
 
@@ -214,6 +239,58 @@ func TestRenderEntryWithStatusUsesMutedTimestampAndSecondaryLines(t *testing.T) 
 	}
 	if got := stripANSI(renderedError); got != "error [2026-04-17 15:12:00]: network down" {
 		t.Fatalf("expected error text to remain stable after stripping ANSI, got %q", got)
+	}
+}
+
+func TestRenderTUIEntryUsesCompactTime(t *testing.T) {
+	t.Parallel()
+
+	entry := historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: "hello",
+		at:   time.Date(2026, 4, 17, 15, 10, 0, 0, time.Local),
+	}
+
+	if got := stripANSI(renderTUIEntry(entry)); got != "[15:10] alice: hello" {
+		t.Fatalf("expected compact TUI message timestamp, got %q", got)
+	}
+}
+
+func TestRefreshViewportAddsDateSeparators(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode: "join",
+		session: &fakeSession{
+			peerName: "host",
+		},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
+	uiModel = updated.(model)
+
+	uiModel.addMessageEntry(session.Message{
+		ID:   "m1",
+		From: "host",
+		Body: "first",
+		At:   time.Date(2026, 4, 17, 23, 59, 0, 0, time.Local),
+	}, false, transcript.StatusSent, false)
+	uiModel.addMessageEntry(session.Message{
+		ID:   "m2",
+		From: "host",
+		Body: "second",
+		At:   time.Date(2026, 4, 18, 0, 1, 0, 0, time.Local),
+	}, false, transcript.StatusSent, false)
+
+	view := stripANSI(uiModel.View())
+	if !strings.Contains(view, "--- 2026-04-17 ---") {
+		t.Fatalf("expected first date separator, got %q", view)
+	}
+	if !strings.Contains(view, "--- 2026-04-18 ---") {
+		t.Fatalf("expected second date separator, got %q", view)
 	}
 }
 
@@ -857,6 +934,9 @@ func TestModelShowsSlashCommandSuggestions(t *testing.T) {
 
 	uiModel.input.SetValue("/")
 	view := stripANSI(uiModel.View())
+	if !strings.Contains(view, "commands") {
+		t.Fatalf("expected suggestions panel title, got %q", view)
+	}
 	if !strings.Contains(view, "/help -- 显示支持的命令") {
 		t.Fatalf("expected /help suggestion, got %q", view)
 	}
@@ -886,6 +966,24 @@ func TestModelShowsSlashCommandSuggestions(t *testing.T) {
 	view = stripANSI(uiModel.View())
 	if strings.Contains(view, "/status -- 查询在线成员信息") {
 		t.Fatalf("expected suggestions to hide for normal text, got %q", view)
+	}
+}
+
+func TestInputAreaShowsSendHint(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:    "join",
+		session: &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
+	uiModel = updated.(model)
+
+	if view := stripANSI(uiModel.View()); !strings.Contains(view, "Enter send") {
+		t.Fatalf("expected input hint in view, got %q", view)
 	}
 }
 

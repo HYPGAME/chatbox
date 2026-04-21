@@ -140,11 +140,11 @@ type model struct {
 	roomAuthorization         historymeta.Record
 	roomEventLog              []room.Event
 
-	history      []historyEntry
-	printedCount int
-	entryIndex   map[string]int
-	seenMessages map[string]struct{}
-	pending      map[string]session.Message
+	history          []historyEntry
+	printedCount     int
+	entryIndex       map[string]int
+	seenMessages     map[string]struct{}
+	pending          map[string]session.Message
 	syncCapablePeers map[string]bool
 
 	status string
@@ -160,11 +160,14 @@ type model struct {
 }
 
 var (
-	headerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
-	statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	errorStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-	inputStyle  = lipgloss.NewStyle().BorderTop(true).BorderForeground(lipgloss.Color("8"))
+	headerStyle          = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
+	statusStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	errorStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+	inputStyle           = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8")).Padding(0, 1)
+	inputHintStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#66707A"))
 	slashSuggestionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
+	slashPanelStyle      = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8")).Padding(0, 1)
+	separatorStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#59636E"))
 
 	senderPalette = []lipgloss.Color{
 		"#5C7993",
@@ -409,15 +412,12 @@ func (m model) View() string {
 		}, "\n")
 	}
 
-	lines := []string{
-		header,
-		status,
-	}
+	lines := []string{m.renderStatusBar()}
 	lines = append(lines, m.viewport.View())
 	if suggestions := m.renderSlashCommandSuggestions(); suggestions != "" {
 		lines = append(lines, suggestions)
 	}
-	lines = append(lines, inputStyle.Render(m.input.View()))
+	lines = append(lines, m.renderInputBox())
 	return strings.Join(lines, "\n")
 }
 
@@ -891,15 +891,18 @@ func (m *model) resize() {
 		return
 	}
 
-	inputHeight := 3
-	suggestionHeight := len(m.activeSlashCommandSuggestions())
-	viewportHeight := m.height - inputHeight - 3 - suggestionHeight
+	inputHeight := 5
+	suggestionHeight := 0
+	if len(m.activeSlashCommandSuggestions()) > 0 {
+		suggestionHeight = len(m.activeSlashCommandSuggestions()) + 2
+	}
+	viewportHeight := m.height - inputHeight - 1 - suggestionHeight
 	if viewportHeight < 5 {
 		viewportHeight = 5
 	}
 	if m.width > 4 {
 		m.viewport.Width = m.width - 2
-		m.input.SetWidth(m.width - 4)
+		m.input.SetWidth(m.width - 8)
 	}
 	m.viewport.Height = viewportHeight
 	m.refreshViewport(m.viewport.AtBottom())
@@ -931,10 +934,11 @@ func (m model) renderSlashCommandSuggestions() string {
 	}
 
 	lines := make([]string, 0, len(suggestions))
+	lines = append(lines, headerStyle.Render("commands"))
 	for _, suggestion := range suggestions {
 		lines = append(lines, slashSuggestionStyle.Render(fmt.Sprintf("%s -- %s", suggestion.command, suggestion.description)))
 	}
-	return strings.Join(lines, "\n")
+	return slashPanelStyle.Width(max(20, m.viewport.Width-4)).Render(strings.Join(lines, "\n"))
 }
 
 func (m *model) addSystemEntry(text string) {
@@ -994,9 +998,15 @@ func (m *model) addHistoryEntry(entry historyEntry) {
 
 func (m *model) refreshViewport(stickToBottom bool) {
 	offset := m.viewport.YOffset
-	lines := make([]string, 0, len(m.history))
+	lines := make([]string, 0, len(m.history)*2)
+	lastDate := ""
 	for _, entry := range m.history {
-		lines = append(lines, renderEntry(entry))
+		entryDate := entry.at.Local().Format("2006-01-02")
+		if entryDate != lastDate {
+			lines = append(lines, renderDateSeparator(entryDate))
+			lastDate = entryDate
+		}
+		lines = append(lines, renderTUIEntry(entry))
 	}
 
 	m.viewport.SetContent(strings.Join(lines, "\n"))
@@ -1263,6 +1273,45 @@ func renderEntryWithStatus(entry historyEntry, status string) string {
 		coloredTimestamp := timestampStyle().Render(fmt.Sprintf("[%s]", timestamp))
 		return fmt.Sprintf("%s %s: %s%s", coloredTimestamp, coloredLabel, entry.body, statusSuffix)
 	}
+}
+
+func renderTUIEntry(entry historyEntry) string {
+	timestamp := entry.at.Local().Format("15:04")
+	switch entry.kind {
+	case historyKindSystem:
+		return systemLineStyle().Render(fmt.Sprintf("system [%s]: %s", timestamp, entry.body))
+	case historyKindError:
+		return historyErrorStyle().Render(fmt.Sprintf("error [%s]: %s", timestamp, entry.body))
+	default:
+		statusSuffix := ""
+		if entry.outgoing && entry.status != "" && entry.status != transcript.StatusSent {
+			statusSuffix = fmt.Sprintf(" [%s]", entry.status)
+		}
+		coloredLabel := senderMessageStyle(entry.from).Render(entry.from)
+		coloredTimestamp := timestampStyle().Render(fmt.Sprintf("[%s]", timestamp))
+		return fmt.Sprintf("%s %s: %s%s", coloredTimestamp, coloredLabel, entry.body, statusSuffix)
+	}
+}
+
+func renderDateSeparator(date string) string {
+	return separatorStyle.Render(fmt.Sprintf("--- %s ---", date))
+}
+
+func (m model) renderStatusBar() string {
+	status := m.status
+	style := statusStyle
+	if strings.Contains(strings.ToLower(status), "disconnected") {
+		style = errorStyle
+	}
+	return fmt.Sprintf("%s %s %s %s", headerStyle.Render("chatbox "+m.mode), timestampStyle().Render("|"), style.Render(status), timestampStyle().Render("| /help"))
+}
+
+func (m model) renderInputBox() string {
+	content := strings.Join([]string{
+		m.input.View(),
+		inputHintStyle.Render("Enter send / Esc quit"),
+	}, "\n")
+	return inputStyle.Render(content)
 }
 
 func timestampStyle() lipgloss.Style {
