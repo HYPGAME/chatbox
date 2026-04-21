@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -12,11 +14,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"chatbox/internal/admins"
 	"chatbox/internal/historymeta"
 	"chatbox/internal/identity"
 	"chatbox/internal/room"
 	"chatbox/internal/session"
 	"chatbox/internal/transcript"
+	"chatbox/internal/update"
+	"chatbox/internal/version"
 )
 
 type sessionClient interface {
@@ -40,11 +45,19 @@ type transcriptStore interface {
 type connectFunc func(context.Context) (sessionClient, error)
 type historyPrinterFunc func([]string) tea.Cmd
 type alertNotifierFunc func()
+type updatePerformerFunc func(context.Context, string) (update.Outcome, error)
+type restartLauncherFunc func(update.RestartSpec) error
+type executablePathFunc func() (string, error)
+
+type updateRequestSubmitter interface {
+	SubmitUpdateRequest(room.UpdateRequest) error
+}
 
 type modelOptions struct {
 	mode             string
 	uiMode           string
 	alertMode        string
+	localName        string
 	listeningAddr    string
 	session          sessionClient
 	roomEvents       <-chan room.Event
@@ -60,6 +73,10 @@ type modelOptions struct {
 	identityLoader   func() (identity.Store, error)
 	roomAuthLoader   func(roomKey, identityID string) (historymeta.Record, error)
 	updateNotices    <-chan string
+	startupArgs      []string
+	updatePerformer  updatePerformerFunc
+	restartLauncher  restartLauncherFunc
+	executablePath   executablePathFunc
 }
 
 type sessionResult struct {
@@ -90,6 +107,12 @@ type sessionClosedMsg struct {
 
 type updateNoticeMsg struct {
 	text string
+}
+
+type roomUpdatePerformedMsg struct {
+	execute room.UpdateExecute
+	outcome update.Outcome
+	err     error
 }
 
 type historyKind string
@@ -126,6 +149,7 @@ type model struct {
 	mode             string
 	uiMode           string
 	alertMode        string
+	localName        string
 	listeningAddr    string
 	session          sessionClient
 	roomEvents       <-chan room.Event
@@ -141,6 +165,10 @@ type model struct {
 	identityLoader   func() (identity.Store, error)
 	roomAuthLoader   func(roomKey, identityID string) (historymeta.Record, error)
 	updateNotices    <-chan string
+	startupArgs      []string
+	updatePerformer  updatePerformerFunc
+	restartLauncher  restartLauncherFunc
+	executablePath   executablePathFunc
 
 	transcript                transcriptStore
 	transcriptConversationKey string
@@ -161,6 +189,8 @@ type model struct {
 	syncCapablePeers       map[string]bool
 	requestedHistory       map[string]struct{}
 	offeredHistory         map[string]struct{}
+	executedRoomUpdates    map[string]struct{}
+	updateStatuses         map[string]map[string]string
 
 	status string
 
@@ -207,6 +237,7 @@ var (
 		{command: "/status", description: "查询在线成员信息"},
 		{command: "/events", description: "查看成员进出记录"},
 		{command: "/quit", description: "退出当前会话"},
+		{command: "/update-all", description: "触发全房间更新，可选指定版本"},
 	}
 )
 
@@ -216,12 +247,14 @@ func RunHost(host *session.Host, localName string, psk []byte, uiMode string, al
 
 func RunHostWithUpdateNotices(host *session.Host, localName string, psk []byte, uiMode string, alertMode string, updateNotices <-chan string) error {
 	hostRoom := room.NewHostRoom(localName)
+	hostRoom.ConfigureUpdates(loadHostAdminStore(), defaultRoomReleaseResolver)
 	go hostRoom.Serve(context.Background(), host)
 
 	return runUI(newModel(modelOptions{
 		mode:             "host",
 		uiMode:           uiMode,
 		alertMode:        alertMode,
+		localName:        localName,
 		listeningAddr:    host.Addr(),
 		session:          hostRoom,
 		roomEvents:       hostRoom.Events(),
@@ -241,6 +274,7 @@ func RunJoinWithUpdateNotices(conn *session.Session, localName string, peerAddr 
 		mode:          "join",
 		uiMode:        uiMode,
 		alertMode:     alertMode,
+		localName:     localName,
 		listeningAddr: peerAddr,
 		session:       conn,
 		connect: func(ctx context.Context) (sessionClient, error) {
@@ -248,6 +282,7 @@ func RunJoinWithUpdateNotices(conn *session.Session, localName string, peerAddr 
 		},
 		transcriptOpener: defaultTranscriptOpener(localName, cfg.PSK),
 		updateNotices:    updateNotices,
+		startupArgs:      append([]string(nil), os.Args[1:]...),
 	}))
 }
 
@@ -259,6 +294,36 @@ func defaultTranscriptOpener(localName string, psk []byte) func(string) (transcr
 		}
 		return transcript.OpenStore(baseDir, localName, peerName, psk)
 	}
+}
+
+func defaultUpdatePerformer(ctx context.Context, targetVersion string) (update.Outcome, error) {
+	return update.Client{
+		Repository:     "HYPGAME/chatbox",
+		CurrentVersion: version.Version,
+	}.PerformUpdate(ctx, targetVersion)
+}
+
+func defaultRoomReleaseResolver(ctx context.Context, _ string) (string, error) {
+	release, err := update.Client{
+		Repository:     "HYPGAME/chatbox",
+		CurrentVersion: version.Version,
+	}.LatestRelease(ctx)
+	if err != nil {
+		return "", err
+	}
+	return release.TagName, nil
+}
+
+func loadHostAdminStore() admins.Store {
+	configRoot, err := os.UserConfigDir()
+	if err != nil {
+		return admins.Store{AllowedUpdateIdentities: map[string]struct{}{}}
+	}
+	store, err := admins.Load(filepath.Join(configRoot, "chatbox", "admins.json"))
+	if err != nil {
+		return admins.Store{AllowedUpdateIdentities: map[string]struct{}{}}
+	}
+	return store
 }
 
 func runProgram(m model) error {
@@ -283,33 +348,40 @@ func newModel(opts modelOptions) model {
 	input.Focus()
 
 	m := model{
-		mode:             opts.mode,
-		uiMode:           opts.uiMode,
-		alertMode:        opts.alertMode,
-		listeningAddr:    opts.listeningAddr,
-		session:          opts.session,
-		roomEvents:       opts.roomEvents,
-		sessionReady:     opts.sessionReady,
-		connect:          opts.connect,
-		reconnectDelay:   opts.reconnectDelay,
-		peerNames:        opts.peerNames,
-		transcriptKey:    opts.transcriptKey,
-		transcriptOpener: opts.transcriptOpener,
-		historyPrinter:   opts.historyPrinter,
-		alertNotifier:    opts.alertNotifier,
-		identityLoader:   opts.identityLoader,
-		roomAuthLoader:   opts.roomAuthLoader,
-		updateNotices:    opts.updateNotices,
-		viewport:         viewport.New(80, 20),
-		input:            input,
-		entryIndex:       make(map[string]int),
-		seenMessages:     make(map[string]struct{}),
-		pending:          make(map[string]session.Message),
-		pendingRevokes:   make(map[string][]transcript.RevokeRecord),
-		peerIdentities:   make(map[string]string),
-		syncCapablePeers: make(map[string]bool),
-		requestedHistory: make(map[string]struct{}),
-		offeredHistory:   make(map[string]struct{}),
+		mode:                opts.mode,
+		uiMode:              opts.uiMode,
+		alertMode:           opts.alertMode,
+		localName:           opts.localName,
+		listeningAddr:       opts.listeningAddr,
+		session:             opts.session,
+		roomEvents:          opts.roomEvents,
+		sessionReady:        opts.sessionReady,
+		connect:             opts.connect,
+		reconnectDelay:      opts.reconnectDelay,
+		peerNames:           opts.peerNames,
+		transcriptKey:       opts.transcriptKey,
+		transcriptOpener:    opts.transcriptOpener,
+		historyPrinter:      opts.historyPrinter,
+		alertNotifier:       opts.alertNotifier,
+		identityLoader:      opts.identityLoader,
+		roomAuthLoader:      opts.roomAuthLoader,
+		updateNotices:       opts.updateNotices,
+		startupArgs:         append([]string(nil), opts.startupArgs...),
+		updatePerformer:     opts.updatePerformer,
+		restartLauncher:     opts.restartLauncher,
+		executablePath:      opts.executablePath,
+		viewport:            viewport.New(80, 20),
+		input:               input,
+		entryIndex:          make(map[string]int),
+		seenMessages:        make(map[string]struct{}),
+		pending:             make(map[string]session.Message),
+		pendingRevokes:      make(map[string][]transcript.RevokeRecord),
+		peerIdentities:      make(map[string]string),
+		syncCapablePeers:    make(map[string]bool),
+		requestedHistory:    make(map[string]struct{}),
+		offeredHistory:      make(map[string]struct{}),
+		executedRoomUpdates: make(map[string]struct{}),
+		updateStatuses:      make(map[string]map[string]string),
 	}
 	if m.uiMode == "" {
 		m.uiMode = uiModeTUI
@@ -322,6 +394,18 @@ func newModel(opts modelOptions) model {
 	}
 	if m.roomAuthLoader == nil {
 		m.roomAuthLoader = defaultRoomAuthorizationLoader
+	}
+	if len(m.startupArgs) == 0 {
+		m.startupArgs = append([]string(nil), os.Args[1:]...)
+	}
+	if m.updatePerformer == nil {
+		m.updatePerformer = defaultUpdatePerformer
+	}
+	if m.restartLauncher == nil {
+		m.restartLauncher = update.LaunchRestart
+	}
+	if m.executablePath == nil {
+		m.executablePath = os.Executable
 	}
 	m.viewport.MouseWheelEnabled = true
 	m.viewport.MouseWheelDelta = 3
@@ -387,8 +471,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionReadyMsg:
 		return m.handleSessionReady(msg)
 	case incomingMessageMsg:
-		m.handleIncomingMessage(msg.message)
-		return m, tea.Batch(waitForIncomingMessage(m.session), m.flushScrollbackCmd())
+		messageCmd := m.handleIncomingMessage(msg.message)
+		return m, tea.Batch(waitForIncomingMessage(m.session), messageCmd, m.flushScrollbackCmd())
 	case receiptMsg:
 		receiptCmd := m.handleReceipt(msg.receipt)
 		return m, tea.Batch(waitForReceipt(m.session), receiptCmd)
@@ -396,6 +480,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleRoomEvent(msg.event)
 	case updateNoticeMsg:
 		return m.handleUpdateNotice(msg.text)
+	case roomUpdatePerformedMsg:
+		return m.handleRoomUpdatePerformed(msg)
 	case sessionClosedMsg:
 		return m.handleSessionClosed(msg.err)
 	case tea.KeyMsg:
@@ -683,9 +769,13 @@ func (m *model) handleUpdateNotice(text string) (tea.Model, tea.Cmd) {
 
 func (m *model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 	if strings.HasPrefix(text, "/") {
-		switch text {
+		fields := strings.Fields(text)
+		if len(fields) == 0 {
+			return *m, nil
+		}
+		switch fields[0] {
 		case "/help":
-			m.addSystemEntry("commands: /help /status /events /quit | Ctrl+R revoke")
+			m.addSystemEntry("commands: /help /status /events /quit /update-all | Ctrl+R revoke")
 			return *m, m.flushScrollbackCmd()
 		case "/status":
 			m.handleStatusCommand()
@@ -699,6 +789,8 @@ func (m *model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 				_ = m.session.Close()
 			}
 			return *m, tea.Quit
+		case "/update-all":
+			return m.handleUpdateAllCommand(fields[1:])
 		default:
 			m.addErrorEntry("unknown command")
 			return *m, m.flushScrollbackCmd()
@@ -815,43 +907,47 @@ func (m *model) confirmSelectedRevoke() (tea.Model, tea.Cmd) {
 	return *m, m.flushScrollbackCmd()
 }
 
-func (m *model) handleIncomingMessage(message session.Message) {
+func (m *model) handleIncomingMessage(message session.Message) tea.Cmd {
 	if message.ID != "" {
 		if _, ok := m.seenMessages[message.ID]; ok {
-			return
+			return nil
 		}
 	}
-	if m.handleControlMessage(message) {
+	if handled, cmd := m.handleControlMessage(message); handled {
 		if message.ID != "" {
 			m.seenMessages[message.ID] = struct{}{}
 		}
-		return
+		return cmd
 	}
 	if line, ok := room.ParseStatusResponse(message.Body); ok {
 		if message.ID != "" {
 			m.seenMessages[message.ID] = struct{}{}
 		}
 		m.addSystemEntry(line)
-		return
+		return nil
 	}
 	if events, ok := room.ParseEventsResponse(message.Body); ok {
 		if message.ID != "" {
 			m.seenMessages[message.ID] = struct{}{}
 		}
 		m.addEventsEntries(events)
-		return
+		return nil
 	}
 	m.addMessageEntry(message, false, transcript.StatusSent, true)
 	m.notifyLiveIncomingAlert()
+	return nil
 }
 
-func (m *model) handleControlMessage(message session.Message) bool {
+func (m *model) handleControlMessage(message session.Message) (bool, tea.Cmd) {
 	if m.handleHistorySyncControl(message) {
-		return true
+		return true, nil
+	}
+	if handled, cmd := m.handleUpdateControl(message); handled {
+		return true, cmd
 	}
 	if revoke, ok := room.ParseRevoke(message.Body); ok {
 		if m.roomAuthorization.RoomKey == "" || revoke.RoomKey != m.roomAuthorization.RoomKey {
-			return true
+			return true, nil
 		}
 		m.rememberPeerIdentity(message.From, revoke.OperatorIdentity)
 		m.handleRevokeRecord(transcript.RevokeRecord{
@@ -859,9 +955,9 @@ func (m *model) handleControlMessage(message session.Message) bool {
 			OperatorIdentity: revoke.OperatorIdentity,
 			At:               revoke.At,
 		}, true)
-		return true
+		return true, nil
 	}
-	return room.IsRevokeControl(message.Body)
+	return room.IsRevokeControl(message.Body), nil
 }
 
 func (m *model) handleHistorySyncControl(message session.Message) bool {
@@ -1110,6 +1206,53 @@ func (m *model) handleEventsCommand() {
 	}
 }
 
+func (m *model) handleUpdateAllCommand(args []string) (tea.Model, tea.Cmd) {
+	if m.session == nil {
+		m.addErrorEntry("not connected yet")
+		return *m, m.flushScrollbackCmd()
+	}
+	if err := m.ensureIdentityLoaded(); err != nil {
+		m.addErrorEntry(err.Error())
+		return *m, m.flushScrollbackCmd()
+	}
+	if err := m.ensureRoomAuthorization(m.conversationKeyForPeer(m.currentPeer)); err != nil {
+		m.addErrorEntry(err.Error())
+		return *m, m.flushScrollbackCmd()
+	}
+
+	targetVersion := ""
+	if len(args) > 0 {
+		targetVersion = strings.TrimSpace(args[0])
+	}
+	request := room.UpdateRequest{
+		Version:           1,
+		RequestID:         fmt.Sprintf("update-%d", time.Now().UnixNano()),
+		RoomKey:           m.roomAuthorization.RoomKey,
+		RequesterIdentity: m.identityID,
+		RequesterName:     m.localRequesterName(),
+		TargetVersion:     targetVersion,
+		At:                time.Now(),
+	}
+	if requester, ok := m.session.(updateRequestSubmitter); ok {
+		if err := requester.SubmitUpdateRequest(request); err != nil {
+			m.addErrorEntry(err.Error())
+			return *m, m.flushScrollbackCmd()
+		}
+	} else {
+		if _, err := m.session.Send(room.UpdateRequestBody(request)); err != nil {
+			m.addErrorEntry(err.Error())
+			return *m, m.flushScrollbackCmd()
+		}
+	}
+
+	if targetVersion == "" {
+		m.addSystemEntry("update request submitted: latest")
+	} else {
+		m.addSystemEntry(fmt.Sprintf("update request submitted: %s", targetVersion))
+	}
+	return *m, m.flushScrollbackCmd()
+}
+
 func (m *model) addEventsEntries(events []room.Event) {
 	if len(events) == 0 {
 		m.addSystemEntry("events: none")
@@ -1144,6 +1287,117 @@ func (m *model) handleReceipt(receipt session.Receipt) tea.Cmd {
 	}
 	m.refreshViewport(false)
 	return nil
+}
+
+func (m *model) handleUpdateControl(message session.Message) (bool, tea.Cmd) {
+	if execute, ok := room.ParseUpdateExecute(message.Body); ok {
+		return true, m.handleUpdateExecute(message.From, execute)
+	}
+	if result, ok := room.ParseUpdateResult(message.Body); ok {
+		m.handleUpdateResultControl(result)
+		return true, nil
+	}
+	return room.IsUpdateControl(message.Body), nil
+}
+
+func (m *model) handleUpdateExecute(sender string, execute room.UpdateExecute) tea.Cmd {
+	if m.roomAuthorization.RoomKey == "" || execute.RoomKey != m.roomAuthorization.RoomKey {
+		return nil
+	}
+	m.addSystemEntry(fmt.Sprintf("update request accepted: %s", execute.TargetVersion))
+
+	if m.mode != "join" {
+		return nil
+	}
+	if strings.TrimSpace(sender) != strings.TrimSpace(m.currentPeer) {
+		return nil
+	}
+	if _, ok := m.executedRoomUpdates[execute.RequestID]; ok {
+		return nil
+	}
+	m.executedRoomUpdates[execute.RequestID] = struct{}{}
+	return performRoomUpdateCmd(execute, m.updatePerformer)
+}
+
+func (m *model) handleUpdateResultControl(result room.UpdateResult) {
+	if m.roomAuthorization.RoomKey != "" && result.RoomKey != "" && result.RoomKey != m.roomAuthorization.RoomKey {
+		return
+	}
+	reporterName := strings.TrimSpace(result.ReporterName)
+	if reporterName == "" {
+		reporterName = "peer"
+	}
+	statuses := m.updateStatuses[result.RequestID]
+	if statuses == nil {
+		statuses = make(map[string]string)
+		m.updateStatuses[result.RequestID] = statuses
+	}
+	statuses[reporterName] = result.Status
+
+	m.addSystemEntry(renderUpdateResultLine(reporterName, result))
+	if summary := renderUpdateSummaryLine(statuses); summary != "" {
+		m.addSystemEntry(summary)
+	}
+}
+
+func (m *model) handleRoomUpdatePerformed(msg roomUpdatePerformedMsg) (tea.Model, tea.Cmd) {
+	outcome := msg.outcome
+	if msg.err != nil && strings.TrimSpace(outcome.Status) == "" {
+		outcome.Status = "download-failed"
+		outcome.Detail = msg.err.Error()
+	}
+
+	status := strings.TrimSpace(outcome.Status)
+	detail := strings.TrimSpace(outcome.Detail)
+	if status == "" {
+		status = "download-failed"
+	}
+
+	shouldQuit := false
+	if status == "success" && outcome.Restartable {
+		executablePath, err := m.executablePath()
+		if err != nil {
+			status = "restart-failed"
+			detail = err.Error()
+		} else {
+			spec, err := update.BuildRestartSpec(executablePath, m.startupArgs)
+			if err != nil {
+				status = "restart-failed"
+				detail = err.Error()
+			} else if err := m.restartLauncher(spec); err != nil {
+				status = "restart-failed"
+				detail = err.Error()
+			} else {
+				shouldQuit = true
+			}
+		}
+	}
+
+	if m.session != nil {
+		_, err := m.session.Send(room.UpdateResultBody(room.UpdateResult{
+			Version:        1,
+			RequestID:      msg.execute.RequestID,
+			RoomKey:        msg.execute.RoomKey,
+			ReporterName:   m.localRequesterName(),
+			ReporterID:     m.identityID,
+			TargetVersion:  msg.execute.TargetVersion,
+			Status:         status,
+			Detail:         detail,
+			CurrentVersion: firstNonEmpty(outcome.CurrentVersion, version.Version),
+			At:             time.Now(),
+		}))
+		if err != nil {
+			m.addErrorEntry(err.Error())
+		}
+	}
+
+	if shouldQuit {
+		if m.session != nil {
+			_ = m.session.Close()
+		}
+		return *m, tea.Quit
+	}
+	return *m, m.flushScrollbackCmd()
 }
 
 func (m *model) resize() {
@@ -1551,6 +1805,8 @@ func (m *model) resetConversation() {
 	m.currentPeer = ""
 	m.requestedHistory = make(map[string]struct{})
 	m.offeredHistory = make(map[string]struct{})
+	m.executedRoomUpdates = make(map[string]struct{})
+	m.updateStatuses = make(map[string]map[string]string)
 	m.revokeMode = false
 	m.revokeCandidates = nil
 	m.revokeSelection = 0
@@ -1588,7 +1844,17 @@ func (m *model) addStartupHints() {
 	if m.uiMode == uiModeScrollback {
 		return
 	}
-	m.addSystemEntry("commands: /help /status /events /quit | Ctrl+R revoke")
+	m.addSystemEntry("commands: /help /status /events /quit /update-all | Ctrl+R revoke")
+}
+
+func (m *model) localRequesterName() string {
+	if name := strings.TrimSpace(m.localName); name != "" {
+		return name
+	}
+	if m.mode == "host" {
+		return "host"
+	}
+	return "join"
 }
 
 func (m *model) addRetryEntry(message session.Message) {
@@ -1708,6 +1974,91 @@ func waitForUpdateNotice(notices <-chan string) tea.Cmd {
 		}
 		return updateNoticeMsg{text: text}
 	}
+}
+
+func performRoomUpdateCmd(execute room.UpdateExecute, performer updatePerformerFunc) tea.Cmd {
+	return func() tea.Msg {
+		if performer == nil {
+			return roomUpdatePerformedMsg{
+				execute: execute,
+				outcome: update.Outcome{
+					Status: "download-failed",
+					Detail: "update performer is not configured",
+				},
+			}
+		}
+		outcome, err := performer(context.Background(), execute.TargetVersion)
+		return roomUpdatePerformedMsg{
+			execute: execute,
+			outcome: outcome,
+			err:     err,
+		}
+	}
+}
+
+func renderUpdateResultLine(reporterName string, result room.UpdateResult) string {
+	switch result.Status {
+	case "permission-denied":
+		return fmt.Sprintf("update denied: %s", result.Status)
+	case "resolve-latest-failed":
+		if detail := strings.TrimSpace(result.Detail); detail != "" {
+			return fmt.Sprintf("update failed: %s (%s)", result.Status, detail)
+		}
+		return fmt.Sprintf("update failed: %s", result.Status)
+	default:
+		line := fmt.Sprintf("update result: %s %s", reporterName, result.Status)
+		if target := strings.TrimSpace(result.TargetVersion); target != "" {
+			line += " -> " + target
+		}
+		if detail := strings.TrimSpace(result.Detail); detail != "" {
+			line += " (" + detail + ")"
+		}
+		return line
+	}
+}
+
+func renderUpdateSummaryLine(statuses map[string]string) string {
+	if len(statuses) == 0 {
+		return ""
+	}
+	order := []string{
+		"success",
+		"already-up-to-date",
+		"fallback-written",
+		"permission-denied",
+		"resolve-latest-failed",
+		"restart-failed",
+		"android-manual-required",
+		"download-failed",
+		"checksum-failed",
+		"extract-failed",
+		"replace-failed",
+	}
+	counts := make(map[string]int, len(order))
+	for _, status := range statuses {
+		counts[status]++
+	}
+
+	parts := make([]string, 0, len(order))
+	for _, status := range order {
+		if counts[status] == 0 {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s=%d", status, counts[status]))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "update summary: " + strings.Join(parts, " ")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func renderEntry(entry historyEntry) string {

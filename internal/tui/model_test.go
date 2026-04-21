@@ -20,6 +20,7 @@ import (
 	"chatbox/internal/room"
 	"chatbox/internal/session"
 	"chatbox/internal/transcript"
+	"chatbox/internal/update"
 )
 
 var ansiEscapePattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
@@ -647,6 +648,193 @@ func TestJoinEventsCommandSendsHiddenRequestAndRendersResponse(t *testing.T) {
 	}
 	if strings.Contains(view, "\x00chatbox:events:") {
 		t.Fatalf("expected hidden events payload to stay out of view, got %q", view)
+	}
+}
+
+func TestModelJoinUpdateAllSendsHiddenRequest(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeSession{peerName: "host", localName: "alice"}
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		uiMode:        uiModeTUI,
+		localName:     "alice",
+		listeningAddr: "203.0.113.10:7331",
+		session:       fake,
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-a", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{RoomKey: roomKey, IdentityID: identityID}, nil
+		},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
+	uiModel = updated.(model)
+	uiModel.input.SetValue("/update-all v0.1.24")
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	uiModel = updated.(model)
+
+	request, ok := room.ParseUpdateRequest(fake.sent[len(fake.sent)-1].Body)
+	if !ok {
+		t.Fatalf("expected hidden update request, got %#v", fake.sent)
+	}
+	if request.TargetVersion != "v0.1.24" || request.RequesterIdentity != "identity-a" {
+		t.Fatalf("expected explicit update request, got %#v", request)
+	}
+}
+
+func TestModelHostUpdateAllUsesRoomSubmitter(t *testing.T) {
+	t.Parallel()
+
+	hostRoom := &fakeHostRoom{fakeSession: fakeSession{peerName: "room"}, peerCount: 1}
+	uiModel := newModel(modelOptions{
+		mode:          "host",
+		uiMode:        uiModeTUI,
+		localName:     "host",
+		listeningAddr: "0.0.0.0:7331",
+		session:       hostRoom,
+		roomEvents:    hostRoom.Events(),
+		peerCount:     hostRoom.PeerCount,
+		peerNames:     hostRoom.PeerNames,
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-host", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{RoomKey: roomKey, IdentityID: identityID}, nil
+		},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: hostRoom})
+	uiModel = updated.(model)
+	uiModel.input.SetValue("/update-all")
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	uiModel = updated.(model)
+
+	if len(hostRoom.submittedUpdates) != 1 {
+		t.Fatalf("expected host room submitter to be used, got %#v", hostRoom.submittedUpdates)
+	}
+	if hostRoom.submittedUpdates[0].RequesterName != "host" {
+		t.Fatalf("expected host requester name, got %#v", hostRoom.submittedUpdates[0])
+	}
+}
+
+func TestModelRendersPermissionDeniedUpdateResult(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		uiMode:        uiModeTUI,
+		localName:     "alice",
+		listeningAddr: "203.0.113.10:7331",
+		session:       &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-a", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{RoomKey: roomKey, IdentityID: identityID}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: &fakeSession{peerName: "host"}})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "result-1",
+			From: "host",
+			Body: room.UpdateResultBody(room.UpdateResult{
+				Version:       1,
+				RequestID:     "update-1",
+				RoomKey:       transcript.JoinRoomKey("203.0.113.10:7331"),
+				ReporterName:  "host",
+				TargetVersion: "v0.1.24",
+				Status:        "permission-denied",
+			}),
+		},
+	})
+	uiModel = updated.(model)
+
+	if !strings.Contains(stripANSI(uiModel.View()), "permission-denied") {
+		t.Fatalf("expected readable denial in view, got %q", stripANSI(uiModel.View()))
+	}
+}
+
+func TestModelJoinExecutesApprovedUpdateAndReportsSuccess(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeSession{peerName: "host", localName: "alice"}
+	var restarted bool
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		uiMode:        uiModeTUI,
+		localName:     "alice",
+		listeningAddr: "203.0.113.10:7331",
+		session:       fake,
+		startupArgs:   []string{"join", "--peer", "203.0.113.10:7331", "--psk-file", "/tmp/test.psk"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-a", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{RoomKey: roomKey, IdentityID: identityID}, nil
+		},
+		updatePerformer: func(context.Context, string) (update.Outcome, error) {
+			return update.Outcome{Status: "success", LatestVersion: "v0.1.24", Restartable: true}, nil
+		},
+		restartLauncher: func(update.RestartSpec) error {
+			restarted = true
+			return nil
+		},
+		executablePath: func() (string, error) {
+			return "/tmp/chatbox", nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
+	uiModel = updated.(model)
+	cmd := uiModel.handleIncomingMessage(session.Message{
+		ID:   "execute-1",
+		From: "host",
+		Body: room.UpdateExecuteBody(room.UpdateExecute{
+			Version:           1,
+			RequestID:         "update-1",
+			RoomKey:           transcript.JoinRoomKey("203.0.113.10:7331"),
+			InitiatorIdentity: "identity-host",
+			InitiatorName:     "host",
+			TargetVersion:     "v0.1.24",
+		}),
+	})
+	if cmd == nil {
+		t.Fatal("expected update execution command")
+	}
+
+	msg := cmd()
+	if msg == nil {
+		t.Fatal("expected room update performed message")
+	}
+	updated, _ = uiModel.Update(msg)
+	uiModel = updated.(model)
+
+	if !restarted {
+		t.Fatal("expected restart launcher to be invoked")
+	}
+	result, ok := room.ParseUpdateResult(fake.sent[len(fake.sent)-1].Body)
+	if !ok {
+		t.Fatalf("expected hidden update result, got %#v", fake.sent)
+	}
+	if result.Status != "success" || result.ReporterID != "identity-a" {
+		t.Fatalf("expected success update result, got %#v", result)
 	}
 }
 
@@ -2954,9 +3142,10 @@ type fakeSession struct {
 
 type fakeHostRoom struct {
 	fakeSession
-	events    chan room.Event
-	peerCount int
-	peerNames []string
+	events           chan room.Event
+	peerCount        int
+	peerNames        []string
+	submittedUpdates []room.UpdateRequest
 }
 
 func (f *fakeSession) Messages() <-chan session.Message { return nil }
@@ -2999,6 +3188,11 @@ func (f *fakeHostRoom) PeerCount() int {
 
 func (f *fakeHostRoom) PeerNames() []string {
 	return append([]string(nil), f.peerNames...)
+}
+
+func (f *fakeHostRoom) SubmitUpdateRequest(request room.UpdateRequest) error {
+	f.submittedUpdates = append(f.submittedUpdates, request)
+	return nil
 }
 
 type fakeTranscriptStore struct {

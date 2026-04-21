@@ -382,6 +382,40 @@ func TestHostRoomBroadcastsUpdateResultsToRoom(t *testing.T) {
 	}
 }
 
+func TestHostRoomSubmitUpdateRequestBroadcastsExecute(t *testing.T) {
+	t.Parallel()
+
+	room := NewHostRoom("host")
+	defer room.Close()
+
+	member := newFakeMember("alice")
+	room.AddMember(member)
+	drainJoinEvents(t, room, 1)
+
+	room.ConfigureUpdates(admins.Store{}, func(context.Context, string) (string, error) {
+		return "v0.1.24", nil
+	})
+
+	if err := room.SubmitUpdateRequest(UpdateRequest{
+		Version:           1,
+		RequestID:         "update-host-1",
+		RoomKey:           "join:203.0.113.10:7331",
+		RequesterIdentity: "identity-host",
+		RequesterName:     "host",
+	}); err != nil {
+		t.Fatalf("SubmitUpdateRequest returned error: %v", err)
+	}
+
+	message := waitForResentMessage(t, member.resent)
+	execute, ok := ParseUpdateExecute(message.Body)
+	if !ok {
+		t.Fatalf("expected execute message, got %#v", message)
+	}
+	if execute.TargetVersion != "v0.1.24" || execute.InitiatorName != "host" {
+		t.Fatalf("expected host submit to broadcast execute, got %#v", execute)
+	}
+}
+
 type fakeMember struct {
 	peerName string
 	messages chan session.Message

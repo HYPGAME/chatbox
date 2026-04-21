@@ -88,6 +88,21 @@ func NewHostRoom(localName string) *HostRoom {
 	}
 }
 
+func (r *HostRoom) ConfigureUpdates(store admins.Store, resolver func(context.Context, string) (string, error)) {
+	if store.AllowedUpdateIdentities == nil {
+		store.AllowedUpdateIdentities = make(map[string]struct{})
+	}
+	r.mu.Lock()
+	r.admins = store
+	r.releaseResolver = resolver
+	r.mu.Unlock()
+}
+
+func (r *HostRoom) SubmitUpdateRequest(request UpdateRequest) error {
+	r.handleUpdateRequest(trackedMember{}, request)
+	return nil
+}
+
 func (r *HostRoom) Serve(ctx context.Context, host *session.Host) {
 	if host == nil {
 		return
