@@ -9,6 +9,7 @@ DNSMASQ_SERVICE="${DNSMASQ_SERVICE:-dnsmasq}"
 CHATBOX_OPENCLASH_RETRY_MODE="${CHATBOX_OPENCLASH_RETRY_MODE:-auto}"
 CHATBOX_OPENCLASH_RETRY_SLEEP="${CHATBOX_OPENCLASH_RETRY_SLEEP:-3}"
 CHATBOX_OPENCLASH_PROBE_URL="${CHATBOX_OPENCLASH_PROBE_URL:-https://github.com/}"
+CHATBOX_OPENCLASH_PROBE_URLS="${CHATBOX_OPENCLASH_PROBE_URLS:-$CHATBOX_OPENCLASH_PROBE_URL https://github.com/HYPGAME/chatbox/releases/latest https://github.com/HYPGAME/chatbox/releases/latest/download/checksums.txt}"
 CHATBOX_OPENCLASH_PROBE_MAX_ATTEMPTS="${CHATBOX_OPENCLASH_PROBE_MAX_ATTEMPTS:-20}"
 CHATBOX_OPENCLASH_PROBE_TIMEOUT="${CHATBOX_OPENCLASH_PROBE_TIMEOUT:-5}"
 CHATBOX_SELF_UPDATE_RETRIES="${CHATBOX_SELF_UPDATE_RETRIES:-3}"
@@ -98,17 +99,35 @@ restore_local_dns() {
 wait_for_bypass_probe() {
 	attempt=1
 	while [ "$attempt" -le "$CHATBOX_OPENCLASH_PROBE_MAX_ATTEMPTS" ]; do
-		if command -v curl >/dev/null 2>&1; then
-			if curl -sSI --max-time "$CHATBOX_OPENCLASH_PROBE_TIMEOUT" "$CHATBOX_OPENCLASH_PROBE_URL" >/dev/null 2>&1; then
-				return 0
-			fi
-		elif wget -q -T "$CHATBOX_OPENCLASH_PROBE_TIMEOUT" -t 1 --spider "$CHATBOX_OPENCLASH_PROBE_URL" >/dev/null 2>&1; then
+		if probe_bypass_urls; then
 			return 0
 		fi
 		sleep 1
 		attempt=$((attempt + 1))
 	done
-	log "chatbox auto-update warning: bypass probe did not succeed after $CHATBOX_OPENCLASH_PROBE_MAX_ATTEMPTS attempts"
+	log "chatbox auto-update warning: bypass probe did not succeed after $CHATBOX_OPENCLASH_PROBE_MAX_ATTEMPTS attempts for: $CHATBOX_OPENCLASH_PROBE_URLS"
+	return 1
+}
+
+probe_bypass_urls() {
+	for probe_url in $CHATBOX_OPENCLASH_PROBE_URLS; do
+		if ! probe_bypass_url "$probe_url"; then
+			return 1
+		fi
+	done
+	return 0
+}
+
+probe_bypass_url() {
+	probe_url="$1"
+	if command -v curl >/dev/null 2>&1; then
+		curl -sSI --max-time "$CHATBOX_OPENCLASH_PROBE_TIMEOUT" "$probe_url" >/dev/null 2>&1
+		return $?
+	fi
+	if command -v wget >/dev/null 2>&1; then
+		wget -q -T "$CHATBOX_OPENCLASH_PROBE_TIMEOUT" -t 1 --spider "$probe_url" >/dev/null 2>&1
+		return $?
+	fi
 	return 1
 }
 
