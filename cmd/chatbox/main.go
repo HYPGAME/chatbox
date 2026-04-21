@@ -48,6 +48,7 @@ func main() {
 }
 
 func run(ctx context.Context, args []string) error {
+	clearMallocDebugEnv()
 	if len(args) == 0 {
 		return usageError()
 	}
@@ -70,6 +71,15 @@ func run(ctx context.Context, args []string) error {
 		return runSelfUpdateCommand(ctx)
 	default:
 		return usageError()
+	}
+}
+
+func clearMallocDebugEnv() {
+	for _, key := range []string{
+		"MallocStackLogging",
+		"MallocStackLoggingNoCompact",
+	} {
+		_ = os.Unsetenv(key)
 	}
 }
 

@@ -40,6 +40,8 @@ func TestRunKeygenCreatesPSKFile(t *testing.T) {
 func TestRunVersionPrintsCurrentVersion(t *testing.T) {
 	originalStdout := stdout
 	originalLaunchBackgroundUpdateCheck := launchBackgroundUpdateCheck
+	originalMallocStackLogging := os.Getenv("MallocStackLogging")
+	originalMallocStackLoggingNoCompact := os.Getenv("MallocStackLoggingNoCompact")
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("Pipe returned error: %v", err)
@@ -48,8 +50,24 @@ func TestRunVersionPrintsCurrentVersion(t *testing.T) {
 	t.Cleanup(func() {
 		stdout = originalStdout
 		launchBackgroundUpdateCheck = originalLaunchBackgroundUpdateCheck
+		if originalMallocStackLogging == "" {
+			_ = os.Unsetenv("MallocStackLogging")
+		} else {
+			_ = os.Setenv("MallocStackLogging", originalMallocStackLogging)
+		}
+		if originalMallocStackLoggingNoCompact == "" {
+			_ = os.Unsetenv("MallocStackLoggingNoCompact")
+		} else {
+			_ = os.Setenv("MallocStackLoggingNoCompact", originalMallocStackLoggingNoCompact)
+		}
 	})
 	launchBackgroundUpdateCheck = func(context.Context) {}
+	if err := os.Setenv("MallocStackLogging", "1"); err != nil {
+		t.Fatalf("Setenv returned error: %v", err)
+	}
+	if err := os.Setenv("MallocStackLoggingNoCompact", "1"); err != nil {
+		t.Fatalf("Setenv returned error: %v", err)
+	}
 
 	runErr := run(context.Background(), []string{"version"})
 	_ = w.Close()
@@ -60,6 +78,12 @@ func TestRunVersionPrintsCurrentVersion(t *testing.T) {
 	}
 	if runErr != nil {
 		t.Fatalf("run returned error: %v", runErr)
+	}
+	if got := os.Getenv("MallocStackLogging"); got != "" {
+		t.Fatalf("expected MallocStackLogging to be cleared, got %q", got)
+	}
+	if got := os.Getenv("MallocStackLoggingNoCompact"); got != "" {
+		t.Fatalf("expected MallocStackLoggingNoCompact to be cleared, got %q", got)
 	}
 	if !strings.Contains(string(bytes.TrimSpace(output)), "dev") {
 		t.Fatalf("expected version output to contain %q, got %q", "dev", string(output))
