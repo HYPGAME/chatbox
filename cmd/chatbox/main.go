@@ -167,6 +167,14 @@ func printSelfUpdateResult(out io.Writer, result update.SelfUpdateResult) error 
 		if _, err = fmt.Fprintf(out, "updated chatbox to %s\n", result.LatestVersion); err != nil {
 			return err
 		}
+		if result.ExecutablePath != "" {
+			if _, err = fmt.Fprintf(out, "updated binary: %s\n", result.ExecutablePath); err != nil {
+				return err
+			}
+		}
+		if _, err = fmt.Fprintln(out, "restart chatbox to use the new version"); err != nil {
+			return err
+		}
 		notes := strings.TrimSpace(result.ReleaseNotes)
 		if notes != "" {
 			_, err = fmt.Fprintf(out, "\nwhat's new:\n%s\n", notes)

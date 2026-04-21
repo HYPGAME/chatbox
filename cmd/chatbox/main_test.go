@@ -127,6 +127,7 @@ func TestPrintSelfUpdateResultShowsReleaseNotesForUpdatedVersion(t *testing.T) {
 
 	err := printSelfUpdateResult(&out, update.SelfUpdateResult{
 		LatestVersion: "v0.2.0",
+		ExecutablePath: "/usr/local/bin/chatbox",
 		ReleaseNotes:  "## What's New\n- slash command suggestions\n- router auto-update retries",
 		Updated:       true,
 	})
@@ -137,6 +138,12 @@ func TestPrintSelfUpdateResultShowsReleaseNotesForUpdatedVersion(t *testing.T) {
 	rendered := out.String()
 	if !strings.Contains(rendered, "updated chatbox to v0.2.0") {
 		t.Fatalf("expected updated version line, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "/usr/local/bin/chatbox") {
+		t.Fatalf("expected updated binary path, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "restart chatbox") {
+		t.Fatalf("expected restart hint, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "what's new:") {
 		t.Fatalf("expected release notes heading, got %q", rendered)
@@ -151,6 +158,7 @@ func TestPrintSelfUpdateResultFallsBackToReleaseURLWhenNotesAreEmpty(t *testing.
 
 	err := printSelfUpdateResult(&out, update.SelfUpdateResult{
 		LatestVersion: "v0.2.0",
+		ExecutablePath: "/usr/local/bin/chatbox",
 		ReleaseURL:    "https://github.com/HYPGAME/chatbox/releases/tag/v0.2.0",
 		Updated:       true,
 	})
@@ -161,6 +169,9 @@ func TestPrintSelfUpdateResultFallsBackToReleaseURLWhenNotesAreEmpty(t *testing.
 	rendered := out.String()
 	if !strings.Contains(rendered, "updated chatbox to v0.2.0") {
 		t.Fatalf("expected updated version line, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "restart chatbox") {
+		t.Fatalf("expected restart hint, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "release: https://github.com/HYPGAME/chatbox/releases/tag/v0.2.0") {
 		t.Fatalf("expected release URL fallback, got %q", rendered)

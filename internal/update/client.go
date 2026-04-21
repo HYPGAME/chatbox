@@ -24,6 +24,7 @@ type Client struct {
 	GOOS           string
 	GOARCH         string
 	ExecutablePath func() (string, error)
+	ReadVersion    func(string) (string, error)
 	ApplyUpdate    func(string, []byte) (ApplyResult, error)
 }
 
@@ -32,6 +33,7 @@ type SelfUpdateResult struct {
 	LatestVersion  string
 	ReleaseURL     string
 	ReleaseNotes   string
+	ExecutablePath string
 	FallbackPath   string
 	Updated        bool
 }
@@ -109,12 +111,22 @@ func (c Client) SelfUpdate(ctx context.Context) (SelfUpdateResult, error) {
 	if err != nil {
 		return SelfUpdateResult{}, fmt.Errorf("resolve executable path: %w", err)
 	}
+	result.ExecutablePath = executablePath
 	applyResult, err := c.applyUpdate()(executablePath, binary)
 	if err != nil {
 		return SelfUpdateResult{}, err
 	}
 
 	result.FallbackPath = applyResult.FallbackPath
+	if applyResult.FallbackPath == "" {
+		appliedVersion, err := c.readVersion()(executablePath)
+		if err != nil {
+			return SelfUpdateResult{}, fmt.Errorf("verify updated binary version: %w", err)
+		}
+		if strings.TrimSpace(appliedVersion) != strings.TrimSpace(release.TagName) {
+			return SelfUpdateResult{}, fmt.Errorf("verify updated binary version: expected %s, got %s", release.TagName, strings.TrimSpace(appliedVersion))
+		}
+	}
 	result.Updated = true
 	return result, nil
 }
@@ -198,6 +210,13 @@ func (c Client) applyUpdate() func(string, []byte) (ApplyResult, error) {
 		}
 	}
 	return c.ApplyUpdate
+}
+
+func (c Client) readVersion() func(string) (string, error) {
+	if c.ReadVersion != nil {
+		return c.ReadVersion
+	}
+	return readBinaryVersion
 }
 
 func (c Client) latestReleaseViaRedirect(ctx context.Context) (Release, error) {

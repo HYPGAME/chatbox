@@ -55,6 +55,9 @@ func TestSelfUpdateDownloadsAndAppliesLatestMatchingRelease(t *testing.T) {
 		ExecutablePath: func() (string, error) {
 			return "/tmp/chatbox", nil
 		},
+		ReadVersion: func(path string) (string, error) {
+			return "v0.2.0", nil
+		},
 		ApplyUpdate: func(path string, binary []byte) (ApplyResult, error) {
 			appliedPath = path
 			appliedBinary = append([]byte(nil), binary...)
@@ -71,6 +74,9 @@ func TestSelfUpdateDownloadsAndAppliesLatestMatchingRelease(t *testing.T) {
 	}
 	if result.ReleaseNotes != "## What's New\n- offline history sync\n- /events fixes" {
 		t.Fatalf("expected release notes to be carried through, got %q", result.ReleaseNotes)
+	}
+	if result.ExecutablePath != "/tmp/chatbox" {
+		t.Fatalf("expected executable path to be carried through, got %q", result.ExecutablePath)
 	}
 	if appliedPath != "/tmp/chatbox" {
 		t.Fatalf("expected apply path to be used, got %q", appliedPath)
@@ -149,6 +155,9 @@ func TestSelfUpdateFallsBackToLatestDownloadEndpointsWhenAPIIsRateLimited(t *tes
 		GOARCH:         "arm64",
 		ExecutablePath: func() (string, error) {
 			return "/tmp/chatbox", nil
+		},
+		ReadVersion: func(path string) (string, error) {
+			return "v0.2.0", nil
 		},
 		ApplyUpdate: func(path string, binary []byte) (ApplyResult, error) {
 			return ApplyResult{}, nil
@@ -234,6 +243,9 @@ func TestSelfUpdateDownloadsAndAppliesLatestLinuxArm64Release(t *testing.T) {
 		ExecutablePath: func() (string, error) {
 			return "/tmp/chatbox", nil
 		},
+		ReadVersion: func(path string) (string, error) {
+			return "v0.2.0", nil
+		},
 		ApplyUpdate: func(path string, binary []byte) (ApplyResult, error) {
 			appliedPath = path
 			appliedBinary = append([]byte(nil), binary...)
@@ -253,5 +265,58 @@ func TestSelfUpdateDownloadsAndAppliesLatestLinuxArm64Release(t *testing.T) {
 	}
 	if string(appliedBinary) != "updated-linux-binary" {
 		t.Fatalf("expected extracted linux binary to be applied, got %q", string(appliedBinary))
+	}
+}
+
+func TestSelfUpdateFailsWhenAppliedBinaryVersionDoesNotMatchRelease(t *testing.T) {
+	t.Parallel()
+
+	archive := buildTarGzArchive(t, map[string][]byte{
+		"chatbox": []byte("updated-binary"),
+	})
+	archiveChecksum := sha256.Sum256(archive)
+	checksums := fmt.Sprintf("%s  chatbox_darwin_arm64.tar.gz\n", hex.EncodeToString(archiveChecksum[:]))
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/HYPGAME/chatbox/releases/latest":
+			_, _ = fmt.Fprintf(w, `{
+				"tag_name": "v0.2.0",
+				"html_url": "%s/releases/tag/v0.2.0",
+				"assets": [
+					{"name": "chatbox_darwin_arm64.tar.gz", "browser_download_url": "%s/assets/chatbox_darwin_arm64.tar.gz"},
+					{"name": "checksums.txt", "browser_download_url": "%s/assets/checksums.txt"}
+				]
+			}`, server.URL, server.URL, server.URL)
+		case "/assets/chatbox_darwin_arm64.tar.gz":
+			_, _ = w.Write(archive)
+		case "/assets/checksums.txt":
+			_, _ = w.Write([]byte(checksums))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := Client{
+		BaseURL:        server.URL,
+		Repository:     "HYPGAME/chatbox",
+		CurrentVersion: "v0.1.0",
+		GOOS:           "darwin",
+		GOARCH:         "arm64",
+		ExecutablePath: func() (string, error) {
+			return "/tmp/chatbox", nil
+		},
+		ReadVersion: func(path string) (string, error) {
+			return "v0.1.0", nil
+		},
+		ApplyUpdate: func(path string, binary []byte) (ApplyResult, error) {
+			return ApplyResult{}, nil
+		},
+	}
+
+	if _, err := client.SelfUpdate(context.Background()); err == nil {
+		t.Fatal("expected version verification mismatch to fail")
 	}
 }
