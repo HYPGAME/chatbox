@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/chacha20poly1305"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -112,6 +113,10 @@ func (s *Store) Load() ([]Record, error) {
 		return nil, fmt.Errorf("open transcript: %w", err)
 	}
 	defer file.Close()
+	if err := lockShared(file); err != nil {
+		return nil, fmt.Errorf("lock transcript for read: %w", err)
+	}
+	defer unlockFile(file)
 
 	if err := verifyMagic(file); err != nil {
 		return nil, err
@@ -240,6 +245,10 @@ func (s *Store) appendEvent(event fileEvent) error {
 		return fmt.Errorf("open transcript for append: %w", err)
 	}
 	defer file.Close()
+	if err := lockExclusive(file); err != nil {
+		return fmt.Errorf("lock transcript for append: %w", err)
+	}
+	defer unlockFile(file)
 
 	plaintext, err := json.Marshal(event)
 	if err != nil {
@@ -311,6 +320,18 @@ func verifyMagic(file *os.File) error {
 		return errors.New("invalid transcript file header")
 	}
 	return nil
+}
+
+func lockShared(file *os.File) error {
+	return unix.Flock(int(file.Fd()), unix.LOCK_SH)
+}
+
+func lockExclusive(file *os.File) error {
+	return unix.Flock(int(file.Fd()), unix.LOCK_EX)
+}
+
+func unlockFile(file *os.File) {
+	_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
 }
 
 func HostRoomKey(listenAddr string) string {

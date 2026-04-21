@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestStoreEncryptsAndReloadsConversationRecords(t *testing.T) {
@@ -166,5 +168,66 @@ func TestOpenStoreImportsLegacyDisplayNameTranscripts(t *testing.T) {
 	}
 	if len(reloaded) != 1 {
 		t.Fatalf("expected legacy import to be idempotent, got %#v", reloaded)
+	}
+}
+
+func TestStoreAppendWaitsForExclusiveFileLock(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	psk := bytes.Repeat([]byte{0x52}, 32)
+
+	store, err := OpenStore(baseDir, "alice", "bob", psk)
+	if err != nil {
+		t.Fatalf("OpenStore returned error: %v", err)
+	}
+
+	lockFile, err := os.OpenFile(store.Path(), os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("open transcript for lock: %v", err)
+	}
+	defer lockFile.Close()
+
+	if err := unix.Flock(int(lockFile.Fd()), unix.LOCK_EX); err != nil {
+		t.Fatalf("lock transcript: %v", err)
+	}
+	defer func() {
+		_ = unix.Flock(int(lockFile.Fd()), unix.LOCK_UN)
+	}()
+
+	errCh := make(chan error, 1)
+	started := time.Now()
+	go func() {
+		errCh <- store.AppendMessage(Record{
+			MessageID: "msg-1",
+			Direction: DirectionOutgoing,
+			From:      "alice",
+			Body:      "hello from transcript",
+			At:        time.Date(2026, 4, 21, 16, 20, 0, 0, time.UTC),
+			Status:    StatusSent,
+		})
+	}()
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("expected AppendMessage to block on lock, got early result: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	if err := unix.Flock(int(lockFile.Fd()), unix.LOCK_UN); err != nil {
+		t.Fatalf("unlock transcript: %v", err)
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("AppendMessage returned error after unlock: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("AppendMessage did not finish after lock release")
+	}
+
+	if elapsed := time.Since(started); elapsed < 150*time.Millisecond {
+		t.Fatalf("expected AppendMessage to wait for lock, elapsed=%s", elapsed)
 	}
 }
