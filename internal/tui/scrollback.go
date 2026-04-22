@@ -249,7 +249,7 @@ func runScrollback(m model) error {
 		return nil
 	}
 	if m.alertNotifier == nil && m.alertMode == "bell" {
-		m.alertNotifier = newTerminalBellAlertNotifier(console)
+		m.alertNotifier = newTerminalBellAlertNotifier(console.bell)
 	}
 
 	if m.reconnectDelay == 0 {

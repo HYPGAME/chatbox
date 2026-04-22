@@ -15,6 +15,6 @@ func (terminalAppForegroundDetector) ShouldAlert() bool {
 	return false
 }
 
-func newTerminalBellAlertNotifier(*promptConsole) alertNotifierFunc {
+func newTerminalBellAlertNotifier(func()) alertNotifierFunc {
 	return nil
 }

@@ -50,6 +50,12 @@ type updatePerformerFunc func(context.Context, string) (update.Outcome, error)
 type restartLauncherFunc func(update.RestartSpec) error
 type executablePathFunc func() (string, error)
 
+var defaultAlertNotifierFactory = func() alertNotifierFunc {
+	return newTerminalBellAlertNotifier(func() {
+		_, _ = fmt.Fprint(os.Stdout, "\a")
+	})
+}
+
 type updateRequestSubmitter interface {
 	SubmitUpdateRequest(room.UpdateRequest) error
 }
@@ -341,6 +347,9 @@ func runProgram(m model) error {
 func runUI(m model) error {
 	if m.uiMode == uiModeScrollback {
 		return scrollbackRunner(m)
+	}
+	if m.alertNotifier == nil && m.alertMode == "bell" {
+		m.alertNotifier = defaultAlertNotifierFactory()
 	}
 	return bubbleTeaRunner(m)
 }
@@ -1895,9 +1904,6 @@ func (m *model) addRetryEntry(message session.Message) {
 }
 
 func (m *model) notifyLiveIncomingAlert() {
-	if m.uiMode != uiModeScrollback {
-		return
-	}
 	if m.alertMode != "bell" {
 		return
 	}

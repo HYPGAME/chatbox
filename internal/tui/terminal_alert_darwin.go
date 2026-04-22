@@ -188,8 +188,8 @@ func isLSAppInfoEntryHeader(line string) bool {
 	return true
 }
 
-func newTerminalBellAlertNotifier(console *promptConsole) alertNotifierFunc {
-	if console == nil {
+func newTerminalBellAlertNotifier(bell func()) alertNotifierFunc {
+	if bell == nil {
 		return nil
 	}
 	if os.Getenv("TERM_PROGRAM") != "Apple_Terminal" {
@@ -204,7 +204,7 @@ func newTerminalBellAlertNotifier(console *promptConsole) alertNotifierFunc {
 	detector := newTerminalAppForegroundDetector(currentTTY)
 	return func() {
 		if detector.ShouldAlert() {
-			console.bell()
+			bell()
 		}
 	}
 }

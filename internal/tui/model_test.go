@@ -3201,6 +3201,38 @@ func TestScrollbackAlertsOnlyForLiveInboundMessages(t *testing.T) {
 	}
 }
 
+func TestTUIAlertsOnlyForLiveInboundMessages(t *testing.T) {
+	t.Parallel()
+
+	alerts := 0
+	uiModel := newModel(modelOptions{
+		mode:      "join",
+		uiMode:    uiModeTUI,
+		alertMode: "bell",
+		session:   &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+		alertNotifier: func() {
+			alerts++
+		},
+	})
+
+	updated, _ := uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "live-alert-tui-1",
+			From: "host",
+			Body: "ping",
+			At:   time.Date(2026, 4, 15, 10, 0, 0, 0, time.Local),
+		},
+	})
+	uiModel = updated.(model)
+
+	if alerts != 1 {
+		t.Fatalf("expected one alert for live inbound TUI message, got %d", alerts)
+	}
+}
+
 func TestScrollbackDoesNotAlertForTranscriptReplay(t *testing.T) {
 	t.Parallel()
 
@@ -3271,6 +3303,40 @@ func TestScrollbackDoesNotAlertForOutgoingReceiptOrRetry(t *testing.T) {
 
 	if alerts != 0 {
 		t.Fatalf("expected outgoing/receipt/retry flows not to alert, got %d", alerts)
+	}
+}
+
+func TestRunUITUIInitializesBellAlertNotifier(t *testing.T) {
+	t.Parallel()
+
+	originalBubbleTeaRunner := bubbleTeaRunner
+	originalAlertFactory := defaultAlertNotifierFactory
+	defer func() {
+		bubbleTeaRunner = originalBubbleTeaRunner
+		defaultAlertNotifierFactory = originalAlertFactory
+	}()
+
+	defaultAlertNotifierFactory = func() alertNotifierFunc {
+		return func() {}
+	}
+	bubbleTeaRunner = func(m model) error {
+		if m.alertNotifier == nil {
+			t.Fatal("expected TUI bell mode to initialize an alert notifier")
+		}
+		return nil
+	}
+
+	err := runUI(newModel(modelOptions{
+		mode:      "join",
+		uiMode:    uiModeTUI,
+		alertMode: "bell",
+		session:   &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	}))
+	if err != nil {
+		t.Fatalf("runUI returned error: %v", err)
 	}
 }
 

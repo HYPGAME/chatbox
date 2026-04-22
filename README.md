@@ -232,7 +232,7 @@ This is intentionally a minimal host-relayed room, not a mesh network or a featu
 
 - `host` and `join` accept `--alert bell|off`.
 - Default is `bell`.
-- `bell` currently only has an effect in `--ui scrollback` under macOS `Terminal.app`.
+- `bell` currently has an effect in both `--ui scrollback` and `--ui tui` under macOS `Terminal.app`.
 - The bell triggers only for real-time incoming peer messages when the current chatbox tab is not the selected Terminal.app tab.
 - Transcript replay, outgoing messages, ACKs, retry markers, and system lines do not trigger alerts.
 - Terminal.app profile bell/badge behavior is controlled by Terminal settings.
