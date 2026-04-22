@@ -186,8 +186,6 @@ func TestModelInitReceivesBackgroundUpdateNotice(t *testing.T) {
 }
 
 func TestModelSessionReadyCreatesLocalIdentity(t *testing.T) {
-	t.Parallel()
-
 	configDir := t.TempDir()
 	originalUserConfigDir := os.Getenv("XDG_CONFIG_HOME")
 	if err := os.Setenv("XDG_CONFIG_HOME", configDir); err != nil {
@@ -598,6 +596,43 @@ func TestJoinStatusCommandSendsHiddenRequestAndRendersRosterResponse(t *testing.
 	}
 	if strings.Contains(view, room.StatusControlPrefix()) {
 		t.Fatalf("expected hidden response payload to stay out of view, got %q", view)
+	}
+}
+
+func TestJoinStatusCommandWrapsLongRosterResponse(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeSession{peerName: "host", localName: "bob"}
+	uiModel := newModel(modelOptions{
+		mode:    "join",
+		session: fake,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 42, Height: 10})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "status-response-wrap-1",
+			From: "host",
+			Body: room.StatusResponseBody([]string{
+				"alice [v0.1.26]",
+				"bob [v0.1.25]",
+				"carol [unknown]",
+				"host [v0.1.26]",
+			}),
+			At: time.Date(2026, 4, 22, 18, 10, 0, 0, time.Local),
+		},
+	})
+	uiModel = updated.(model)
+
+	view := stripANSI(uiModel.View())
+	for _, token := range []string{"alice", "v0.1.26", "bob", "v0.1.25", "carol", "unknown", "host"} {
+		if !strings.Contains(view, token) {
+			t.Fatalf("expected wrapped status view to retain %q, got %q", token, view)
+		}
 	}
 }
 
@@ -2483,7 +2518,7 @@ func TestModelMouseDragScrollsHistory(t *testing.T) {
 	updated, _ = uiModel.Update(tea.MouseMsg{
 		X:      2,
 		Y:      viewportY + 2,
-		Button: tea.MouseButtonLeft,
+		Button: tea.MouseButtonNone,
 		Action: tea.MouseActionMotion,
 	})
 	uiModel = updated.(model)

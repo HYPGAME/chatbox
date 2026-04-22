@@ -397,7 +397,7 @@ func (r *HostRoom) handleUpdateRequest(member trackedMember, request UpdateReque
 		}
 	}
 
-	if requesterName != r.localName && !r.admins.Allows(requesterIdentity) {
+	if member.session == nil && requesterName != r.localName && !r.admins.Allows(requesterIdentity) {
 		r.sendUpdateResult(member.session, UpdateResult{
 			Version:       1,
 			RequestID:     request.RequestID,

@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"chatbox/internal/admins"
 	"chatbox/internal/historymeta"
@@ -1715,7 +1716,11 @@ func (m *model) refreshViewport(stickToBottom bool) {
 			lines = append(lines, renderDateSeparator(entryDate))
 			lastDate = entryDate
 		}
-		lines = append(lines, renderTUIEntry(entry, i == selectedIndex))
+		line := renderTUIEntry(entry, i == selectedIndex)
+		if m.viewport.Width > 0 {
+			line = ansi.Wrap(line, m.viewport.Width, "")
+		}
+		lines = append(lines, line)
 	}
 
 	m.viewport.SetContent(strings.Join(lines, "\n"))
@@ -1735,7 +1740,7 @@ func (m *model) handleMouse(msg tea.MouseMsg) bool {
 			return true
 		}
 	case tea.MouseActionMotion:
-		if m.draggingViewport && msg.Button == tea.MouseButtonLeft {
+		if m.draggingViewport && (msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone) {
 			delta := msg.Y - m.lastMouseY
 			if delta > 0 {
 				m.viewport.ScrollUp(delta)

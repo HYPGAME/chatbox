@@ -343,7 +343,7 @@ func TestHostRoomParticipantNamesIncludeKnownVersionsAndUnknownLegacyPeers(t *te
 	t.Fatalf("expected versioned participant roster, got %#v", room.ParticipantNames())
 }
 
-func TestHostRoomRejectsUnauthorizedUpdateRequest(t *testing.T) {
+func TestHostRoomAcceptsUnlistedConnectedJoinUpdateRequest(t *testing.T) {
 	t.Parallel()
 
 	room := NewHostRoom("host")
@@ -369,17 +369,43 @@ func TestHostRoomRejectsUnauthorizedUpdateRequest(t *testing.T) {
 	}
 
 	message := waitForResentMessage(t, member.resent)
+	execute, ok := ParseUpdateExecute(message.Body)
+	if !ok {
+		t.Fatalf("expected execute message, got %#v", message)
+	}
+	if execute.TargetVersion != "v0.1.24" || execute.InitiatorName != "eve" {
+		t.Fatalf("expected connected join request to be accepted, got %#v", execute)
+	}
+
+	hostMessage := waitForRoomMessage(t, room.Messages())
+	if hostMessage.Body != message.Body {
+		t.Fatalf("expected host stream to receive execute control, got %#v", hostMessage)
+	}
+}
+
+func TestHostRoomRejectsNonMemberUpdateRequestWithoutWhitelist(t *testing.T) {
+	t.Parallel()
+
+	room := NewHostRoom("host")
+	defer room.Close()
+
+	room.handleUpdateRequest(trackedMember{}, UpdateRequest{
+		Version:           1,
+		RequestID:         "update-external-1",
+		RoomKey:           "join:203.0.113.10:7331",
+		RequesterIdentity: "identity-external",
+		RequesterName:     "external",
+		TargetVersion:     "v0.1.24",
+		At:                time.Date(2026, 4, 21, 14, 1, 30, 0, time.UTC),
+	})
+
+	message := waitForRoomMessage(t, room.Messages())
 	result, ok := ParseUpdateResult(message.Body)
 	if !ok {
 		t.Fatalf("expected update result, got %#v", message)
 	}
 	if result.Status != "permission-denied" {
-		t.Fatalf("expected permission-denied result, got %#v", result)
-	}
-
-	hostMessage := waitForRoomMessage(t, room.Messages())
-	if hostMessage.Body != message.Body {
-		t.Fatalf("expected host stream to receive denial result, got %#v", hostMessage)
+		t.Fatalf("expected non-member request to stay denied, got %#v", result)
 	}
 }
 
