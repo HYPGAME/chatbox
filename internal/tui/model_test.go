@@ -1001,12 +1001,19 @@ func TestModelSendsHistorySyncHelloAfterSessionReady(t *testing.T) {
 	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
 	uiModel = updated.(model)
 
-	if len(fake.sent) == 0 {
-		t.Fatal("expected sync hello to be sent after session ready")
+	if len(fake.sent) != 2 {
+		t.Fatalf("expected version announce and sync hello after session ready, got %#v", fake.sent)
 	}
-	hello, ok := room.ParseHistorySyncHello(fake.sent[len(fake.sent)-1].Body)
+	announce, ok := room.ParseVersionAnnounce(fake.sent[0].Body)
 	if !ok {
-		t.Fatalf("expected last sent payload to be sync hello, got %#v", fake.sent[len(fake.sent)-1])
+		t.Fatalf("expected first payload to be version announce, got %#v", fake.sent[0])
+	}
+	if announce.ClientVersion != version.Version {
+		t.Fatalf("expected version announce %q, got %#v", version.Version, announce)
+	}
+	hello, ok := room.ParseHistorySyncHello(fake.sent[1].Body)
+	if !ok {
+		t.Fatalf("expected second payload to be sync hello, got %#v", fake.sent[1])
 	}
 	if hello.IdentityID != "identity-local" {
 		t.Fatalf("expected sync hello identity %q, got %#v", "identity-local", hello)
@@ -1016,6 +1023,41 @@ func TestModelSendsHistorySyncHelloAfterSessionReady(t *testing.T) {
 	}
 	if hello.RoomKey != transcript.JoinRoomKey("203.0.113.10:7331") {
 		t.Fatalf("expected sync hello room key %q, got %#v", transcript.JoinRoomKey("203.0.113.10:7331"), hello)
+	}
+}
+
+func TestModelSendsVersionAnnouncementAfterSessionReadyWithoutHistorySyncPrereqs(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeSession{peerName: "host", localName: "alice"}
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		session:       fake,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(string, string) (historymeta.Record, error) {
+			t.Fatal("roomAuthLoader should not run when identity is empty")
+			return historymeta.Record{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
+	uiModel = updated.(model)
+
+	if len(fake.sent) == 0 {
+		t.Fatal("expected version announce to be sent after session ready")
+	}
+	announce, ok := room.ParseVersionAnnounce(fake.sent[0].Body)
+	if !ok {
+		t.Fatalf("expected first payload to be version announce, got %#v", fake.sent[0])
+	}
+	if announce.ClientVersion != version.Version {
+		t.Fatalf("expected advertised version %q, got %#v", version.Version, announce)
 	}
 }
 

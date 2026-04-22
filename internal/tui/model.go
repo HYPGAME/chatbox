@@ -589,6 +589,7 @@ func (m *model) handleSessionReady(msg sessionReadyMsg) (tea.Model, tea.Cmd) {
 	if err := m.bindSession(msg.session); err != nil {
 		m.addErrorEntry(err.Error())
 	}
+	m.announceClientVersion()
 	m.announceHistorySyncCapability()
 
 	cmds := []tea.Cmd{
@@ -677,6 +678,16 @@ func (m *model) ensureRoomAuthorization(conversationKey string) error {
 	}
 	m.roomAuthorization = record
 	return nil
+}
+
+func (m *model) announceClientVersion() {
+	if m.mode != "join" || m.session == nil {
+		return
+	}
+	_, _ = m.session.Send(room.VersionAnnounceBody(room.VersionAnnounce{
+		Version:       1,
+		ClientVersion: version.Version,
+	}))
 }
 
 func (m *model) announceHistorySyncCapability() {
