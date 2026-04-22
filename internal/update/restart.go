@@ -3,8 +3,8 @@ package update
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
+	"syscall"
 )
 
 type RestartSpec struct {
@@ -12,22 +12,18 @@ type RestartSpec struct {
 	Args []string
 }
 
-var restartStarter = func(cmd *exec.Cmd) error {
-	return cmd.Start()
+var restartStarter = func(path string, args []string, env []string) error {
+	return syscall.Exec(path, append([]string{path}, args...), env)
 }
 
-func buildRestartCommand(spec RestartSpec) (*exec.Cmd, error) {
+func buildRestartInvocation(spec RestartSpec) (string, []string, error) {
 	if strings.TrimSpace(spec.Path) == "" {
-		return nil, fmt.Errorf("restart executable path is required")
+		return "", nil, fmt.Errorf("restart executable path is required")
 	}
 	if len(spec.Args) == 0 {
-		return nil, fmt.Errorf("restart arguments are required")
+		return "", nil, fmt.Errorf("restart arguments are required")
 	}
-	cmd := exec.Command(spec.Path, spec.Args...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd, nil
+	return spec.Path, append([]string{spec.Path}, spec.Args...), nil
 }
 
 func BuildRestartSpec(executablePath string, startupArgs []string) (RestartSpec, error) {
@@ -44,9 +40,12 @@ func BuildRestartSpec(executablePath string, startupArgs []string) (RestartSpec,
 }
 
 func LaunchRestart(spec RestartSpec) error {
-	cmd, err := buildRestartCommand(spec)
+	path, argv, err := buildRestartInvocation(spec)
 	if err != nil {
 		return err
 	}
-	return restartStarter(cmd)
+	if len(argv) == 0 {
+		return fmt.Errorf("restart arguments are required")
+	}
+	return restartStarter(path, argv[1:], os.Environ())
 }

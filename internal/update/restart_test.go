@@ -1,8 +1,6 @@
 package update
 
 import (
-	"os"
-	"os/exec"
 	"testing"
 )
 
@@ -43,11 +41,11 @@ func TestLaunchRestartUsesBuiltSpec(t *testing.T) {
 
 	var gotPath string
 	var gotArgs []string
-	var gotStdin any
-	restartStarter = func(cmd *exec.Cmd) error {
-		gotPath = cmd.Path
-		gotArgs = append([]string(nil), cmd.Args[1:]...)
-		gotStdin = cmd.Stdin
+	var gotEnv []string
+	restartStarter = func(path string, args []string, env []string) error {
+		gotPath = path
+		gotArgs = append([]string(nil), args...)
+		gotEnv = append([]string(nil), env...)
 		return nil
 	}
 
@@ -64,29 +62,32 @@ func TestLaunchRestartUsesBuiltSpec(t *testing.T) {
 	if len(gotArgs) != len(spec.Args) || gotArgs[0] != "join" {
 		t.Fatalf("expected restart args %#v, got %#v", spec.Args, gotArgs)
 	}
-	if gotStdin != os.Stdin {
-		t.Fatalf("expected restart stdin to be inherited, got %#v", gotStdin)
+	if len(gotEnv) == 0 {
+		t.Fatal("expected restart to inherit environment")
 	}
 }
 
-func TestBuildRestartCommandInheritsTerminalStreams(t *testing.T) {
+func TestBuildRestartInvocationUsesExecutablePathAsArgv0(t *testing.T) {
 	t.Parallel()
 
 	spec := RestartSpec{
 		Path: "/tmp/chatbox",
 		Args: []string{"join", "--peer", "127.0.0.1:7331"},
 	}
-	cmd, err := buildRestartCommand(spec)
+	path, argv, err := buildRestartInvocation(spec)
 	if err != nil {
-		t.Fatalf("buildRestartCommand returned error: %v", err)
+		t.Fatalf("buildRestartInvocation returned error: %v", err)
 	}
-	if cmd.Stdin != os.Stdin {
-		t.Fatalf("expected restart stdin to inherit terminal stdin, got %#v", cmd.Stdin)
+	if path != spec.Path {
+		t.Fatalf("expected restart path %q, got %q", spec.Path, path)
 	}
-	if cmd.Stdout != os.Stdout {
-		t.Fatalf("expected restart stdout to inherit terminal stdout, got %#v", cmd.Stdout)
+	if len(argv) != len(spec.Args)+1 {
+		t.Fatalf("expected argv to include argv0 plus args, got %#v", argv)
 	}
-	if cmd.Stderr != os.Stderr {
-		t.Fatalf("expected restart stderr to inherit terminal stderr, got %#v", cmd.Stderr)
+	if argv[0] != spec.Path {
+		t.Fatalf("expected argv0 to be executable path, got %#v", argv)
+	}
+	if argv[1] != "join" {
+		t.Fatalf("expected restart args to follow argv0, got %#v", argv)
 	}
 }
