@@ -930,6 +930,11 @@ func (m *model) handleCopyModeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyCtrlY:
 		m.copySelectedMessage()
 		return *m, nil
+	case tea.KeyEnter:
+		m.quoteSelectedMessage()
+		m.resize()
+		m.refreshViewport(false)
+		return *m, nil
 	default:
 		return *m, nil
 	}
@@ -1954,6 +1959,37 @@ func (m *model) copySelectedMessage() {
 		return
 	}
 	m.setStatusNotice("copied message", false)
+}
+
+func formatQuotedReply(entry historyEntry) string {
+	body := strings.ReplaceAll(renderedMessageBody(entry), "\r\n", "\n")
+	lines := strings.Split(body, "\n")
+	quoted := make([]string, 0, len(lines)+2)
+	quoted = append(quoted, fmt.Sprintf("> %s [%s]", entry.from, entry.at.Local().Format("15:04")))
+	for _, line := range lines {
+		quoted = append(quoted, "> "+line)
+	}
+	return strings.Join(quoted, "\n") + "\n\n"
+}
+
+func (m *model) quoteSelectedMessage() {
+	index := m.selectedCopyHistoryIndex()
+	if index < 0 || index >= len(m.history) {
+		m.setStatusNotice("no message to copy", true)
+		return
+	}
+	quote := formatQuotedReply(m.history[index])
+	current := m.input.Value()
+	switch {
+	case current == "":
+		m.input.SetValue(quote)
+	case strings.HasSuffix(current, "\n"):
+		m.input.SetValue(current + quote)
+	default:
+		m.input.SetValue(current + "\n" + quote)
+	}
+	m.input.SetCursor(len([]rune(m.input.Value())))
+	m.exitCopyMode()
 }
 
 func (m model) buildRenderedViewportState() renderedViewportState {

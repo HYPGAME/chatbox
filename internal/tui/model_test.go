@@ -500,6 +500,110 @@ func TestCopyModeSelectionFollowsBottomOnlyUntilUserMovesAway(t *testing.T) {
 	}
 }
 
+func TestCopyModeEnterQuotesSelectedMessage(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	uiModel.history = nil
+	uiModel.copySelection = nil
+	uiModel.copySelectionPos = -1
+	uiModel.renderedViewport = renderedViewportState{}
+	uiModel.width = 80
+	uiModel.height = 12
+	uiModel.resize()
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: "hello world",
+		at:   time.Date(2026, 4, 22, 11, 20, 0, 0, time.Local),
+	})
+
+	updated, _ := uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	uiModel = updated.(model)
+
+	want := "> alice [11:20]\n> hello world\n\n"
+	if got := uiModel.input.Value(); got != want {
+		t.Fatalf("expected quote text %q, got %q", want, got)
+	}
+	if uiModel.copyMode {
+		t.Fatal("expected quote insertion to exit copy mode")
+	}
+}
+
+func TestCopyModeEnterQuotesMultilineMessage(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	uiModel.history = nil
+	uiModel.copySelection = nil
+	uiModel.copySelectionPos = -1
+	uiModel.renderedViewport = renderedViewportState{}
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: "line one\nline two",
+		at:   time.Date(2026, 4, 22, 11, 21, 0, 0, time.Local),
+	})
+
+	updated, _ := uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	uiModel = updated.(model)
+
+	want := "> alice [11:21]\n> line one\n> line two\n\n"
+	if got := uiModel.input.Value(); got != want {
+		t.Fatalf("expected multiline quote text %q, got %q", want, got)
+	}
+}
+
+func TestCopyModeEnterAppendsQuoteAfterExistingInput(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	uiModel.history = nil
+	uiModel.copySelection = nil
+	uiModel.copySelectionPos = -1
+	uiModel.renderedViewport = renderedViewportState{}
+	uiModel.input.SetValue("draft reply")
+	uiModel.input.SetCursor(len("draft reply"))
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: "hello world",
+		at:   time.Date(2026, 4, 22, 11, 22, 0, 0, time.Local),
+	})
+
+	updated, _ := uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	uiModel = updated.(model)
+
+	want := "draft reply\n> alice [11:22]\n> hello world\n\n"
+	if got := uiModel.input.Value(); got != want {
+		t.Fatalf("expected appended quote text %q, got %q", want, got)
+	}
+}
+
 func TestRenderEntryWithStatusColorsOnlySenderLabel(t *testing.T) {
 	oldProfile := lipgloss.ColorProfile()
 	oldDarkBackground := lipgloss.HasDarkBackground()
