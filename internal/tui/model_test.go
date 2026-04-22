@@ -604,6 +604,117 @@ func TestCopyModeEnterAppendsQuoteAfterExistingInput(t *testing.T) {
 	}
 }
 
+func TestCtrlYWithoutMessagesDoesNotEnterCopyMode(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	uiModel.history = nil
+	uiModel.copySelection = nil
+	uiModel.copySelectionPos = -1
+	uiModel.renderedViewport = renderedViewportState{}
+
+	updated, _ := uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	uiModel = updated.(model)
+
+	if uiModel.copyMode {
+		t.Fatal("expected copy mode to stay disabled without messages")
+	}
+	if !strings.Contains(stripANSI(uiModel.View()), "no message to copy") {
+		t.Fatalf("expected no-message notice, got %q", stripANSI(uiModel.View()))
+	}
+}
+
+func TestCtrlRSwitchesFromCopyModeToRevokeMode(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	uiModel.history = nil
+	uiModel.copySelection = nil
+	uiModel.copySelectionPos = -1
+	uiModel.renderedViewport = renderedViewportState{}
+	uiModel.identityID = "identity-a"
+	uiModel.addHistoryEntry(historyEntry{
+		kind:           historyKindMessage,
+		messageID:      "m-1",
+		from:           "alice",
+		authorIdentity: "identity-a",
+		body:           "sent",
+		at:             time.Date(2026, 4, 22, 11, 30, 0, 0, time.Local),
+		outgoing:       true,
+		status:         transcript.StatusSent,
+	})
+
+	updated, _ := uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	uiModel = updated.(model)
+	if !uiModel.copyMode {
+		t.Fatal("expected copy mode to start")
+	}
+
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	uiModel = updated.(model)
+
+	if uiModel.copyMode {
+		t.Fatal("expected copy mode to stop when entering revoke mode")
+	}
+	if !uiModel.revokeMode {
+		t.Fatal("expected revoke mode to start")
+	}
+}
+
+func TestCtrlYSwitchesFromRevokeModeToCopyMode(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	uiModel.history = nil
+	uiModel.copySelection = nil
+	uiModel.copySelectionPos = -1
+	uiModel.renderedViewport = renderedViewportState{}
+	uiModel.identityID = "identity-a"
+	uiModel.addHistoryEntry(historyEntry{
+		kind:           historyKindMessage,
+		messageID:      "m-1",
+		from:           "alice",
+		authorIdentity: "identity-a",
+		body:           "sent",
+		at:             time.Date(2026, 4, 22, 11, 31, 0, 0, time.Local),
+		outgoing:       true,
+		status:         transcript.StatusSent,
+	})
+
+	uiModel.enterRevokeMode()
+	if !uiModel.revokeMode {
+		t.Fatal("expected revoke mode to start")
+	}
+
+	updated, _ := uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	uiModel = updated.(model)
+
+	if uiModel.revokeMode {
+		t.Fatal("expected revoke mode to stop when entering copy mode")
+	}
+	if !uiModel.copyMode {
+		t.Fatal("expected copy mode to start")
+	}
+}
+
 func TestRenderEntryWithStatusColorsOnlySenderLabel(t *testing.T) {
 	oldProfile := lipgloss.ColorProfile()
 	oldDarkBackground := lipgloss.HasDarkBackground()

@@ -891,6 +891,11 @@ func (m *model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 
 func (m *model) handleRevokeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
+	case tea.KeyCtrlY:
+		if m.enterCopyMode() {
+			m.refreshViewport(false)
+		}
+		return *m, nil
 	case tea.KeyEsc:
 		m.exitRevokeMode()
 		return *m, nil
@@ -930,6 +935,9 @@ func (m *model) handleCopyModeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyCtrlY:
 		m.copySelectedMessage()
 		return *m, nil
+	case tea.KeyCtrlR:
+		m.enterRevokeMode()
+		return *m, nil
 	case tea.KeyEnter:
 		m.quoteSelectedMessage()
 		m.resize()
@@ -941,6 +949,9 @@ func (m *model) handleCopyModeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) enterRevokeMode() {
+	if m.copyMode {
+		m.exitCopyMode()
+	}
 	m.rebuildRevokeCandidates()
 	if len(m.revokeCandidates) == 0 {
 		m.addSystemEntry("revoke: no eligible messages")
@@ -952,6 +963,9 @@ func (m *model) enterRevokeMode() {
 }
 
 func (m *model) enterCopyMode() bool {
+	if m.revokeMode {
+		m.exitRevokeMode()
+	}
 	if len(m.copySelection) == 0 {
 		m.setStatusNotice("no message to copy", true)
 		return false
