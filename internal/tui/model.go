@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"os"
@@ -550,6 +551,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlR:
 			m.enterRevokeMode()
 			return m, nil
+		case tea.KeyCtrlY:
+			if m.uiMode == uiModeTUI {
+				m.copySelectedMessage()
+				return m, nil
+			}
+		case tea.KeyUp:
+			if m.uiMode == uiModeTUI {
+				m.moveCopySelection(-1)
+				m.refreshViewport(false)
+				return m, nil
+			}
+		case tea.KeyDown:
+			if m.uiMode == uiModeTUI {
+				m.moveCopySelection(1)
+				m.refreshViewport(false)
+				return m, nil
+			}
 		case tea.KeyEnter:
 			text := strings.TrimSpace(m.input.Value())
 			m.input.Reset()
@@ -1824,6 +1842,37 @@ func (m *model) moveCopySelection(delta int) {
 	}
 	m.copySelectionPos = next
 	m.followCopySelection = next == len(m.copySelection)-1
+	m.scrollSelectedMessageIntoView()
+}
+
+func (m *model) scrollSelectedMessageIntoView() {
+	if m.viewport.Height <= 0 {
+		return
+	}
+	historyIndex := m.selectedCopyHistoryIndex()
+	if historyIndex < 0 {
+		return
+	}
+	state := m.buildRenderedViewportState()
+	lineRange, ok := state.lineRanges[historyIndex]
+	if !ok || lineRange[0] >= lineRange[1] {
+		return
+	}
+	top := lineRange[0]
+	bottom := lineRange[1] - 1
+	if top < m.viewport.YOffset {
+		m.viewport.SetYOffset(top)
+		return
+	}
+	lastVisible := m.viewport.YOffset + m.viewport.Height - 1
+	if bottom > lastVisible {
+		m.viewport.SetYOffset(bottom - m.viewport.Height + 1)
+	}
+}
+
+func (m *model) setStatusNotice(text string, isError bool) {
+	m.statusNotice = strings.TrimSpace(text)
+	m.statusNoticeIsError = isError
 }
 
 func (m model) selectedCopyText() (string, bool) {
@@ -1831,19 +1880,41 @@ func (m model) selectedCopyText() (string, bool) {
 	if historyIndex < 0 {
 		return "", false
 	}
-	state := m.renderedViewport
-	if len(state.lines) == 0 {
-		state = m.buildRenderedViewportState()
-	}
+	state := m.buildRenderedViewportState()
 	lineRange, ok := state.lineRanges[historyIndex]
 	if !ok || lineRange[0] >= lineRange[1] {
 		return "", false
 	}
 	lines := make([]string, 0, lineRange[1]-lineRange[0])
-	for _, line := range state.lines[lineRange[0]:lineRange[1]] {
-		lines = append(lines, ansi.Strip(line.text))
+	for i, line := range state.lines[lineRange[0]:lineRange[1]] {
+		text := ansi.Strip(line.text)
+		if i == 0 {
+			text = strings.TrimPrefix(text, "> ")
+		}
+		lines = append(lines, text)
 	}
 	return strings.Join(lines, "\n"), true
+}
+
+func (m *model) copySelectedMessage() {
+	text, ok := m.selectedCopyText()
+	if !ok {
+		m.setStatusNotice("no message to copy", true)
+		return
+	}
+	if m.clipboardWriter == nil {
+		m.setStatusNotice("copy unsupported", true)
+		return
+	}
+	if err := m.clipboardWriter(text); err != nil {
+		if errors.Is(err, errClipboardUnsupported) {
+			m.setStatusNotice("copy unsupported", true)
+			return
+		}
+		m.setStatusNotice("copy failed", true)
+		return
+	}
+	m.setStatusNotice("copied message", false)
 }
 
 func (m model) buildRenderedViewportState() renderedViewportState {
@@ -2306,14 +2377,19 @@ func renderDateSeparator(date string) string {
 func (m model) renderStatusBar() string {
 	status := m.status
 	style := statusStyle
-	if strings.Contains(strings.ToLower(status), "disconnected") {
+	if strings.TrimSpace(m.statusNotice) != "" {
+		status = m.statusNotice
+		if m.statusNoticeIsError {
+			style = errorStyle
+		}
+	} else if strings.Contains(strings.ToLower(status), "disconnected") {
 		style = errorStyle
 	}
 	return fmt.Sprintf("%s %s %s %s", headerStyle.Render("chatbox "+m.mode), timestampStyle().Render("|"), style.Render(status), timestampStyle().Render("| /help"))
 }
 
 func (m model) renderInputBox() string {
-	hint := "Enter send / Esc quit / Ctrl+R revoke"
+	hint := "Enter send / Up Down select / Ctrl+Y copy / Ctrl+R revoke"
 	if m.revokeMode {
 		hint = "revoke mode: Up/Down select / Enter confirm / Esc cancel"
 	}

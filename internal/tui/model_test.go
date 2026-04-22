@@ -323,6 +323,125 @@ func TestRenderedCopyTextIncludesWrappedMessageLines(t *testing.T) {
 	}
 }
 
+func TestCtrlYCopiesSelectedMessage(t *testing.T) {
+	t.Parallel()
+
+	var copied string
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	uiModel.history = nil
+	uiModel.copySelection = nil
+	uiModel.copySelectionPos = -1
+	uiModel.renderedViewport = renderedViewportState{}
+	uiModel.clipboardWriter = func(text string) error {
+		copied = text
+		return nil
+	}
+	uiModel.width = 80
+	uiModel.height = 12
+	uiModel.resize()
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: "copy me",
+		at:   time.Date(2026, 4, 22, 11, 0, 0, 0, time.Local),
+	})
+
+	updated, _ := uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	uiModel = updated.(model)
+
+	if !strings.Contains(copied, "copy me") {
+		t.Fatalf("expected copied message body, got %q", copied)
+	}
+	if !strings.Contains(stripANSI(uiModel.View()), "copied message") {
+		t.Fatalf("expected copied status notice, got %q", stripANSI(uiModel.View()))
+	}
+}
+
+func TestCtrlYShowsCopyFailureInStatusBar(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	uiModel.history = nil
+	uiModel.copySelection = nil
+	uiModel.copySelectionPos = -1
+	uiModel.renderedViewport = renderedViewportState{}
+	uiModel.clipboardWriter = func(string) error {
+		return errClipboardUnsupported
+	}
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: "copy me",
+		at:   time.Date(2026, 4, 22, 11, 1, 0, 0, time.Local),
+	})
+
+	updated, _ := uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	uiModel = updated.(model)
+
+	if !strings.Contains(stripANSI(uiModel.View()), "copy unsupported") {
+		t.Fatalf("expected copy failure notice, got %q", stripANSI(uiModel.View()))
+	}
+}
+
+func TestCopySelectionFollowsBottomOnlyUntilUserMovesAway(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	uiModel.history = nil
+	uiModel.copySelection = nil
+	uiModel.copySelectionPos = -1
+	uiModel.renderedViewport = renderedViewportState{}
+	uiModel.width = 72
+	uiModel.height = 8
+	uiModel.resize()
+
+	for i := 0; i < 3; i++ {
+		uiModel.addHistoryEntry(historyEntry{
+			kind: historyKindMessage,
+			from: "alice",
+			body: fmt.Sprintf("msg-%d", i),
+			at:   time.Date(2026, 4, 22, 11, 10, i, 0, time.Local),
+		})
+	}
+	if got := uiModel.selectedCopyHistoryIndex(); got != 2 {
+		t.Fatalf("expected selection to follow newest message, got %d", got)
+	}
+
+	updated, _ := uiModel.Update(tea.KeyMsg{Type: tea.KeyUp})
+	uiModel = updated.(model)
+	if got := uiModel.selectedCopyHistoryIndex(); got != 1 {
+		t.Fatalf("expected manual move off bottom, got %d", got)
+	}
+
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "bob",
+		body: "new message",
+		at:   time.Date(2026, 4, 22, 11, 10, 5, 0, time.Local),
+	})
+	if got := uiModel.selectedCopyHistoryIndex(); got != 1 {
+		t.Fatalf("expected selection to stay on manual choice, got %d", got)
+	}
+}
+
 func TestRenderEntryWithStatusColorsOnlySenderLabel(t *testing.T) {
 	oldProfile := lipgloss.ColorProfile()
 	oldDarkBackground := lipgloss.HasDarkBackground()
