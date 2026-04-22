@@ -2056,6 +2056,80 @@ func TestModelDeduplicatesEquivalentHistorySyncMessageWithSmallTimestampDrift(t 
 	}
 }
 
+func TestModelDeduplicatesEquivalentHistorySyncMessageAcrossDirectionMismatch(t *testing.T) {
+	t.Parallel()
+
+	joinedAt := time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC)
+	messageAt := joinedAt.Add(5 * time.Minute)
+	store := &fakeTranscriptStore{
+		loaded: []transcript.Record{
+			{
+				MessageID:      "local-outgoing-1",
+				Direction:      transcript.DirectionOutgoing,
+				From:           "alice",
+				AuthorIdentity: "identity-local",
+				Body:           "same logical message",
+				At:             messageAt,
+				Status:         transcript.StatusSent,
+			},
+		},
+	}
+
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		session:       &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return store, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-local", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{RoomKey: roomKey, IdentityID: identityID, JoinedAt: joinedAt}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: &fakeSession{peerName: "host"}})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "sync-chunk-dedupe-direction",
+			From: "host",
+			Body: room.HistorySyncChunkBody(room.HistorySyncChunk{
+				Version:        1,
+				SourceIdentity: "identity-host",
+				TargetIdentity: "identity-local",
+				RoomKey:        transcript.JoinRoomKey("203.0.113.10:7331"),
+				Records: []transcript.Record{
+					{
+						MessageID:      "remote-copy-direction",
+						Direction:      transcript.DirectionIncoming,
+						From:           "alice",
+						AuthorIdentity: "identity-local",
+						Body:           "same logical message",
+						At:             messageAt,
+						Status:         transcript.StatusSent,
+					},
+				},
+			}),
+			At: joinedAt.Add(10 * time.Minute),
+		},
+	})
+	uiModel = updated.(model)
+
+	view := stripANSI(uiModel.View())
+	if strings.Count(view, "same logical message") != 1 {
+		t.Fatalf("expected direction-mismatched synced message to be deduplicated, got %q", view)
+	}
+	if len(store.appends) != 0 {
+		t.Fatalf("expected direction-mismatched duplicate not to persist, got %#v", store.appends)
+	}
+	if _, ok := uiModel.seenMessages["remote-copy-direction"]; !ok {
+		t.Fatal("expected direction-mismatched duplicate ID to be remembered as seen")
+	}
+}
+
 func TestModelLoadsHistoryAcrossDisplayNameChangesForSameRoom(t *testing.T) {
 	t.Parallel()
 

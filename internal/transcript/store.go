@@ -177,7 +177,7 @@ func (s *Store) Load() ([]Record, error) {
 		}
 	}
 
-	return records, nil
+	return dedupeLoadedRecords(records), nil
 }
 
 func (s *Store) AppendMessage(record Record) error {
@@ -398,6 +398,73 @@ func hasEquivalentRecord(index map[string]struct{}, record Record) bool {
 		}
 	}
 	return false
+}
+
+func dedupeLoadedRecords(records []Record) []Record {
+	if len(records) < 2 {
+		return records
+	}
+
+	deduped := make([]Record, 0, len(records))
+	for _, record := range records {
+		index := -1
+		for i, existing := range deduped {
+			if recordsEquivalent(existing, record) {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			deduped = append(deduped, record)
+			continue
+		}
+		deduped[index] = mergeEquivalentRecord(deduped[index], record)
+	}
+	return deduped
+}
+
+func recordsEquivalent(left, right Record) bool {
+	if left.Body != right.Body {
+		return false
+	}
+	if !recordTimestampsEquivalent(left.At, right.At) {
+		return false
+	}
+	if left.AuthorIdentity != "" && right.AuthorIdentity != "" {
+		return left.AuthorIdentity == right.AuthorIdentity
+	}
+	return left.From == right.From
+}
+
+func mergeEquivalentRecord(primary, duplicate Record) Record {
+	if primary.MessageID == "" {
+		primary.MessageID = duplicate.MessageID
+	}
+	if primary.AuthorIdentity == "" {
+		primary.AuthorIdentity = duplicate.AuthorIdentity
+	}
+	if primary.Direction != DirectionOutgoing && duplicate.Direction == DirectionOutgoing {
+		primary.Direction = duplicate.Direction
+	}
+	if primary.Status == "" || primary.Status == StatusSending {
+		primary.Status = duplicate.Status
+	}
+	if !primary.Revoked && duplicate.Revoked {
+		primary.Revoked = true
+		primary.RevokedAt = duplicate.RevokedAt
+	}
+	if duplicate.RevokedAt.After(primary.RevokedAt) {
+		primary.RevokedAt = duplicate.RevokedAt
+	}
+	return primary
+}
+
+func recordTimestampsEquivalent(left, right time.Time) bool {
+	diff := left.Sub(right)
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff <= equivalentRecordTimeWindow
 }
 
 func equivalentRecordKeys(record Record, window time.Duration) []string {

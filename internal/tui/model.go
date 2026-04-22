@@ -1152,6 +1152,9 @@ func (m model) hasEquivalentHistoryMessage(record transcript.Record) bool {
 		if entry.kind != historyKindMessage {
 			continue
 		}
+		if entry.authorIdentity != "" && record.AuthorIdentity != "" && entry.authorIdentity != record.AuthorIdentity {
+			continue
+		}
 		if entry.from != record.From {
 			continue
 		}
@@ -1159,10 +1162,6 @@ func (m model) hasEquivalentHistoryMessage(record transcript.Record) bool {
 			continue
 		}
 		if !timestampsEquivalent(entry.at, record.At) {
-			continue
-		}
-		outgoing := record.Direction == transcript.DirectionOutgoing
-		if entry.outgoing != outgoing {
 			continue
 		}
 		return true

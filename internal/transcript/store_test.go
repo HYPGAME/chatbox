@@ -390,6 +390,52 @@ func TestOpenStoreDeduplicatesEquivalentLegacyDisplayNameTranscriptsWithSmallTim
 	}
 }
 
+func TestLoadDeduplicatesEquivalentRecordsAcrossDirectionMismatch(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	psk := bytes.Repeat([]byte{0x52}, 32)
+	messageAt := time.Date(2026, 4, 21, 11, 0, 0, 0, time.UTC)
+
+	store, err := OpenStore(baseDir, "alice", JoinRoomKey("127.0.0.1:7331"), psk)
+	if err != nil {
+		t.Fatalf("OpenStore returned error: %v", err)
+	}
+	if err := store.AppendMessage(Record{
+		MessageID:      "local-outgoing",
+		Direction:      DirectionOutgoing,
+		From:           "alice",
+		AuthorIdentity: "identity-local",
+		Body:           "same logical message",
+		At:             messageAt,
+		Status:         StatusSent,
+	}); err != nil {
+		t.Fatalf("AppendMessage local returned error: %v", err)
+	}
+	if err := store.AppendMessage(Record{
+		MessageID:      "remote-copy",
+		Direction:      DirectionIncoming,
+		From:           "alice",
+		AuthorIdentity: "identity-local",
+		Body:           "same logical message",
+		At:             messageAt,
+		Status:         StatusSent,
+	}); err != nil {
+		t.Fatalf("AppendMessage duplicate returned error: %v", err)
+	}
+
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected direction-mismatched equivalent records to deduplicate, got %#v", loaded)
+	}
+	if loaded[0].Body != "same logical message" {
+		t.Fatalf("expected deduplicated record body, got %#v", loaded[0])
+	}
+}
+
 func TestStoreAppendWaitsForExclusiveFileLock(t *testing.T) {
 	t.Parallel()
 
