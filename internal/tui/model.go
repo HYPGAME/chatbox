@@ -656,10 +656,11 @@ func (m *model) announceHistorySyncCapability() {
 	}
 	summary := HistorySyncSummaryForRecords(m.history)
 	_, _ = m.session.Send(room.HistorySyncHelloBody(room.HistorySyncHello{
-		Version:    1,
-		IdentityID: m.identityID,
-		RoomKey:    m.roomAuthorization.RoomKey,
-		Summary:    summary,
+		Version:       1,
+		IdentityID:    m.identityID,
+		ClientVersion: version.Version,
+		RoomKey:       m.roomAuthorization.RoomKey,
+		Summary:       summary,
 	}))
 }
 
@@ -1303,7 +1304,11 @@ func (m *model) handleUpdateExecute(sender string, execute room.UpdateExecute) t
 	if m.roomAuthorization.RoomKey == "" || execute.RoomKey != m.roomAuthorization.RoomKey {
 		return nil
 	}
-	m.addSystemEntry(fmt.Sprintf("update request accepted: %s", execute.TargetVersion))
+	targetLabel := strings.TrimSpace(execute.TargetVersion)
+	if targetLabel == "" {
+		targetLabel = "latest"
+	}
+	m.addSystemEntry(fmt.Sprintf("update request accepted: %s", targetLabel))
 
 	if m.mode != "join" {
 		return nil

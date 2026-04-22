@@ -14,6 +14,7 @@ import (
 
 	"chatbox/internal/admins"
 	"chatbox/internal/session"
+	"chatbox/internal/version"
 )
 
 type EventKind string
@@ -66,6 +67,7 @@ type HostRoom struct {
 	releaseResolver    func(context.Context, string) (string, error)
 	identityByPeerName map[string]string
 	identityByMemberID map[uint64]string
+	versionByMemberID  map[uint64]string
 	processedUpdates   map[string]struct{}
 	activeUpdateStatus map[string]map[string]string
 }
@@ -83,6 +85,7 @@ func NewHostRoom(localName string) *HostRoom {
 		},
 		identityByPeerName: make(map[string]string),
 		identityByMemberID: make(map[uint64]string),
+		versionByMemberID:  make(map[uint64]string),
 		processedUpdates:   make(map[string]struct{}),
 		activeUpdateStatus: make(map[string]map[string]string),
 	}
@@ -259,10 +262,10 @@ func (r *HostRoom) ParticipantNames() []string {
 
 	names := make([]string, 0, len(r.members)+1)
 	if strings.TrimSpace(r.localName) != "" {
-		names = append(names, r.localName)
+		names = append(names, participantLabel(r.localName, version.Version))
 	}
 	for _, member := range r.members {
-		names = append(names, member.session.PeerName())
+		names = append(names, participantLabel(member.session.PeerName(), r.versionByMemberID[member.id]))
 	}
 	sort.Strings(names)
 	return names
@@ -350,6 +353,7 @@ func (r *HostRoom) handleHistorySyncControl(member trackedMember, message sessio
 		}
 		r.markMemberSyncCapable(member.id, true)
 		r.rememberMemberIdentity(member.id, member.session.PeerName(), hello.IdentityID)
+		r.rememberMemberVersion(member.id, hello.ClientVersion)
 		_ = r.broadcastHistorySync(message, member.id)
 		return true
 	}
@@ -407,22 +411,7 @@ func (r *HostRoom) handleUpdateRequest(member trackedMember, request UpdateReque
 		return
 	}
 
-	targetVersion, err := r.resolveTargetVersion(strings.TrimSpace(request.TargetVersion))
-	if err != nil {
-		r.sendUpdateResult(member.session, UpdateResult{
-			Version:        1,
-			RequestID:      request.RequestID,
-			RoomKey:        request.RoomKey,
-			ReporterName:   r.localName,
-			ReporterID:     "",
-			TargetVersion:  strings.TrimSpace(request.TargetVersion),
-			Status:         "resolve-latest-failed",
-			Detail:         err.Error(),
-			CurrentVersion: "",
-			At:             time.Now(),
-		}, true)
-		return
-	}
+	targetVersion := strings.TrimSpace(request.TargetVersion)
 
 	if !r.markUpdateRequestStarted(request.RequestID) {
 		return
@@ -566,6 +555,7 @@ func (r *HostRoom) removeMember(member trackedMember) {
 	}
 	delete(r.members, member.id)
 	delete(r.identityByMemberID, member.id)
+	delete(r.versionByMemberID, member.id)
 	peerCount := len(r.members)
 	r.mu.Unlock()
 
@@ -624,10 +614,33 @@ func (r *HostRoom) rememberMemberIdentity(memberID uint64, peerName, identityID 
 	}
 }
 
+func (r *HostRoom) rememberMemberVersion(memberID uint64, clientVersion string) {
+	clientVersion = strings.TrimSpace(clientVersion)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if clientVersion == "" {
+		delete(r.versionByMemberID, memberID)
+		return
+	}
+	r.versionByMemberID[memberID] = clientVersion
+}
+
 func (r *HostRoom) memberIdentity(memberID uint64) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.identityByMemberID[memberID]
+}
+
+func participantLabel(name, clientVersion string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "peer"
+	}
+	clientVersion = strings.TrimSpace(clientVersion)
+	if clientVersion == "" {
+		clientVersion = "unknown"
+	}
+	return name + " [" + clientVersion + "]"
 }
 
 func (r *HostRoom) markUpdateRequestStarted(requestID string) bool {

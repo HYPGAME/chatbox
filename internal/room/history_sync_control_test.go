@@ -11,9 +11,10 @@ func TestHistorySyncControlHelloRoundTrips(t *testing.T) {
 	t.Parallel()
 
 	hello := HistorySyncHello{
-		Version:    1,
-		IdentityID: "identity-1",
-		RoomKey:    "join:203.0.113.10:7331",
+		Version:       1,
+		IdentityID:    "identity-1",
+		ClientVersion: "v0.1.25",
+		RoomKey:       "join:203.0.113.10:7331",
 		Summary: HistorySyncSummary{
 			Count:  3,
 			Oldest: time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC),
@@ -25,7 +26,7 @@ func TestHistorySyncControlHelloRoundTrips(t *testing.T) {
 	if !ok {
 		t.Fatal("expected hello payload to parse")
 	}
-	if parsed.IdentityID != hello.IdentityID || parsed.RoomKey != hello.RoomKey || parsed.Summary.Count != hello.Summary.Count {
+	if parsed.IdentityID != hello.IdentityID || parsed.ClientVersion != hello.ClientVersion || parsed.RoomKey != hello.RoomKey || parsed.Summary.Count != hello.Summary.Count {
 		t.Fatalf("expected hello to round-trip, got %#v", parsed)
 	}
 }

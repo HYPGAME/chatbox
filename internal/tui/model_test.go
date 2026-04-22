@@ -21,6 +21,7 @@ import (
 	"chatbox/internal/session"
 	"chatbox/internal/transcript"
 	"chatbox/internal/update"
+	"chatbox/internal/version"
 )
 
 var ansiEscapePattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
@@ -946,6 +947,9 @@ func TestModelSendsHistorySyncHelloAfterSessionReady(t *testing.T) {
 	}
 	if hello.IdentityID != "identity-local" {
 		t.Fatalf("expected sync hello identity %q, got %#v", "identity-local", hello)
+	}
+	if hello.ClientVersion != version.Version {
+		t.Fatalf("expected sync hello client version %q, got %#v", version.Version, hello)
 	}
 	if hello.RoomKey != transcript.JoinRoomKey("203.0.113.10:7331") {
 		t.Fatalf("expected sync hello room key %q, got %#v", transcript.JoinRoomKey("203.0.113.10:7331"), hello)

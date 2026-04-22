@@ -17,10 +17,11 @@ type HistorySyncSummary struct {
 }
 
 type HistorySyncHello struct {
-	Version    int                `json:"version"`
-	IdentityID string             `json:"identity_id"`
-	RoomKey    string             `json:"room_key"`
-	Summary    HistorySyncSummary `json:"summary"`
+	Version       int                `json:"version"`
+	IdentityID    string             `json:"identity_id"`
+	ClientVersion string             `json:"client_version,omitempty"`
+	RoomKey       string             `json:"room_key"`
+	Summary       HistorySyncSummary `json:"summary"`
 }
 
 type HistorySyncOffer struct {

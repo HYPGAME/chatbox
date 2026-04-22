@@ -2,11 +2,13 @@ package room
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"chatbox/internal/admins"
 	"chatbox/internal/session"
+	"chatbox/internal/version"
 )
 
 func TestHostRoomBroadcastsJoinerMessagesToOtherMembersAndHost(t *testing.T) {
@@ -121,7 +123,7 @@ func TestHostRoomInterceptsStatusRequestsAndRepliesOnlyToRequester(t *testing.T)
 	if !ok {
 		t.Fatalf("expected hidden status response, got %#v", response)
 	}
-	if line != "online (3): aaa, bbb, host" {
+	if line != "online (3): aaa [unknown], bbb [unknown], host ["+version.Version+"]" {
 		t.Fatalf("expected sorted online roster, got %q", line)
 	}
 
@@ -259,7 +261,9 @@ func TestHostRoomAcceptsAuthorizedUpdateRequestAndBroadcastsExecute(t *testing.T
 		AllowedUpdateIdentities: map[string]struct{}{"identity-a": {}},
 	}
 	room.identityByPeerName["alice"] = "identity-a"
+	resolverCalled := false
 	room.releaseResolver = func(context.Context, string) (string, error) {
+		resolverCalled = true
 		return "v0.1.24", nil
 	}
 	room.AddMember(member)
@@ -283,14 +287,60 @@ func TestHostRoomAcceptsAuthorizedUpdateRequestAndBroadcastsExecute(t *testing.T
 	if !ok {
 		t.Fatalf("expected execute message, got %#v", message)
 	}
-	if execute.TargetVersion != "v0.1.24" {
-		t.Fatalf("expected resolved target version %q, got %#v", "v0.1.24", execute)
+	if execute.TargetVersion != "" {
+		t.Fatalf("expected empty target version to be broadcast as-is, got %#v", execute)
+	}
+	if resolverCalled {
+		t.Fatal("expected empty target version request not to resolve latest release on host")
 	}
 
 	hostMessage := waitForRoomMessage(t, room.Messages())
 	if hostMessage.Body != message.Body {
 		t.Fatalf("expected host stream to receive execute control, got %#v", hostMessage)
 	}
+}
+
+func TestHostRoomParticipantNamesIncludeKnownVersionsAndUnknownLegacyPeers(t *testing.T) {
+	t.Parallel()
+
+	room := NewHostRoom("host")
+	defer room.Close()
+
+	memberA := newFakeMember("alice")
+	memberB := newFakeMember("bob")
+	room.AddMember(memberA)
+	room.AddMember(memberB)
+	drainJoinEvents(t, room, 2)
+
+	memberA.messages <- session.Message{
+		ID:   "sync-hello-versioned",
+		From: "alice",
+		Body: HistorySyncHelloBody(HistorySyncHello{
+			Version:       1,
+			IdentityID:    "identity-a",
+			ClientVersion: "v0.1.24",
+			RoomKey:       "room",
+		}),
+		At: time.Date(2026, 4, 22, 9, 0, 0, 0, time.UTC),
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		names := room.ParticipantNames()
+		joined := strings.Join(names, ", ")
+		if strings.Contains(joined, "alice [v0.1.24]") {
+			if !strings.Contains(joined, "bob [unknown]") {
+				t.Fatalf("expected legacy peer to report unknown version, got %q", joined)
+			}
+			if !strings.Contains(joined, "host [") {
+				t.Fatalf("expected host version to be included, got %q", joined)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("expected versioned participant roster, got %#v", room.ParticipantNames())
 }
 
 func TestHostRoomRejectsUnauthorizedUpdateRequest(t *testing.T) {
@@ -392,10 +442,6 @@ func TestHostRoomSubmitUpdateRequestBroadcastsExecute(t *testing.T) {
 	room.AddMember(member)
 	drainJoinEvents(t, room, 1)
 
-	room.ConfigureUpdates(admins.Store{}, func(context.Context, string) (string, error) {
-		return "v0.1.24", nil
-	})
-
 	if err := room.SubmitUpdateRequest(UpdateRequest{
 		Version:           1,
 		RequestID:         "update-host-1",
@@ -411,7 +457,7 @@ func TestHostRoomSubmitUpdateRequestBroadcastsExecute(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected execute message, got %#v", message)
 	}
-	if execute.TargetVersion != "v0.1.24" || execute.InitiatorName != "host" {
+	if execute.TargetVersion != "" || execute.InitiatorName != "host" {
 		t.Fatalf("expected host submit to broadcast execute, got %#v", execute)
 	}
 }
