@@ -221,6 +221,7 @@ type model struct {
 	draggingViewport bool
 	lastMouseY       int
 
+	copyMode            bool
 	copySelection       []int
 	copySelectionPos    int
 	followCopySelection bool
@@ -541,6 +542,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.revokeMode {
 			return m.handleRevokeKey(msg)
 		}
+		if m.copyMode {
+			return m.handleCopyModeKey(msg)
+		}
 		switch msg.Type {
 		case tea.KeyCtrlC:
 			m.failPendingMessages()
@@ -553,19 +557,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case tea.KeyCtrlY:
 			if m.uiMode == uiModeTUI {
-				m.copySelectedMessage()
-				return m, nil
-			}
-		case tea.KeyUp:
-			if m.uiMode == uiModeTUI {
-				m.moveCopySelection(-1)
-				m.refreshViewport(false)
-				return m, nil
-			}
-		case tea.KeyDown:
-			if m.uiMode == uiModeTUI {
-				m.moveCopySelection(1)
-				m.refreshViewport(false)
+				if m.enterCopyMode() {
+					m.refreshViewport(false)
+				}
 				return m, nil
 			}
 		case tea.KeyEnter:
@@ -919,6 +913,28 @@ func (m *model) handleRevokeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
+func (m *model) handleCopyModeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.exitCopyMode()
+		m.refreshViewport(false)
+		return *m, nil
+	case tea.KeyUp:
+		m.moveCopySelection(-1)
+		m.refreshViewport(false)
+		return *m, nil
+	case tea.KeyDown:
+		m.moveCopySelection(1)
+		m.refreshViewport(false)
+		return *m, nil
+	case tea.KeyCtrlY:
+		m.copySelectedMessage()
+		return *m, nil
+	default:
+		return *m, nil
+	}
+}
+
 func (m *model) enterRevokeMode() {
 	m.rebuildRevokeCandidates()
 	if len(m.revokeCandidates) == 0 {
@@ -928,6 +944,29 @@ func (m *model) enterRevokeMode() {
 	m.revokeMode = true
 	m.revokeSelection = len(m.revokeCandidates) - 1
 	m.refreshViewport(false)
+}
+
+func (m *model) enterCopyMode() bool {
+	if len(m.copySelection) == 0 {
+		m.setStatusNotice("no message to copy", true)
+		return false
+	}
+	m.copyMode = true
+	m.setStatusNotice("copy mode", false)
+	if m.copySelectionPos < 0 || m.copySelectionPos >= len(m.copySelection) {
+		m.copySelectionPos = len(m.copySelection) - 1
+	}
+	m.followCopySelection = m.copySelectionPos == len(m.copySelection)-1
+	m.scrollSelectedMessageIntoView()
+	return true
+}
+
+func (m *model) exitCopyMode() {
+	if !m.copyMode {
+		return
+	}
+	m.copyMode = false
+	m.setStatusNotice("", false)
 }
 
 func (m *model) exitRevokeMode() {
@@ -1923,9 +1962,12 @@ func (m model) buildRenderedViewportState() renderedViewportState {
 		lineRanges: make(map[int][2]int, len(m.history)),
 	}
 	lastDate := ""
-	selectedIndex := m.selectedCopyHistoryIndex()
-	if m.revokeMode {
+	selectedIndex := -1
+	switch {
+	case m.revokeMode:
 		selectedIndex = m.selectedRevokeHistoryIndex()
+	case m.copyMode:
+		selectedIndex = m.selectedCopyHistoryIndex()
 	}
 	for i, entry := range m.history {
 		entryDate := entry.at.Local().Format("2006-01-02")
@@ -2059,6 +2101,7 @@ func (m *model) resetConversation() {
 	m.statusNotice = ""
 	m.statusNoticeIsError = false
 	m.renderedViewport = renderedViewportState{}
+	m.copyMode = false
 	m.revokeMode = false
 	m.revokeCandidates = nil
 	m.revokeSelection = 0
@@ -2377,7 +2420,9 @@ func renderDateSeparator(date string) string {
 func (m model) renderStatusBar() string {
 	status := m.status
 	style := statusStyle
-	if strings.TrimSpace(m.statusNotice) != "" {
+	if m.copyMode && strings.TrimSpace(m.statusNotice) == "" {
+		status = "copy mode"
+	} else if strings.TrimSpace(m.statusNotice) != "" {
 		status = m.statusNotice
 		if m.statusNoticeIsError {
 			style = errorStyle
@@ -2389,8 +2434,10 @@ func (m model) renderStatusBar() string {
 }
 
 func (m model) renderInputBox() string {
-	hint := "Enter send / Up Down select / Ctrl+Y copy / Ctrl+R revoke"
-	if m.revokeMode {
+	hint := "Enter send / Ctrl+Y copy mode / Ctrl+R revoke"
+	if m.copyMode {
+		hint = "copy mode: Up/Down select / Enter quote / Ctrl+Y copy / Esc cancel"
+	} else if m.revokeMode {
 		hint = "revoke mode: Up/Down select / Enter confirm / Esc cancel"
 	}
 	content := strings.Join([]string{

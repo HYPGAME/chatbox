@@ -323,10 +323,61 @@ func TestRenderedCopyTextIncludesWrappedMessageLines(t *testing.T) {
 	}
 }
 
-func TestCtrlYCopiesSelectedMessage(t *testing.T) {
+func TestCtrlYEntersCopyModeAndEscExits(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	uiModel.history = nil
+	uiModel.copySelection = nil
+	uiModel.copySelectionPos = -1
+	uiModel.renderedViewport = renderedViewportState{}
+	uiModel.width = 80
+	uiModel.height = 12
+	uiModel.resize()
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: "copy me",
+		at:   time.Date(2026, 4, 22, 11, 0, 0, 0, time.Local),
+	})
+
+	if strings.Contains(stripANSI(uiModel.View()), "> [11:00] alice: copy me") {
+		t.Fatalf("expected no copy selection highlight before entering copy mode, got %q", stripANSI(uiModel.View()))
+	}
+
+	updated, _ := uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	uiModel = updated.(model)
+	if !uiModel.copyMode {
+		t.Fatal("expected Ctrl+Y to enter copy mode")
+	}
+	if !strings.Contains(stripANSI(uiModel.View()), "copy mode") {
+		t.Fatalf("expected copy mode notice, got %q", stripANSI(uiModel.View()))
+	}
+	if !strings.Contains(stripANSI(uiModel.View()), "> [11:00] alice: copy me") {
+		t.Fatalf("expected selected message highlight in copy mode, got %q", stripANSI(uiModel.View()))
+	}
+
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	uiModel = updated.(model)
+	if uiModel.copyMode {
+		t.Fatal("expected Esc to exit copy mode")
+	}
+	if strings.Contains(stripANSI(uiModel.View()), "> [11:00] alice: copy me") {
+		t.Fatalf("expected selection highlight to clear after exiting copy mode, got %q", stripANSI(uiModel.View()))
+	}
+}
+
+func TestCtrlYCopiesSelectedMessageInCopyMode(t *testing.T) {
 	t.Parallel()
 
 	var copied string
+
 	uiModel := newModel(modelOptions{
 		mode:   "join",
 		uiMode: uiModeTUI,
@@ -354,6 +405,8 @@ func TestCtrlYCopiesSelectedMessage(t *testing.T) {
 
 	updated, _ := uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
 	uiModel = updated.(model)
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	uiModel = updated.(model)
 
 	if !strings.Contains(copied, "copy me") {
 		t.Fatalf("expected copied message body, got %q", copied)
@@ -363,7 +416,7 @@ func TestCtrlYCopiesSelectedMessage(t *testing.T) {
 	}
 }
 
-func TestCtrlYShowsCopyFailureInStatusBar(t *testing.T) {
+func TestCtrlYShowsCopyFailureInStatusBarInCopyMode(t *testing.T) {
 	t.Parallel()
 
 	uiModel := newModel(modelOptions{
@@ -389,13 +442,15 @@ func TestCtrlYShowsCopyFailureInStatusBar(t *testing.T) {
 
 	updated, _ := uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
 	uiModel = updated.(model)
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	uiModel = updated.(model)
 
 	if !strings.Contains(stripANSI(uiModel.View()), "copy unsupported") {
 		t.Fatalf("expected copy failure notice, got %q", stripANSI(uiModel.View()))
 	}
 }
 
-func TestCopySelectionFollowsBottomOnlyUntilUserMovesAway(t *testing.T) {
+func TestCopyModeSelectionFollowsBottomOnlyUntilUserMovesAway(t *testing.T) {
 	t.Parallel()
 
 	uiModel := newModel(modelOptions{
@@ -421,11 +476,14 @@ func TestCopySelectionFollowsBottomOnlyUntilUserMovesAway(t *testing.T) {
 			at:   time.Date(2026, 4, 22, 11, 10, i, 0, time.Local),
 		})
 	}
+
+	updated, _ := uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	uiModel = updated.(model)
 	if got := uiModel.selectedCopyHistoryIndex(); got != 2 {
-		t.Fatalf("expected selection to follow newest message, got %d", got)
+		t.Fatalf("expected copy mode selection to start on newest message, got %d", got)
 	}
 
-	updated, _ := uiModel.Update(tea.KeyMsg{Type: tea.KeyUp})
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyUp})
 	uiModel = updated.(model)
 	if got := uiModel.selectedCopyHistoryIndex(); got != 1 {
 		t.Fatalf("expected manual move off bottom, got %d", got)
