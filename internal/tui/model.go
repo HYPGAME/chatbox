@@ -1978,12 +1978,20 @@ func (m *model) copySelectedMessage() {
 func formatQuotedReply(entry historyEntry) string {
 	body := strings.ReplaceAll(renderedMessageBody(entry), "\r\n", "\n")
 	lines := strings.Split(body, "\n")
-	quoted := make([]string, 0, len(lines)+2)
-	quoted = append(quoted, fmt.Sprintf("> %s [%s]", entry.from, entry.at.Local().Format("15:04")))
-	for _, line := range lines {
+	firstLine := ""
+	if len(lines) > 0 {
+		firstLine = lines[0]
+	}
+	firstQuotedLine := fmt.Sprintf("> %s [%s]", entry.from, entry.at.Local().Format("15:04"))
+	if firstLine != "" {
+		firstQuotedLine += " " + firstLine
+	}
+	quoted := make([]string, 0, len(lines))
+	quoted = append(quoted, firstQuotedLine)
+	for _, line := range lines[1:] {
 		quoted = append(quoted, "> "+line)
 	}
-	return strings.Join(quoted, "\n") + "\n\n"
+	return strings.Join(quoted, "\n") + "\n"
 }
 
 func (m *model) quoteSelectedMessage() {

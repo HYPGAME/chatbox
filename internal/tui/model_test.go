@@ -529,7 +529,7 @@ func TestCopyModeEnterQuotesSelectedMessage(t *testing.T) {
 	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	uiModel = updated.(model)
 
-	want := "> alice [11:20]\n> hello world\n\n"
+	want := "> alice [11:20] hello world\n"
 	if got := uiModel.input.Value(); got != want {
 		t.Fatalf("expected quote text %q, got %q", want, got)
 	}
@@ -564,7 +564,7 @@ func TestCopyModeEnterQuotesMultilineMessage(t *testing.T) {
 	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	uiModel = updated.(model)
 
-	want := "> alice [11:21]\n> line one\n> line two\n\n"
+	want := "> alice [11:21] line one\n> line two\n"
 	if got := uiModel.input.Value(); got != want {
 		t.Fatalf("expected multiline quote text %q, got %q", want, got)
 	}
@@ -598,7 +598,7 @@ func TestCopyModeEnterAppendsQuoteAfterExistingInput(t *testing.T) {
 	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	uiModel = updated.(model)
 
-	want := "draft reply\n> alice [11:22]\n> hello world\n\n"
+	want := "draft reply\n> alice [11:22] hello world\n"
 	if got := uiModel.input.Value(); got != want {
 		t.Fatalf("expected appended quote text %q, got %q", want, got)
 	}
