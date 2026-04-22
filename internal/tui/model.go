@@ -207,6 +207,8 @@ type model struct {
 	revokeMode       bool
 	revokeCandidates []int
 	revokeSelection  int
+
+	pendingRestart *update.RestartSpec
 }
 
 var (
@@ -329,8 +331,11 @@ func loadHostAdminStore() admins.Store {
 
 func runProgram(m model) error {
 	program := tea.NewProgram(m, programOptionsForMode(m.uiMode)...)
-	_, err := program.Run()
-	return err
+	finalModel, err := program.Run()
+	if err != nil {
+		return err
+	}
+	return launchPendingRestartIfNeeded(finalModel)
 }
 
 func runUI(m model) error {
@@ -338,6 +343,20 @@ func runUI(m model) error {
 		return scrollbackRunner(m)
 	}
 	return bubbleTeaRunner(m)
+}
+
+func launchPendingRestartIfNeeded(finalModel tea.Model) error {
+	if finalModel == nil {
+		return nil
+	}
+	m, ok := finalModel.(model)
+	if !ok {
+		return nil
+	}
+	if m.pendingRestart == nil {
+		return nil
+	}
+	return m.restartLauncher(*m.pendingRestart)
 }
 
 func newModel(opts modelOptions) model {
@@ -1369,10 +1388,8 @@ func (m *model) handleRoomUpdatePerformed(msg roomUpdatePerformedMsg) (tea.Model
 			if err != nil {
 				status = "restart-failed"
 				detail = err.Error()
-			} else if err := m.restartLauncher(spec); err != nil {
-				status = "restart-failed"
-				detail = err.Error()
 			} else {
+				m.pendingRestart = &spec
 				shouldQuit = true
 			}
 		}

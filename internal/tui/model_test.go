@@ -862,8 +862,11 @@ func TestModelJoinExecutesApprovedUpdateAndReportsSuccess(t *testing.T) {
 	updated, _ = uiModel.Update(msg)
 	uiModel = updated.(model)
 
-	if !restarted {
-		t.Fatal("expected restart launcher to be invoked")
+	if restarted {
+		t.Fatal("expected restart launcher to be deferred until after tui shutdown")
+	}
+	if uiModel.pendingRestart == nil {
+		t.Fatal("expected pending restart spec to be recorded for post-shutdown launch")
 	}
 	result, ok := room.ParseUpdateResult(fake.sent[len(fake.sent)-1].Body)
 	if !ok {
@@ -871,6 +874,31 @@ func TestModelJoinExecutesApprovedUpdateAndReportsSuccess(t *testing.T) {
 	}
 	if result.Status != "success" || result.ReporterID != "identity-a" {
 		t.Fatalf("expected success update result, got %#v", result)
+	}
+}
+
+func TestLaunchPendingRestartIfNeededUsesRestartLauncher(t *testing.T) {
+	t.Parallel()
+
+	var restarted bool
+	err := launchPendingRestartIfNeeded(model{
+		restartLauncher: func(spec update.RestartSpec) error {
+			restarted = true
+			if spec.Path != "/tmp/chatbox" || len(spec.Args) == 0 || spec.Args[0] != "join" {
+				t.Fatalf("expected pending restart spec to be forwarded, got %#v", spec)
+			}
+			return nil
+		},
+		pendingRestart: &update.RestartSpec{
+			Path: "/tmp/chatbox",
+			Args: []string{"join", "--peer", "203.0.113.10:7331"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("launchPendingRestartIfNeeded returned error: %v", err)
+	}
+	if !restarted {
+		t.Fatal("expected pending restart to be launched after tui shutdown")
 	}
 }
 
