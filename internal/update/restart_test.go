@@ -1,6 +1,10 @@
 package update
 
-import "testing"
+import (
+	"os"
+	"os/exec"
+	"testing"
+)
 
 func TestBuildRestartSpecPreservesJoinArguments(t *testing.T) {
 	t.Parallel()
@@ -39,9 +43,11 @@ func TestLaunchRestartUsesBuiltSpec(t *testing.T) {
 
 	var gotPath string
 	var gotArgs []string
-	restartStarter = func(path string, args []string) error {
-		gotPath = path
-		gotArgs = append([]string(nil), args...)
+	var gotStdin any
+	restartStarter = func(cmd *exec.Cmd) error {
+		gotPath = cmd.Path
+		gotArgs = append([]string(nil), cmd.Args[1:]...)
+		gotStdin = cmd.Stdin
 		return nil
 	}
 
@@ -57,5 +63,30 @@ func TestLaunchRestartUsesBuiltSpec(t *testing.T) {
 	}
 	if len(gotArgs) != len(spec.Args) || gotArgs[0] != "join" {
 		t.Fatalf("expected restart args %#v, got %#v", spec.Args, gotArgs)
+	}
+	if gotStdin != os.Stdin {
+		t.Fatalf("expected restart stdin to be inherited, got %#v", gotStdin)
+	}
+}
+
+func TestBuildRestartCommandInheritsTerminalStreams(t *testing.T) {
+	t.Parallel()
+
+	spec := RestartSpec{
+		Path: "/tmp/chatbox",
+		Args: []string{"join", "--peer", "127.0.0.1:7331"},
+	}
+	cmd, err := buildRestartCommand(spec)
+	if err != nil {
+		t.Fatalf("buildRestartCommand returned error: %v", err)
+	}
+	if cmd.Stdin != os.Stdin {
+		t.Fatalf("expected restart stdin to inherit terminal stdin, got %#v", cmd.Stdin)
+	}
+	if cmd.Stdout != os.Stdout {
+		t.Fatalf("expected restart stdout to inherit terminal stdout, got %#v", cmd.Stdout)
+	}
+	if cmd.Stderr != os.Stderr {
+		t.Fatalf("expected restart stderr to inherit terminal stderr, got %#v", cmd.Stderr)
 	}
 }

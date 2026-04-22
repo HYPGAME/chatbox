@@ -12,11 +12,22 @@ type RestartSpec struct {
 	Args []string
 }
 
-var restartStarter = func(path string, args []string) error {
-	cmd := exec.Command(path, args...)
+var restartStarter = func(cmd *exec.Cmd) error {
+	return cmd.Start()
+}
+
+func buildRestartCommand(spec RestartSpec) (*exec.Cmd, error) {
+	if strings.TrimSpace(spec.Path) == "" {
+		return nil, fmt.Errorf("restart executable path is required")
+	}
+	if len(spec.Args) == 0 {
+		return nil, fmt.Errorf("restart arguments are required")
+	}
+	cmd := exec.Command(spec.Path, spec.Args...)
+	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	return cmd.Start()
+	return cmd, nil
 }
 
 func BuildRestartSpec(executablePath string, startupArgs []string) (RestartSpec, error) {
@@ -33,11 +44,9 @@ func BuildRestartSpec(executablePath string, startupArgs []string) (RestartSpec,
 }
 
 func LaunchRestart(spec RestartSpec) error {
-	if strings.TrimSpace(spec.Path) == "" {
-		return fmt.Errorf("restart executable path is required")
+	cmd, err := buildRestartCommand(spec)
+	if err != nil {
+		return err
 	}
-	if len(spec.Args) == 0 {
-		return fmt.Errorf("restart arguments are required")
-	}
-	return restartStarter(spec.Path, spec.Args)
+	return restartStarter(cmd)
 }
