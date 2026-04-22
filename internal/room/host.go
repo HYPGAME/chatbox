@@ -294,6 +294,9 @@ func (r *HostRoom) runMember(member trackedMember) {
 			if r.handleEventsRequest(member, message) {
 				continue
 			}
+			if r.handleVersionControl(member, message) {
+				continue
+			}
 			if r.handleHistorySyncControl(member, message) {
 				continue
 			}
@@ -343,6 +346,15 @@ func (r *HostRoom) handleEventsRequest(member trackedMember, message session.Mes
 		At:   time.Now(),
 	}
 	_ = member.session.Resend(response)
+	return true
+}
+
+func (r *HostRoom) handleVersionControl(member trackedMember, message session.Message) bool {
+	announce, ok := ParseVersionAnnounce(message.Body)
+	if !ok {
+		return false
+	}
+	r.rememberMemberVersion(member.id, announce.ClientVersion)
 	return true
 }
 

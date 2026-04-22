@@ -131,6 +131,48 @@ func TestHostRoomInterceptsStatusRequestsAndRepliesOnlyToRequester(t *testing.T)
 	assertNoRoomMessage(t, room.Messages())
 }
 
+func TestHostRoomUsesVersionAnnouncementsInStatusResponses(t *testing.T) {
+	t.Parallel()
+
+	room := NewHostRoom("host")
+	defer room.Close()
+
+	memberA := newFakeMember("bbb")
+	memberB := newFakeMember("aaa")
+	room.AddMember(memberA)
+	room.AddMember(memberB)
+	drainJoinEvents(t, room, 2)
+
+	memberA.messages <- session.Message{
+		ID:   "version-1",
+		From: "bbb",
+		Body: VersionAnnounceBody(VersionAnnounce{
+			Version:       1,
+			ClientVersion: "v0.1.31",
+		}),
+		At: time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC),
+	}
+
+	memberA.messages <- session.Message{
+		ID:   "status-1",
+		From: "bbb",
+		Body: StatusRequestBody(),
+		At:   time.Date(2026, 4, 22, 12, 0, 1, 0, time.UTC),
+	}
+
+	response := waitForResentMessage(t, memberA.resent)
+	line, ok := ParseStatusResponse(response.Body)
+	if !ok {
+		t.Fatalf("expected hidden status response, got %#v", response)
+	}
+	if !strings.Contains(line, "bbb [v0.1.31]") {
+		t.Fatalf("expected advertised version in roster, got %q", line)
+	}
+	if !strings.Contains(line, "aaa [unknown]") {
+		t.Fatalf("expected untouched legacy peer in roster, got %q", line)
+	}
+}
+
 func TestHostRoomInterceptsEventsRequestsAndRepliesOnlyToRequester(t *testing.T) {
 	t.Parallel()
 
