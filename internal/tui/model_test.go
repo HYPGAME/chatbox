@@ -256,6 +256,73 @@ func TestModelSendsTypedMessageOnEnter(t *testing.T) {
 	}
 }
 
+func TestCopySelectionSkipsSystemAndErrorEntries(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	uiModel.history = nil
+	uiModel.copySelection = nil
+	uiModel.copySelectionPos = -1
+	uiModel.renderedViewport = renderedViewportState{}
+
+	uiModel.addHistoryEntry(historyEntry{kind: historyKindSystem, body: "joined", at: time.Date(2026, 4, 22, 10, 0, 0, 0, time.Local)})
+	uiModel.addHistoryEntry(historyEntry{kind: historyKindMessage, from: "alice", body: "one", at: time.Date(2026, 4, 22, 10, 0, 1, 0, time.Local)})
+	uiModel.addHistoryEntry(historyEntry{kind: historyKindError, body: "broken", at: time.Date(2026, 4, 22, 10, 0, 2, 0, time.Local)})
+	uiModel.addHistoryEntry(historyEntry{kind: historyKindMessage, from: "bob", body: "two", at: time.Date(2026, 4, 22, 10, 0, 3, 0, time.Local)})
+
+	uiModel.moveCopySelection(-1)
+	if got := uiModel.selectedCopyHistoryIndex(); got != 1 {
+		t.Fatalf("expected first selectable message index 1, got %d", got)
+	}
+
+	uiModel.moveCopySelection(1)
+	if got := uiModel.selectedCopyHistoryIndex(); got != 3 {
+		t.Fatalf("expected second selectable message index 3, got %d", got)
+	}
+}
+
+func TestRenderedCopyTextIncludesWrappedMessageLines(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	uiModel.history = nil
+	uiModel.copySelection = nil
+	uiModel.copySelectionPos = -1
+	uiModel.renderedViewport = renderedViewportState{}
+	uiModel.width = 32
+	uiModel.height = 10
+	uiModel.resize()
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: "this message should wrap across multiple visual lines in the tui",
+		at:   time.Date(2026, 4, 22, 10, 5, 0, 0, time.Local),
+	})
+
+	text, ok := uiModel.selectedCopyText()
+	if !ok {
+		t.Fatal("expected selected copy text")
+	}
+	if !strings.Contains(text, "[10:05]") || !strings.Contains(text, "alice:") {
+		t.Fatalf("expected rendered metadata in copied text, got %q", text)
+	}
+	if !strings.Contains(text, "\n") {
+		t.Fatalf("expected wrapped multi-line copy text, got %q", text)
+	}
+}
+
 func TestRenderEntryWithStatusColorsOnlySenderLabel(t *testing.T) {
 	oldProfile := lipgloss.ColorProfile()
 	oldDarkBackground := lipgloss.HasDarkBackground()

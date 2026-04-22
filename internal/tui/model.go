@@ -147,6 +147,16 @@ type historyEntry struct {
 	revokedAt      time.Time
 }
 
+type renderedHistoryLine struct {
+	text         string
+	historyIndex int
+}
+
+type renderedViewportState struct {
+	lines      []renderedHistoryLine
+	lineRanges map[int][2]int
+}
+
 type slashCommandSuggestion struct {
 	command     string
 	description string
@@ -209,6 +219,14 @@ type model struct {
 
 	draggingViewport bool
 	lastMouseY       int
+
+	copySelection       []int
+	copySelectionPos    int
+	followCopySelection bool
+	clipboardWriter     clipboardWriterFunc
+	statusNotice        string
+	statusNoticeIsError bool
+	renderedViewport    renderedViewportState
 
 	revokeMode       bool
 	revokeCandidates []int
@@ -401,6 +419,8 @@ func newModel(opts modelOptions) model {
 		executablePath:      opts.executablePath,
 		viewport:            viewport.New(80, 20),
 		input:               input,
+		copySelectionPos:    -1,
+		followCopySelection: true,
 		entryIndex:          make(map[string]int),
 		seenMessages:        make(map[string]struct{}),
 		pending:             make(map[string]session.Message),
@@ -435,6 +455,9 @@ func newModel(opts modelOptions) model {
 	}
 	if m.executablePath == nil {
 		m.executablePath = os.Executable
+	}
+	if m.clipboardWriter == nil {
+		m.clipboardWriter = defaultClipboardWriter()
 	}
 	m.viewport.MouseWheelEnabled = true
 	m.viewport.MouseWheelDelta = 3
@@ -1691,6 +1714,7 @@ func (m *model) applyRevokeRecord(revoke transcript.RevokeRecord, persist bool) 
 func (m *model) addHistoryEntry(entry historyEntry) {
 	stickToBottom := m.viewport.AtBottom() || len(m.history) == 0
 	m.history = append(m.history, entry)
+	m.rebuildCopySelection()
 	m.syncRevokeCandidates()
 	m.refreshViewport(stickToBottom)
 }
@@ -1707,6 +1731,7 @@ func (m *model) insertHistoryEntryChronologically(entry historyEntry) {
 	m.history = append(m.history, historyEntry{})
 	copy(m.history[index+1:], m.history[index:])
 	m.history[index] = entry
+	m.rebuildCopySelection()
 	m.syncRevokeCandidates()
 	m.refreshViewport(stickToBottom)
 }
@@ -1742,24 +1767,128 @@ func (m *model) syncRevokeCandidates() {
 	}
 }
 
-func (m *model) refreshViewport(stickToBottom bool) {
-	offset := m.viewport.YOffset
-	lines := make([]string, 0, len(m.history)*2)
+func (m *model) rebuildCopySelection() {
+	selectedHistoryIndex := m.selectedCopyHistoryIndex()
+	m.copySelection = m.copySelection[:0]
+	for i, entry := range m.history {
+		if entry.kind == historyKindMessage {
+			m.copySelection = append(m.copySelection, i)
+		}
+	}
+	if len(m.copySelection) == 0 {
+		m.copySelectionPos = -1
+		m.followCopySelection = true
+		return
+	}
+	if m.followCopySelection {
+		m.copySelectionPos = len(m.copySelection) - 1
+		return
+	}
+	for i, historyIndex := range m.copySelection {
+		if historyIndex == selectedHistoryIndex {
+			m.copySelectionPos = i
+			return
+		}
+	}
+	if m.copySelectionPos < 0 {
+		m.copySelectionPos = len(m.copySelection) - 1
+		return
+	}
+	if m.copySelectionPos >= len(m.copySelection) {
+		m.copySelectionPos = len(m.copySelection) - 1
+	}
+}
+
+func (m model) selectedCopyHistoryIndex() int {
+	if m.copySelectionPos < 0 || m.copySelectionPos >= len(m.copySelection) {
+		return -1
+	}
+	return m.copySelection[m.copySelectionPos]
+}
+
+func (m *model) moveCopySelection(delta int) {
+	if len(m.copySelection) == 0 {
+		m.copySelectionPos = -1
+		m.followCopySelection = true
+		return
+	}
+	if m.copySelectionPos < 0 || m.copySelectionPos >= len(m.copySelection) {
+		m.copySelectionPos = len(m.copySelection) - 1
+	}
+	next := m.copySelectionPos + delta
+	if next < 0 {
+		next = 0
+	}
+	if next >= len(m.copySelection) {
+		next = len(m.copySelection) - 1
+	}
+	m.copySelectionPos = next
+	m.followCopySelection = next == len(m.copySelection)-1
+}
+
+func (m model) selectedCopyText() (string, bool) {
+	historyIndex := m.selectedCopyHistoryIndex()
+	if historyIndex < 0 {
+		return "", false
+	}
+	state := m.renderedViewport
+	if len(state.lines) == 0 {
+		state = m.buildRenderedViewportState()
+	}
+	lineRange, ok := state.lineRanges[historyIndex]
+	if !ok || lineRange[0] >= lineRange[1] {
+		return "", false
+	}
+	lines := make([]string, 0, lineRange[1]-lineRange[0])
+	for _, line := range state.lines[lineRange[0]:lineRange[1]] {
+		lines = append(lines, ansi.Strip(line.text))
+	}
+	return strings.Join(lines, "\n"), true
+}
+
+func (m model) buildRenderedViewportState() renderedViewportState {
+	state := renderedViewportState{
+		lines:      make([]renderedHistoryLine, 0, len(m.history)*2),
+		lineRanges: make(map[int][2]int, len(m.history)),
+	}
 	lastDate := ""
-	selectedIndex := m.selectedRevokeHistoryIndex()
+	selectedIndex := m.selectedCopyHistoryIndex()
+	if m.revokeMode {
+		selectedIndex = m.selectedRevokeHistoryIndex()
+	}
 	for i, entry := range m.history {
 		entryDate := entry.at.Local().Format("2006-01-02")
 		if entryDate != lastDate {
-			lines = append(lines, renderDateSeparator(entryDate))
+			state.lines = append(state.lines, renderedHistoryLine{
+				text:         renderDateSeparator(entryDate),
+				historyIndex: -1,
+			})
 			lastDate = entryDate
 		}
 		line := renderTUIEntry(entry, i == selectedIndex)
 		if m.viewport.Width > 0 {
 			line = ansi.Wrap(line, m.viewport.Width, "")
 		}
-		lines = append(lines, line)
+		start := len(state.lines)
+		for _, wrapped := range strings.Split(line, "\n") {
+			state.lines = append(state.lines, renderedHistoryLine{
+				text:         wrapped,
+				historyIndex: i,
+			})
+		}
+		state.lineRanges[i] = [2]int{start, len(state.lines)}
 	}
+	return state
+}
 
+func (m *model) refreshViewport(stickToBottom bool) {
+	offset := m.viewport.YOffset
+	state := m.buildRenderedViewportState()
+	m.renderedViewport = state
+	lines := make([]string, 0, len(state.lines))
+	for _, line := range state.lines {
+		lines = append(lines, line.text)
+	}
 	m.viewport.SetContent(strings.Join(lines, "\n"))
 	if stickToBottom {
 		m.viewport.GotoBottom()
@@ -1853,6 +1982,12 @@ func (m *model) resetConversation() {
 	m.offeredHistory = make(map[string]struct{})
 	m.executedRoomUpdates = make(map[string]struct{})
 	m.updateStatuses = make(map[string]map[string]string)
+	m.copySelection = nil
+	m.copySelectionPos = -1
+	m.followCopySelection = true
+	m.statusNotice = ""
+	m.statusNoticeIsError = false
+	m.renderedViewport = renderedViewportState{}
 	m.revokeMode = false
 	m.revokeCandidates = nil
 	m.revokeSelection = 0
