@@ -2761,8 +2761,6 @@ func TestProgramUsesAltScreenOnlyForTUI(t *testing.T) {
 }
 
 func TestRunUIUsesDedicatedScrollbackRunner(t *testing.T) {
-	t.Parallel()
-
 	originalBubbleTeaRunner := bubbleTeaRunner
 	originalScrollbackRunner := scrollbackRunner
 	t.Cleanup(func() {
@@ -3349,8 +3347,6 @@ func TestScrollbackDoesNotAlertForOutgoingReceiptOrRetry(t *testing.T) {
 }
 
 func TestRunUITUIInitializesBellAlertNotifier(t *testing.T) {
-	t.Parallel()
-
 	originalBubbleTeaRunner := bubbleTeaRunner
 	originalAlertFactory := defaultAlertNotifierFactory
 	defer func() {
