@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -277,6 +278,30 @@ func (m *model) startAttachCommand(path string) (tea.Model, tea.Cmd) {
 	return *m, startAttachmentUploadCmd(m.attachmentClient, req, nil)
 }
 
+func (m *model) handleAttachmentPaste(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
+	if m.uiMode != uiModeTUI || !msg.Paste {
+		return *m, nil, false
+	}
+	pasted, err := m.readClipboardAttachment()
+	if err != nil {
+		if errors.Is(err, errPasteUnsupported) || errors.Is(err, errPasteEmpty) {
+			return *m, nil, false
+		}
+		return *m, nil, false
+	}
+	req, err := m.buildAttachmentUploadRequestWithKind(pasted.Path, pasted.Kind)
+	if err != nil {
+		if pasted.Cleanup != nil {
+			pasted.Cleanup()
+		}
+		m.addErrorEntry(err.Error())
+		return *m, m.flushScrollbackCmd(), true
+	}
+	m.operationNotice = fmt.Sprintf("uploading %s", filepath.Base(req.Path))
+	m.operationNoticeIsError = false
+	return *m, startAttachmentUploadCmd(m.attachmentClient, req, pasted.Cleanup), true
+}
+
 func (m *model) startPasteCommand() (tea.Model, tea.Cmd) {
 	pasted, err := m.readClipboardAttachment()
 	if err != nil {
@@ -357,7 +382,7 @@ func (m *model) buildAttachmentUploadRequestWithKind(path, kind string) (attachm
 	}
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return attachment.UploadPathRequest{}, fmt.Errorf("usage: /attach <path>")
+		return attachment.UploadPathRequest{}, fmt.Errorf("usage: /file <path>")
 	}
 	if strings.TrimSpace(kind) == "" {
 		kind = attachmentKindFromPath(path)

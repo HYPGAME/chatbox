@@ -507,13 +507,16 @@ func handleScrollbackLine(m *model, console *promptConsole, text string) bool {
 		command, remainder := splitCommandRemainder(text)
 		switch command {
 		case "/help":
-			m.addSystemEntry("commands: /help /status /events /quit /attach /paste /open /download /update-all")
+			m.addSystemEntry(scrollbackCommandsHelp)
 			m.flushScrollbackCmd()
 		case "/status":
 			m.handleStatusCommand()
 			m.flushScrollbackCmd()
 		case "/events":
 			m.handleEventsCommand()
+			m.flushScrollbackCmd()
+		case "/file":
+			runScrollbackAttach(m, console, remainder)
 			m.flushScrollbackCmd()
 		case "/attach":
 			runScrollbackAttach(m, console, remainder)

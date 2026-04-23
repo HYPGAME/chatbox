@@ -2781,11 +2781,14 @@ func TestModelShowsSlashCommandSuggestions(t *testing.T) {
 	if !strings.Contains(view, "/events -- 查看成员进出记录") {
 		t.Fatalf("expected /events suggestion, got %q", view)
 	}
-	if !strings.Contains(view, "/attach -- 上传图片或文件") {
-		t.Fatalf("expected /attach suggestion, got %q", view)
+	if !strings.Contains(view, "/file -- 上传图片或文件") {
+		t.Fatalf("expected /file suggestion, got %q", view)
 	}
-	if !strings.Contains(view, "/paste -- 上传剪贴板图片或文件") {
-		t.Fatalf("expected /paste suggestion, got %q", view)
+	if strings.Contains(view, "/attach -- 上传图片或文件") {
+		t.Fatalf("expected /attach suggestion to stay hidden, got %q", view)
+	}
+	if strings.Contains(view, "/paste -- 上传剪贴板图片或文件") {
+		t.Fatalf("expected /paste suggestion to stay hidden, got %q", view)
 	}
 	if !strings.Contains(view, "/open -- 打开附件") {
 		t.Fatalf("expected /open suggestion, got %q", view)
@@ -2887,7 +2890,7 @@ func TestScrollbackModeHidesSlashCommandSuggestions(t *testing.T) {
 	if strings.Contains(view, "/status -- 查询在线成员信息") {
 		t.Fatalf("expected scrollback mode to hide command suggestions, got %q", view)
 	}
-	if strings.Contains(view, "/attach -- 上传图片或文件") {
+	if strings.Contains(view, "/file -- 上传图片或文件") {
 		t.Fatalf("expected scrollback mode to hide command suggestions, got %q", view)
 	}
 	if strings.Contains(view, "/paste -- 上传剪贴板图片或文件") {
@@ -2917,7 +2920,7 @@ func TestRenderedMessageBodyFormatsAttachmentMessagesCompactly(t *testing.T) {
 	}
 }
 
-func TestModelAttachCommandUploadsAndSendsVisibleAttachmentMessage(t *testing.T) {
+func TestModelFileCommandUploadsAndSendsVisibleAttachmentMessage(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -2955,7 +2958,7 @@ func TestModelAttachCommandUploadsAndSendsVisibleAttachmentMessage(t *testing.T)
 
 	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
 	uiModel = updated.(model)
-	uiModel.input.SetValue("/attach " + path)
+	uiModel.input.SetValue("/file " + path)
 	updated, cmd := uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	uiModel = updated.(model)
 	if cmd == nil {
@@ -3002,7 +3005,72 @@ func TestModelAttachCommandUploadsAndSendsVisibleAttachmentMessage(t *testing.T)
 	}
 }
 
-func TestModelPasteCommandUploadsClipboardAttachment(t *testing.T) {
+func TestModelAttachAliasUploadsAndSendsVisibleAttachmentMessage(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legacy-cat.gif")
+	if err := os.WriteFile(path, []byte("gif89a"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	fake := &fakeSession{peerName: "host", localName: "alice"}
+	attachments := &fakeAttachmentClient{
+		uploadRecord: attachment.Record{
+			ID:       "att_attach_alias",
+			FileName: "legacy-cat.gif",
+			Kind:     attachment.KindImage,
+			Size:     6,
+		},
+	}
+	uiModel := newModel(modelOptions{
+		mode:             "join",
+		uiMode:           uiModeTUI,
+		localName:        "alice",
+		listeningAddr:    "203.0.113.10:7331",
+		session:          fake,
+		attachmentClient: attachments,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-a", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{RoomKey: roomKey, IdentityID: identityID}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
+	uiModel = updated.(model)
+	uiModel.input.SetValue("/attach " + path)
+	updated, cmd := uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	uiModel = updated.(model)
+	if cmd == nil {
+		t.Fatal("expected attachment upload command")
+	}
+
+	msg := cmd()
+	if msg == nil {
+		t.Fatal("expected attachment progress or result message")
+	}
+	updated, cmd = uiModel.Update(msg)
+	uiModel = updated.(model)
+	for cmd != nil {
+		msg = cmd()
+		if msg == nil {
+			break
+		}
+		updated, cmd = uiModel.Update(msg)
+		uiModel = updated.(model)
+	}
+
+	if len(attachments.uploads) != 1 || attachments.uploads[0].Path != path {
+		t.Fatalf("expected /attach alias to upload %q, got %#v", path, attachments.uploads)
+	}
+}
+
+func TestModelDirectPasteUploadsClipboardAttachment(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -3050,11 +3118,14 @@ func TestModelPasteCommandUploadsClipboardAttachment(t *testing.T) {
 
 	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
 	uiModel = updated.(model)
-	uiModel.input.SetValue("/paste")
-	updated, cmd := uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	uiModel.input.SetValue("draft")
+	updated, cmd := uiModel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ignored"), Paste: true})
 	uiModel = updated.(model)
 	if cmd == nil {
 		t.Fatal("expected clipboard paste upload command")
+	}
+	if got := uiModel.input.Value(); got != "draft" {
+		t.Fatalf("expected direct paste upload not to overwrite input, got %q", got)
 	}
 
 	msg := cmd()
@@ -3080,6 +3151,165 @@ func TestModelPasteCommandUploadsClipboardAttachment(t *testing.T) {
 	}
 	if !strings.Contains(stripANSI(uiModel.View()), "[image] pasted.png (3 B) #att_p1") {
 		t.Fatalf("expected pasted attachment message in view, got %q", stripANSI(uiModel.View()))
+	}
+}
+
+func TestModelCtrlVUploadsClipboardAttachment(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ctrlv.png")
+	if err := os.WriteFile(path, []byte("png"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	fake := &fakeSession{peerName: "host", localName: "alice"}
+	attachments := &fakeAttachmentClient{
+		uploadRecord: attachment.Record{
+			ID:       "att_ctrlv_1",
+			FileName: "ctrlv.png",
+			Kind:     attachment.KindImage,
+			Size:     3,
+		},
+	}
+	cleaned := false
+	uiModel := newModel(modelOptions{
+		mode:             "join",
+		uiMode:           uiModeTUI,
+		localName:        "alice",
+		listeningAddr:    "203.0.113.10:7331",
+		session:          fake,
+		attachmentClient: attachments,
+		clipboardReader: func(context.Context) (clipboardAttachment, error) {
+			return clipboardAttachment{
+				Path: path,
+				Kind: attachment.KindImage,
+				Cleanup: func() {
+					cleaned = true
+				},
+			}, nil
+		},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-a", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{RoomKey: roomKey, IdentityID: identityID}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
+	uiModel = updated.(model)
+	uiModel.input.SetValue("draft")
+	updated, cmd := uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlV})
+	uiModel = updated.(model)
+	if cmd == nil {
+		t.Fatal("expected ctrl+v upload command")
+	}
+	if got := uiModel.input.Value(); got != "draft" {
+		t.Fatalf("expected ctrl+v upload not to overwrite input, got %q", got)
+	}
+
+	msg := cmd()
+	if msg == nil {
+		t.Fatal("expected ctrl+v progress or result message")
+	}
+	updated, cmd = uiModel.Update(msg)
+	uiModel = updated.(model)
+	for cmd != nil {
+		msg = cmd()
+		if msg == nil {
+			break
+		}
+		updated, cmd = uiModel.Update(msg)
+		uiModel = updated.(model)
+	}
+
+	if len(attachments.uploads) != 1 || attachments.uploads[0].Path != path {
+		t.Fatalf("expected ctrl+v upload, got %#v", attachments.uploads)
+	}
+	if !cleaned {
+		t.Fatal("expected ctrl+v cleanup after upload")
+	}
+}
+
+func TestModelPasteAliasUploadsClipboardAttachment(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pasted-alias.png")
+	if err := os.WriteFile(path, []byte("png"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	fake := &fakeSession{peerName: "host", localName: "alice"}
+	attachments := &fakeAttachmentClient{
+		uploadRecord: attachment.Record{
+			ID:       "att_p_alias",
+			FileName: "pasted-alias.png",
+			Kind:     attachment.KindImage,
+			Size:     3,
+		},
+	}
+	cleaned := false
+	uiModel := newModel(modelOptions{
+		mode:             "join",
+		uiMode:           uiModeTUI,
+		localName:        "alice",
+		listeningAddr:    "203.0.113.10:7331",
+		session:          fake,
+		attachmentClient: attachments,
+		clipboardReader: func(context.Context) (clipboardAttachment, error) {
+			return clipboardAttachment{
+				Path: path,
+				Kind: attachment.KindImage,
+				Cleanup: func() {
+					cleaned = true
+				},
+			}, nil
+		},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-a", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{RoomKey: roomKey, IdentityID: identityID}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
+	uiModel = updated.(model)
+	uiModel.input.SetValue("/paste")
+	updated, cmd := uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	uiModel = updated.(model)
+	if cmd == nil {
+		t.Fatal("expected /paste alias upload command")
+	}
+
+	msg := cmd()
+	if msg == nil {
+		t.Fatal("expected /paste alias progress or result message")
+	}
+	updated, cmd = uiModel.Update(msg)
+	uiModel = updated.(model)
+	for cmd != nil {
+		msg = cmd()
+		if msg == nil {
+			break
+		}
+		updated, cmd = uiModel.Update(msg)
+		uiModel = updated.(model)
+	}
+
+	if len(attachments.uploads) != 1 || attachments.uploads[0].Path != path {
+		t.Fatalf("expected /paste alias upload, got %#v", attachments.uploads)
+	}
+	if !cleaned {
+		t.Fatal("expected /paste alias cleanup after upload")
 	}
 }
 
@@ -3992,7 +4222,7 @@ func TestScrollbackEventsCommandSendsHiddenRequestAndRendersResponse(t *testing.
 	}
 }
 
-func TestScrollbackPasteCommandUploadsClipboardAttachment(t *testing.T) {
+func TestScrollbackFileCommandUploadsClipboardAttachment(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -4041,18 +4271,18 @@ func TestScrollbackPasteCommandUploadsClipboardAttachment(t *testing.T) {
 		},
 	})
 
-	if quit := handleScrollbackLine(&uiModel, newPromptConsole(bytes.NewBuffer(nil)), "/paste"); quit {
-		t.Fatal("expected /paste not to quit")
+	if quit := handleScrollbackLine(&uiModel, newPromptConsole(bytes.NewBuffer(nil)), "/file "+path); quit {
+		t.Fatal("expected /file not to quit")
 	}
 	if len(attachments.uploads) != 1 || attachments.uploads[0].Path != path {
-		t.Fatalf("expected scrollback pasted attachment upload, got %#v", attachments.uploads)
+		t.Fatalf("expected scrollback file attachment upload, got %#v", attachments.uploads)
 	}
-	if !cleaned {
-		t.Fatal("expected scrollback pasted temporary file cleanup after upload")
+	if cleaned {
+		t.Fatal("expected /file path upload not to run clipboard cleanup")
 	}
 	joined := stripANSI(strings.Join(printed, "\n"))
 	if !strings.Contains(joined, "[image] scrollback-paste.png (3 B) #att_sp1") {
-		t.Fatalf("expected pasted attachment in scrollback output, got %q", joined)
+		t.Fatalf("expected file attachment in scrollback output, got %q", joined)
 	}
 }
 

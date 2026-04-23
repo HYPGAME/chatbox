@@ -268,12 +268,14 @@ var (
 	bubbleTeaRunner  = runProgram
 	scrollbackRunner = runScrollback
 
+	tuiCommandsHelp        = "commands: /help /status /events /quit /file /open /download /update-all | Ctrl+V attach / Ctrl+Y copy / Ctrl+R revoke"
+	scrollbackCommandsHelp = "commands: /help /status /events /quit /file /open /download /update-all"
+
 	slashCommandSuggestions = []slashCommandSuggestion{
 		{command: "/help", description: "显示支持的命令"},
 		{command: "/status", description: "查询在线成员信息"},
 		{command: "/events", description: "查看成员进出记录"},
-		{command: "/attach", description: "上传图片或文件"},
-		{command: "/paste", description: "上传剪贴板图片或文件"},
+		{command: "/file", description: "上传图片或文件"},
 		{command: "/open", description: "打开附件"},
 		{command: "/download", description: "下载附件到本地"},
 		{command: "/quit", description: "退出当前会话"},
@@ -565,6 +567,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.copyMode {
 			return m.handleCopyModeKey(msg)
 		}
+		if msg.Paste {
+			if handledModel, handledCmd, handled := m.handleAttachmentPaste(msg); handled {
+				return handledModel, handledCmd
+			}
+		}
 		switch msg.Type {
 		case tea.KeyCtrlC:
 			m.failPendingMessages()
@@ -572,6 +579,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				_ = m.session.Close()
 			}
 			return m, tea.Quit
+		case tea.KeyCtrlV:
+			return m.startPasteCommand()
 		case tea.KeyCtrlR:
 			m.enterRevokeMode()
 			return m, nil
@@ -871,7 +880,7 @@ func (m *model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 		}
 		switch command {
 		case "/help":
-			m.addSystemEntry("commands: /help /status /events /quit /attach /paste /open /download /update-all | Ctrl+Y copy / Ctrl+R revoke")
+			m.addSystemEntry(tuiCommandsHelp)
 			return *m, m.flushScrollbackCmd()
 		case "/status":
 			m.handleStatusCommand()
@@ -879,6 +888,8 @@ func (m *model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 		case "/events":
 			m.handleEventsCommand()
 			return *m, m.flushScrollbackCmd()
+		case "/file":
+			return m.startAttachCommand(remainder)
 		case "/attach":
 			return m.startAttachCommand(remainder)
 		case "/paste":
@@ -2251,7 +2262,7 @@ func (m *model) addStartupHints() {
 	if m.uiMode == uiModeScrollback {
 		return
 	}
-	m.addSystemEntry("commands: /help /status /events /quit /attach /paste /open /download /update-all | Ctrl+Y copy / Ctrl+R revoke")
+	m.addSystemEntry(tuiCommandsHelp)
 }
 
 func (m *model) localRequesterName() string {
@@ -2554,7 +2565,7 @@ func (m model) renderStatusBar() string {
 }
 
 func (m model) renderInputBox() string {
-	hint := "Enter send / Ctrl+Y copy mode / Ctrl+R revoke"
+	hint := "Enter send / Ctrl+V attach clipboard / Ctrl+Y copy mode / Ctrl+R revoke"
 	if m.copyMode {
 		hint = "copy mode: Up/Down select / Enter quote / Ctrl+Y copy / O open / D download / Esc cancel"
 	} else if m.revokeMode {
