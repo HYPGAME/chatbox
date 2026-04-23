@@ -37,8 +37,9 @@ type attachmentStreamMsg struct {
 }
 
 type attachmentUploadResultMsg struct {
-	record attachment.Record
-	err    error
+	record  attachment.Record
+	err     error
+	cleanup func()
 }
 
 type attachmentTransferResultMsg struct {
@@ -85,7 +86,7 @@ func waitForAttachmentStream(ch <-chan tea.Msg) tea.Cmd {
 	}
 }
 
-func startAttachmentUploadCmd(client attachmentClient, req attachment.UploadPathRequest) tea.Cmd {
+func startAttachmentUploadCmd(client attachmentClient, req attachment.UploadPathRequest, cleanup func()) tea.Cmd {
 	streamCh := make(chan tea.Msg, 8)
 
 	go func() {
@@ -99,7 +100,7 @@ func startAttachmentUploadCmd(client attachmentClient, req attachment.UploadPath
 				},
 			}
 		})
-		streamCh <- attachmentUploadResultMsg{record: record, err: err}
+		streamCh <- attachmentUploadResultMsg{record: record, err: err, cleanup: cleanup}
 	}()
 
 	return waitForAttachmentStream(streamCh)
@@ -238,6 +239,9 @@ func (m *model) handleAttachmentProgress(msg attachmentProgressMsg) {
 }
 
 func (m *model) handleAttachmentUploadResult(msg attachmentUploadResultMsg) {
+	if msg.cleanup != nil {
+		defer msg.cleanup()
+	}
 	if msg.err != nil {
 		m.operationNotice = msg.err.Error()
 		m.operationNoticeIsError = true
@@ -270,7 +274,26 @@ func (m *model) startAttachCommand(path string) (tea.Model, tea.Cmd) {
 	}
 	m.operationNotice = fmt.Sprintf("uploading %s", filepath.Base(req.Path))
 	m.operationNoticeIsError = false
-	return *m, startAttachmentUploadCmd(m.attachmentClient, req)
+	return *m, startAttachmentUploadCmd(m.attachmentClient, req, nil)
+}
+
+func (m *model) startPasteCommand() (tea.Model, tea.Cmd) {
+	pasted, err := m.readClipboardAttachment()
+	if err != nil {
+		m.addErrorEntry(err.Error())
+		return *m, m.flushScrollbackCmd()
+	}
+	req, err := m.buildAttachmentUploadRequestWithKind(pasted.Path, pasted.Kind)
+	if err != nil {
+		if pasted.Cleanup != nil {
+			pasted.Cleanup()
+		}
+		m.addErrorEntry(err.Error())
+		return *m, m.flushScrollbackCmd()
+	}
+	m.operationNotice = fmt.Sprintf("uploading %s", filepath.Base(req.Path))
+	m.operationNoticeIsError = false
+	return *m, startAttachmentUploadCmd(m.attachmentClient, req, pasted.Cleanup)
 }
 
 func (m *model) startOpenCommand(attachmentID string) (tea.Model, tea.Cmd) {
@@ -316,6 +339,10 @@ func (m model) selectedAttachmentMessage() (attachment.ChatMessage, bool) {
 }
 
 func (m *model) buildAttachmentUploadRequest(path string) (attachment.UploadPathRequest, error) {
+	return m.buildAttachmentUploadRequestWithKind(path, "")
+}
+
+func (m *model) buildAttachmentUploadRequestWithKind(path, kind string) (attachment.UploadPathRequest, error) {
 	if m.attachmentClient == nil {
 		return attachment.UploadPathRequest{}, fmt.Errorf("attachments unavailable")
 	}
@@ -332,13 +359,33 @@ func (m *model) buildAttachmentUploadRequest(path string) (attachment.UploadPath
 	if path == "" {
 		return attachment.UploadPathRequest{}, fmt.Errorf("usage: /attach <path>")
 	}
+	if strings.TrimSpace(kind) == "" {
+		kind = attachmentKindFromPath(path)
+	}
 	return attachment.UploadPathRequest{
 		RoomKey:       m.roomAuthorization.RoomKey,
 		OwnerName:     m.localRequesterName(),
 		OwnerIdentity: m.identityID,
 		Path:          path,
-		Kind:          attachmentKindFromPath(path),
+		Kind:          kind,
 	}, nil
+}
+
+func (m *model) readClipboardAttachment() (clipboardAttachment, error) {
+	if m.clipboardReader == nil {
+		return clipboardAttachment{}, errPasteUnsupported
+	}
+	pasted, err := m.clipboardReader(context.Background())
+	if err != nil {
+		return clipboardAttachment{}, err
+	}
+	if strings.TrimSpace(pasted.Path) == "" {
+		return clipboardAttachment{}, errPasteEmpty
+	}
+	if strings.TrimSpace(pasted.Kind) == "" {
+		pasted.Kind = attachmentKindFromPath(pasted.Path)
+	}
+	return pasted, nil
 }
 
 func (m *model) publishUploadedAttachment(record attachment.Record) error {

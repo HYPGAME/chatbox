@@ -507,7 +507,7 @@ func handleScrollbackLine(m *model, console *promptConsole, text string) bool {
 		command, remainder := splitCommandRemainder(text)
 		switch command {
 		case "/help":
-			m.addSystemEntry("commands: /help /status /events /quit /attach /open /download /update-all")
+			m.addSystemEntry("commands: /help /status /events /quit /attach /paste /open /download /update-all")
 			m.flushScrollbackCmd()
 		case "/status":
 			m.handleStatusCommand()
@@ -517,6 +517,9 @@ func handleScrollbackLine(m *model, console *promptConsole, text string) bool {
 			m.flushScrollbackCmd()
 		case "/attach":
 			runScrollbackAttach(m, console, remainder)
+			m.flushScrollbackCmd()
+		case "/paste":
+			runScrollbackPaste(m, console)
 			m.flushScrollbackCmd()
 		case "/open":
 			runScrollbackOpen(m, console, remainder)
@@ -573,6 +576,37 @@ func runScrollbackAttach(m *model, console *promptConsole, path string) {
 		return
 	}
 	req, err := m.buildAttachmentUploadRequest(path)
+	if err != nil {
+		m.addErrorEntry(err.Error())
+		return
+	}
+	record, err := m.attachmentClient.UploadPath(context.Background(), req, func(progress attachment.Progress) {
+		console.setStatus(formatAttachmentProgress(attachmentProgressUpdate{
+			action: "uploading",
+			label:  filepath.Base(req.Path),
+			value:  progress,
+		}))
+	})
+	console.setStatus("")
+	if err != nil {
+		m.addErrorEntry(err.Error())
+		return
+	}
+	if err := m.publishUploadedAttachment(record); err != nil {
+		m.addErrorEntry(err.Error())
+	}
+}
+
+func runScrollbackPaste(m *model, console *promptConsole) {
+	pasted, err := m.readClipboardAttachment()
+	if err != nil {
+		m.addErrorEntry(err.Error())
+		return
+	}
+	if pasted.Cleanup != nil {
+		defer pasted.Cleanup()
+	}
+	req, err := m.buildAttachmentUploadRequestWithKind(pasted.Path, pasted.Kind)
 	if err != nil {
 		m.addErrorEntry(err.Error())
 		return

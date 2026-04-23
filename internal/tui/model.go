@@ -86,6 +86,7 @@ type modelOptions struct {
 	restartLauncher  restartLauncherFunc
 	executablePath   executablePathFunc
 	attachmentClient attachmentClient
+	clipboardReader  clipboardReaderFunc
 }
 
 type sessionResult struct {
@@ -238,6 +239,7 @@ type model struct {
 	pendingRestart *update.RestartSpec
 
 	attachmentClient       attachmentClient
+	clipboardReader        clipboardReaderFunc
 	operationNotice        string
 	operationNoticeIsError bool
 }
@@ -271,6 +273,7 @@ var (
 		{command: "/status", description: "查询在线成员信息"},
 		{command: "/events", description: "查看成员进出记录"},
 		{command: "/attach", description: "上传图片或文件"},
+		{command: "/paste", description: "上传剪贴板图片或文件"},
 		{command: "/open", description: "打开附件"},
 		{command: "/download", description: "下载附件到本地"},
 		{command: "/quit", description: "退出当前会话"},
@@ -430,6 +433,7 @@ func newModel(opts modelOptions) model {
 		restartLauncher:     opts.restartLauncher,
 		executablePath:      opts.executablePath,
 		attachmentClient:    opts.attachmentClient,
+		clipboardReader:     opts.clipboardReader,
 		viewport:            viewport.New(80, 20),
 		input:               input,
 		copySelectionPos:    -1,
@@ -471,6 +475,9 @@ func newModel(opts modelOptions) model {
 	}
 	if m.clipboardWriter == nil {
 		m.clipboardWriter = defaultClipboardWriter()
+	}
+	if m.clipboardReader == nil {
+		m.clipboardReader = defaultClipboardReader()
 	}
 	m.viewport.MouseWheelEnabled = true
 	m.viewport.MouseWheelDelta = 3
@@ -864,7 +871,7 @@ func (m *model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 		}
 		switch command {
 		case "/help":
-			m.addSystemEntry("commands: /help /status /events /quit /attach /open /download /update-all | Ctrl+Y copy / Ctrl+R revoke")
+			m.addSystemEntry("commands: /help /status /events /quit /attach /paste /open /download /update-all | Ctrl+Y copy / Ctrl+R revoke")
 			return *m, m.flushScrollbackCmd()
 		case "/status":
 			m.handleStatusCommand()
@@ -874,6 +881,8 @@ func (m *model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 			return *m, m.flushScrollbackCmd()
 		case "/attach":
 			return m.startAttachCommand(remainder)
+		case "/paste":
+			return m.startPasteCommand()
 		case "/open":
 			return m.startOpenCommand(remainder)
 		case "/download":
@@ -2242,7 +2251,7 @@ func (m *model) addStartupHints() {
 	if m.uiMode == uiModeScrollback {
 		return
 	}
-	m.addSystemEntry("commands: /help /status /events /quit /attach /open /download /update-all | Ctrl+Y copy / Ctrl+R revoke")
+	m.addSystemEntry("commands: /help /status /events /quit /attach /paste /open /download /update-all | Ctrl+Y copy / Ctrl+R revoke")
 }
 
 func (m *model) localRequesterName() string {

@@ -212,6 +212,7 @@ This is intentionally a minimal host-relayed room, not a mesh network or a featu
 - `/status` shows the local connection status and current online participant list
 - `/events` shows join/leave event history visible to the current client
 - `/attach <path>` uploads an image or file to the host and sends a visible attachment message
+- `/paste` on macOS uploads the current clipboard file or image through the same attachment flow
 - `/open <attachment-id>` downloads the attachment to local cache and opens it with the system default app
 - `/download <attachment-id> [dest]` downloads the attachment without opening it
 - `/update-all [version]` submits a room-wide update request
@@ -227,6 +228,8 @@ In `--ui tui` copy mode, select an attachment message and press `O` to open it o
 - Host-side encrypted blobs are deleted automatically after 7 days, including in `--headless` mode.
 - Downloads are on-demand only. Receiving an attachment message never auto-downloads the file.
 - Local attachment cache lives under `~/Library/Application Support/chatbox/attachments/cache/`.
+- `/paste` currently supports macOS only, and is triggered by typing the command, not by intercepting `Cmd+V` in the chat input.
+- Clipboard file URLs keep their original format. Clipboard image content is exported to a temporary image file before upload.
 - `/open` downloads to the local cache and then opens the file with the default system handler.
 - `/download` writes to the provided destination, or to `~/Downloads/` when no destination is given.
 - TUI shows upload/download progress in the status bar. Scrollback mode keeps progress transient on the input line and only prints the final result.
