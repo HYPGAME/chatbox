@@ -21,7 +21,7 @@ func TestHeadlessHostRuntimeLogsLifecycle(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- RunHost(ctx, host, "router", logs)
+		errCh <- RunHost(ctx, host, "router", logs, nil)
 	}()
 
 	waitForLogContains(t, logs, "headless host listening on "+host.Addr())
@@ -56,7 +56,7 @@ func TestHeadlessHostDoesNotLogChatBodies(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- RunHost(ctx, host, "router", logs)
+		errCh <- RunHost(ctx, host, "router", logs, nil)
 	}()
 
 	waitForLogContains(t, logs, "headless host listening on "+host.Addr())
@@ -94,10 +94,29 @@ func TestHeadlessHostStopsOnContextCancel(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- RunHost(ctx, host, "router", logs)
+		errCh <- RunHost(ctx, host, "router", logs, nil)
 	}()
 
 	waitForLogContains(t, logs, "headless host listening on "+host.Addr())
+	cancel()
+	waitForHeadlessExit(t, errCh)
+}
+
+func TestHeadlessHostRunsAttachmentCleanupOnStart(t *testing.T) {
+	t.Parallel()
+
+	host, _ := newTestHost(t, "router")
+	logs := &lockedBuffer{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store := &fakeHeadlessAttachmentStore{cleanupSignal: make(chan struct{}, 1)}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- RunHost(ctx, host, "router", logs, store)
+	}()
+
+	waitForHeadlessCleanup(t, store.cleanupSignal)
 	cancel()
 	waitForHeadlessExit(t, errCh)
 }
@@ -168,6 +187,10 @@ type lockedBuffer struct {
 	buf bytes.Buffer
 }
 
+type fakeHeadlessAttachmentStore struct {
+	cleanupSignal chan struct{}
+}
+
 func (b *lockedBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -178,4 +201,26 @@ func (b *lockedBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
+}
+
+func (f *fakeHeadlessAttachmentStore) CleanupExpired(context.Context, time.Time) (int, error) {
+	select {
+	case f.cleanupSignal <- struct{}{}:
+	default:
+	}
+	return 0, nil
+}
+
+func (f *fakeHeadlessAttachmentStore) DeleteByMessageID(string) error {
+	return nil
+}
+
+func waitForHeadlessCleanup(t *testing.T, signal <-chan struct{}) {
+	t.Helper()
+
+	select {
+	case <-signal:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for headless cleanup")
+	}
 }

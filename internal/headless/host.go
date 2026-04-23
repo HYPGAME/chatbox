@@ -6,12 +6,18 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"chatbox/internal/room"
 	"chatbox/internal/session"
 )
 
-func RunHost(ctx context.Context, host *session.Host, localName string, out io.Writer) error {
+type attachmentStore interface {
+	CleanupExpired(context.Context, time.Time) (int, error)
+	DeleteByMessageID(string) error
+}
+
+func RunHost(ctx context.Context, host *session.Host, localName string, out io.Writer, attachments attachmentStore) error {
 	if host == nil {
 		return errors.New("headless host requires listener")
 	}
@@ -20,6 +26,13 @@ func RunHost(ctx context.Context, host *session.Host, localName string, out io.W
 	}
 
 	hostRoom := room.NewHostRoom(localName)
+	if attachments != nil {
+		hostRoom.ConfigureAttachments(attachments)
+		if _, err := attachments.CleanupExpired(ctx, time.Now()); err != nil && !errors.Is(err, context.Canceled) {
+			logf(out, "attachment cleanup failed: %v", err)
+		}
+		go runAttachmentCleanup(ctx, attachments, out)
+	}
 	serveCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -67,6 +80,22 @@ func RunHost(ctx context.Context, host *session.Host, localName string, out io.W
 		case _, ok := <-hostRoom.Receipts():
 			if !ok {
 				return nil
+			}
+		}
+	}
+}
+
+func runAttachmentCleanup(ctx context.Context, attachments attachmentStore, out io.Writer) {
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := attachments.CleanupExpired(ctx, time.Now()); err != nil && !errors.Is(err, context.Canceled) {
+				logf(out, "attachment cleanup failed: %v", err)
 			}
 		}
 	}

@@ -11,7 +11,9 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
+	"chatbox/internal/attachment"
 	"chatbox/internal/headless"
 	"chatbox/internal/identity"
 	"chatbox/internal/keys"
@@ -21,13 +23,18 @@ import (
 	"chatbox/internal/version"
 )
 
+type hostAttachmentStore interface {
+	CleanupExpired(context.Context, time.Time) (int, error)
+	DeleteByMessageID(string) error
+}
+
 var (
 	runHostUI       = tui.RunHost
 	runHostUIWithUpdates = tui.RunHostWithUpdateNotices
-	runHostHeadless = func(ctx context.Context, host *session.Host, localName string, _ []byte) error {
+	runHostHeadless = func(ctx context.Context, host *session.Host, localName string, _ []byte, store hostAttachmentStore) error {
 		signalCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		return headless.RunHost(signalCtx, host, localName, stderr)
+		return headless.RunHost(signalCtx, host, localName, stderr, store)
 	}
 	runJoinUI                   = tui.RunJoin
 	runJoinUIWithUpdates        = tui.RunJoinWithUpdateNotices
@@ -244,8 +251,23 @@ func runHost(ctx context.Context, args []string) error {
 	}
 	defer host.Close()
 
+	attachmentDir, err := attachment.DefaultHostDir()
+	if err != nil {
+		return err
+	}
+	attachmentStore, err := attachment.OpenStore(attachmentDir)
+	if err != nil {
+		return err
+	}
+	attachmentService := attachment.NewService(attachmentStore, psk, time.Now)
+	attachmentServer, err := attachment.ListenAndServe(ctx, host.Addr(), attachmentService)
+	if err != nil {
+		return err
+	}
+	defer attachmentServer.Close()
+
 	if *headless {
-		return runHostHeadless(ctx, host, *name, psk)
+		return runHostHeadless(ctx, host, *name, psk, attachmentStore)
 	}
 	if uiMode == "tui" {
 		return runHostUIWithUpdates(host, *name, psk, uiMode, alertMode, backgroundUpdateNoticeChannel(ctx))

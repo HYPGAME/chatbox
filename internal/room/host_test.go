@@ -3,6 +3,7 @@ package room
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -530,12 +531,53 @@ func TestHostRoomSubmitUpdateRequestBroadcastsExecute(t *testing.T) {
 	}
 }
 
+func TestHostRoomDeletesAttachmentOnRevoke(t *testing.T) {
+	t.Parallel()
+
+	room := NewHostRoom("host")
+	defer room.Close()
+
+	cleaner := &fakeAttachmentCleaner{}
+	room.ConfigureAttachments(cleaner)
+
+	member := newFakeMember("alice")
+	room.AddMember(member)
+	drainJoinEvents(t, room, 1)
+
+	revokeMessage := session.Message{
+		ID:   "revoke-1",
+		From: "alice",
+		Body: RevokeBody(Revoke{
+			Version:          1,
+			RoomKey:          "join:10.77.1.4:7331",
+			OperatorIdentity: "id-alice",
+			TargetMessageID:  "msg-1",
+			At:               time.Now(),
+		}),
+		At: time.Now(),
+	}
+	member.messages <- revokeMessage
+
+	waitForCondition(t, func() bool {
+		return cleaner.lastDeleted() == "msg-1"
+	})
+	gotHost := waitForRoomMessage(t, room.Messages())
+	if gotHost.Body != revokeMessage.Body {
+		t.Fatalf("expected host stream to receive revoke control, got %#v", gotHost)
+	}
+}
+
 type fakeMember struct {
 	peerName string
 	messages chan session.Message
 	resent   chan session.Message
 	receipts chan session.Receipt
 	done     chan struct{}
+}
+
+type fakeAttachmentCleaner struct {
+	mu      sync.Mutex
+	deleted string
 }
 
 func newFakeMember(peerName string) *fakeMember {
@@ -546,6 +588,19 @@ func newFakeMember(peerName string) *fakeMember {
 		receipts: make(chan session.Receipt, 8),
 		done:     make(chan struct{}),
 	}
+}
+
+func (f *fakeAttachmentCleaner) DeleteByMessageID(messageID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deleted = messageID
+	return nil
+}
+
+func (f *fakeAttachmentCleaner) lastDeleted() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.deleted
 }
 
 func (f *fakeMember) Messages() <-chan session.Message { return f.messages }
@@ -631,4 +686,17 @@ func drainJoinEvents(t *testing.T, room *HostRoom, count int) {
 			t.Fatalf("expected joined event while draining, got %#v", event)
 		}
 	}
+}
+
+func waitForCondition(t *testing.T, fn func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for condition")
 }

@@ -41,6 +41,10 @@ type memberSession interface {
 	Resend(session.Message) error
 }
 
+type attachmentCleaner interface {
+	DeleteByMessageID(messageID string) error
+}
+
 type trackedMember struct {
 	id          uint64
 	session     memberSession
@@ -65,6 +69,7 @@ type HostRoom struct {
 	members            map[uint64]trackedMember
 	admins             admins.Store
 	releaseResolver    func(context.Context, string) (string, error)
+	attachmentCleaner  attachmentCleaner
 	identityByPeerName map[string]string
 	identityByMemberID map[uint64]string
 	versionByMemberID  map[uint64]string
@@ -98,6 +103,12 @@ func (r *HostRoom) ConfigureUpdates(store admins.Store, resolver func(context.Co
 	r.mu.Lock()
 	r.admins = store
 	r.releaseResolver = resolver
+	r.mu.Unlock()
+}
+
+func (r *HostRoom) ConfigureAttachments(cleaner attachmentCleaner) {
+	r.mu.Lock()
+	r.attachmentCleaner = cleaner
 	r.mu.Unlock()
 }
 
@@ -300,6 +311,9 @@ func (r *HostRoom) runMember(member trackedMember) {
 			if r.handleHistorySyncControl(member, message) {
 				continue
 			}
+			if r.handleRevokeControl(member, message) {
+				continue
+			}
 			if r.handleUpdateControl(member, message) {
 				continue
 			}
@@ -395,6 +409,23 @@ func (r *HostRoom) handleUpdateControl(member trackedMember, message session.Mes
 		return true
 	}
 	return IsUpdateControl(message.Body)
+}
+
+func (r *HostRoom) handleRevokeControl(member trackedMember, message session.Message) bool {
+	revoke, ok := ParseRevoke(message.Body)
+	if !ok {
+		return IsRevokeControl(message.Body)
+	}
+
+	r.mu.Lock()
+	cleaner := r.attachmentCleaner
+	r.mu.Unlock()
+	if cleaner != nil {
+		_ = cleaner.DeleteByMessageID(revoke.TargetMessageID)
+	}
+	_ = r.broadcast(message, member.id)
+	r.publishMessage(message)
+	return true
 }
 
 func (r *HostRoom) handleUpdateRequest(member trackedMember, request UpdateRequest) {

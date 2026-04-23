@@ -409,8 +409,11 @@ func TestRunHostHeadlessDelegatesToHeadlessLauncher(t *testing.T) {
 		uiCalled = true
 		return nil
 	}
-	runHostHeadless = func(_ context.Context, _ *session.Host, _ string, _ []byte) error {
+	runHostHeadless = func(_ context.Context, _ *session.Host, _ string, _ []byte, store hostAttachmentStore) error {
 		headlessCalled = true
+		if store == nil {
+			t.Fatal("expected host attachment store for headless mode")
+		}
 		return nil
 	}
 
@@ -460,7 +463,7 @@ func TestRunSkipsBackgroundUpdateCheckForHeadlessHost(t *testing.T) {
 	launchBackgroundUpdateCheck = func(context.Context) {
 		launched = true
 	}
-	runHostHeadless = func(_ context.Context, _ *session.Host, _ string, _ []byte) error {
+	runHostHeadless = func(_ context.Context, _ *session.Host, _ string, _ []byte, _ hostAttachmentStore) error {
 		return nil
 	}
 
