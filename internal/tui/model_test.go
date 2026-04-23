@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
+	"chatbox/internal/attachment"
 	"chatbox/internal/historymeta"
 	"chatbox/internal/identity"
 	"chatbox/internal/room"
@@ -2779,6 +2781,15 @@ func TestModelShowsSlashCommandSuggestions(t *testing.T) {
 	if !strings.Contains(view, "/events -- 查看成员进出记录") {
 		t.Fatalf("expected /events suggestion, got %q", view)
 	}
+	if !strings.Contains(view, "/attach -- 上传图片或文件") {
+		t.Fatalf("expected /attach suggestion, got %q", view)
+	}
+	if !strings.Contains(view, "/open -- 打开附件") {
+		t.Fatalf("expected /open suggestion, got %q", view)
+	}
+	if !strings.Contains(view, "/download -- 下载附件到本地") {
+		t.Fatalf("expected /download suggestion, got %q", view)
+	}
 	if !strings.Contains(view, "/quit -- 退出当前会话") {
 		t.Fatalf("expected /quit suggestion, got %q", view)
 	}
@@ -2873,8 +2884,270 @@ func TestScrollbackModeHidesSlashCommandSuggestions(t *testing.T) {
 	if strings.Contains(view, "/status -- 查询在线成员信息") {
 		t.Fatalf("expected scrollback mode to hide command suggestions, got %q", view)
 	}
+	if strings.Contains(view, "/attach -- 上传图片或文件") {
+		t.Fatalf("expected scrollback mode to hide command suggestions, got %q", view)
+	}
 	if strings.Contains(view, "/quit -- 退出当前会话") {
 		t.Fatalf("expected scrollback mode to hide command suggestions, got %q", view)
+	}
+}
+
+func TestRenderedMessageBodyFormatsAttachmentMessagesCompactly(t *testing.T) {
+	t.Parallel()
+
+	entry := historyEntry{
+		kind: historyKindMessage,
+		body: attachment.FormatChatMessage(attachment.ChatMessage{
+			Version: 1,
+			ID:      "att_123456",
+			Kind:    attachment.KindImage,
+			Name:    "cat.gif",
+			Size:    1536,
+		}),
+	}
+
+	if got := renderedMessageBody(entry); got != "[image] cat.gif (1.5 KB) #att_123456" {
+		t.Fatalf("expected compact attachment body, got %q", got)
+	}
+}
+
+func TestModelAttachCommandUploadsAndSendsVisibleAttachmentMessage(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cat.gif")
+	if err := os.WriteFile(path, []byte("gif89a"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	fake := &fakeSession{peerName: "host", localName: "alice"}
+	attachments := &fakeAttachmentClient{
+		uploadRecord: attachment.Record{
+			ID:       "att_a1",
+			FileName: "cat.gif",
+			Kind:     attachment.KindImage,
+			Size:     6,
+		},
+	}
+	uiModel := newModel(modelOptions{
+		mode:             "join",
+		uiMode:           uiModeTUI,
+		localName:        "alice",
+		listeningAddr:    "203.0.113.10:7331",
+		session:          fake,
+		attachmentClient: attachments,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-a", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{RoomKey: roomKey, IdentityID: identityID}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
+	uiModel = updated.(model)
+	uiModel.input.SetValue("/attach " + path)
+	updated, cmd := uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	uiModel = updated.(model)
+	if cmd == nil {
+		t.Fatal("expected attachment upload command")
+	}
+
+	progressMsg := cmd()
+	if progressMsg == nil {
+		t.Fatal("expected attachment progress or result message")
+	}
+	updated, cmd = uiModel.Update(progressMsg)
+	uiModel = updated.(model)
+	for cmd != nil {
+		msg := cmd()
+		if msg == nil {
+			break
+		}
+		updated, cmd = uiModel.Update(msg)
+		uiModel = updated.(model)
+	}
+
+	if len(attachments.uploads) != 1 {
+		t.Fatalf("expected one upload request, got %#v", attachments.uploads)
+	}
+	if attachments.uploads[0].Path != path {
+		t.Fatalf("expected upload path %q, got %#v", path, attachments.uploads[0])
+	}
+	if len(fake.sent) < 3 {
+		t.Fatalf("expected version announce, sync hello, and attachment chat message, got %#v", fake.sent)
+	}
+	sentMessage := fake.sent[len(fake.sent)-1]
+	parsed, ok := attachment.ParseChatMessage(sentMessage.Body)
+	if !ok {
+		t.Fatalf("expected visible attachment message, got %#v", sentMessage)
+	}
+	if parsed.ID != "att_a1" || parsed.Name != "cat.gif" || parsed.Kind != attachment.KindImage {
+		t.Fatalf("expected uploaded attachment metadata in message, got %#v", parsed)
+	}
+	if len(attachments.binds) != 1 || attachments.binds[0].AttachmentID != "att_a1" || attachments.binds[0].MessageID != sentMessage.ID {
+		t.Fatalf("expected attachment bind after send, got %#v", attachments.binds)
+	}
+	if !strings.Contains(stripANSI(uiModel.View()), "[image] cat.gif (6 B) #att_a1") {
+		t.Fatalf("expected compact attachment rendering in view, got %q", stripANSI(uiModel.View()))
+	}
+}
+
+func TestModelOpenAndDownloadCommandsUseAttachmentClient(t *testing.T) {
+	t.Parallel()
+
+	attachments := &fakeAttachmentClient{
+		openPath:     "/tmp/opened-cat.gif",
+		downloadPath: "/tmp/downloads/cat.gif",
+	}
+	uiModel := newModel(modelOptions{
+		mode:             "join",
+		uiMode:           uiModeTUI,
+		session:          &fakeSession{peerName: "host"},
+		attachmentClient: attachments,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: &fakeSession{peerName: "host"}})
+	uiModel = updated.(model)
+	uiModel.input.SetValue("/open att_1")
+	updated, cmd := uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	uiModel = updated.(model)
+	if cmd == nil {
+		t.Fatal("expected open command")
+	}
+	msg := cmd()
+	if msg == nil {
+		t.Fatal("expected open result message")
+	}
+	updated, cmd = uiModel.Update(msg)
+	uiModel = updated.(model)
+	for cmd != nil {
+		msg = cmd()
+		if msg == nil {
+			break
+		}
+		updated, cmd = uiModel.Update(msg)
+		uiModel = updated.(model)
+	}
+	if view := stripANSI(uiModel.View()); !strings.Contains(view, "/tmp/opened-cat.gif") {
+		t.Fatalf("expected open success notice, got %q", view)
+	}
+
+	uiModel.input.SetValue("/download att_2 /tmp/custom/cat.gif")
+	updated, cmd = uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	uiModel = updated.(model)
+	if cmd == nil {
+		t.Fatal("expected download command")
+	}
+	msg = cmd()
+	if msg == nil {
+		t.Fatal("expected download result message")
+	}
+	updated, cmd = uiModel.Update(msg)
+	uiModel = updated.(model)
+	for cmd != nil {
+		msg = cmd()
+		if msg == nil {
+			break
+		}
+		updated, cmd = uiModel.Update(msg)
+		uiModel = updated.(model)
+	}
+
+	if len(attachments.opens) != 1 || attachments.opens[0].AttachmentID != "att_1" {
+		t.Fatalf("expected open request, got %#v", attachments.opens)
+	}
+	if len(attachments.downloads) != 1 || attachments.downloads[0].AttachmentID != "att_2" || attachments.downloads[0].DestPath != "/tmp/custom/cat.gif" {
+		t.Fatalf("expected download request, got %#v", attachments.downloads)
+	}
+	view := stripANSI(uiModel.View())
+	if !strings.Contains(view, "/tmp/downloads/cat.gif") {
+		t.Fatalf("expected download success notice, got %q", view)
+	}
+}
+
+func TestCopyModeAttachmentShortcutsOpenAndDownloadSelectedAttachment(t *testing.T) {
+	t.Parallel()
+
+	attachments := &fakeAttachmentClient{
+		openPath:     "/tmp/opened/report.pdf",
+		downloadPath: "/tmp/cache/report.pdf",
+	}
+	uiModel := newModel(modelOptions{
+		mode:             "join",
+		uiMode:           uiModeTUI,
+		session:          &fakeSession{peerName: "host"},
+		attachmentClient: attachments,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: attachment.FormatChatMessage(attachment.ChatMessage{
+			Version: 1,
+			ID:      "att_c1",
+			Kind:    attachment.KindFile,
+			Name:    "report.pdf",
+			Size:    2048,
+		}),
+		at: time.Date(2026, 4, 23, 10, 0, 0, 0, time.Local),
+	})
+
+	updated, _ := uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	uiModel = updated.(model)
+	updated, cmd := uiModel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	uiModel = updated.(model)
+	if cmd == nil {
+		t.Fatal("expected copy-mode open command")
+	}
+	msg := cmd()
+	if msg == nil {
+		t.Fatal("expected copy-mode open result")
+	}
+	updated, cmd = uiModel.Update(msg)
+	uiModel = updated.(model)
+	for cmd != nil {
+		msg = cmd()
+		if msg == nil {
+			break
+		}
+		updated, cmd = uiModel.Update(msg)
+		uiModel = updated.(model)
+	}
+
+	updated, cmd = uiModel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	uiModel = updated.(model)
+	if cmd == nil {
+		t.Fatal("expected copy-mode download command")
+	}
+	msg = cmd()
+	if msg == nil {
+		t.Fatal("expected copy-mode download result")
+	}
+	updated, cmd = uiModel.Update(msg)
+	uiModel = updated.(model)
+	for cmd != nil {
+		msg = cmd()
+		if msg == nil {
+			break
+		}
+		updated, cmd = uiModel.Update(msg)
+		uiModel = updated.(model)
+	}
+
+	if len(attachments.opens) != 1 || attachments.opens[0].AttachmentID != "att_c1" {
+		t.Fatalf("expected copy-mode open for selected attachment, got %#v", attachments.opens)
+	}
+	if len(attachments.downloads) != 1 || attachments.downloads[0].AttachmentID != "att_c1" {
+		t.Fatalf("expected copy-mode download for selected attachment, got %#v", attachments.downloads)
 	}
 }
 
@@ -3597,7 +3870,7 @@ func TestScrollbackEventsCommandSendsHiddenRequestAndRendersResponse(t *testing.
 		},
 	})
 
-	if quit := handleScrollbackLine(&uiModel, "/events"); quit {
+	if quit := handleScrollbackLine(&uiModel, newPromptConsole(bytes.NewBuffer(nil)), "/events"); quit {
 		t.Fatal("expected /events not to quit")
 	}
 	if len(fake.sent) != 1 || fake.sent[0].Body != room.EventsRequestBody() {
@@ -3852,6 +4125,38 @@ type fakeHostRoom struct {
 	submittedUpdates []room.UpdateRequest
 }
 
+type fakeAttachmentClient struct {
+	uploadRecord  attachment.Record
+	uploadErr     error
+	openPath      string
+	openErr       error
+	downloadPath  string
+	downloadErr   error
+	fetchMeta     attachment.Record
+	fetchMetaErr  error
+	deleteErr     error
+	uploads       []attachment.UploadPathRequest
+	binds         []fakeAttachmentBind
+	opens         []fakeAttachmentLookup
+	downloads     []fakeAttachmentDownload
+	deletes       []string
+	progressCalls []attachment.Progress
+}
+
+type fakeAttachmentBind struct {
+	AttachmentID string
+	MessageID    string
+}
+
+type fakeAttachmentLookup struct {
+	AttachmentID string
+}
+
+type fakeAttachmentDownload struct {
+	AttachmentID string
+	DestPath     string
+}
+
 func (f *fakeSession) Messages() <-chan session.Message { return nil }
 func (f *fakeSession) Receipts() <-chan session.Receipt { return nil }
 func (f *fakeSession) Done() <-chan struct{}            { return nil }
@@ -3877,6 +4182,48 @@ func (f *fakeSession) Send(text string) (session.Message, error) {
 func (f *fakeSession) Resend(message session.Message) error {
 	f.resent = append(f.resent, message)
 	return nil
+}
+
+func (f *fakeAttachmentClient) UploadPath(_ context.Context, req attachment.UploadPathRequest, progress attachment.ProgressFunc) (attachment.Record, error) {
+	f.uploads = append(f.uploads, req)
+	if progress != nil {
+		progress(attachment.Progress{Transferred: f.uploadRecord.Size, Total: f.uploadRecord.Size})
+		f.progressCalls = append(f.progressCalls, attachment.Progress{Transferred: f.uploadRecord.Size, Total: f.uploadRecord.Size})
+	}
+	return f.uploadRecord, f.uploadErr
+}
+
+func (f *fakeAttachmentClient) BindMessage(_ context.Context, attachmentID, messageID string) error {
+	f.binds = append(f.binds, fakeAttachmentBind{AttachmentID: attachmentID, MessageID: messageID})
+	return nil
+}
+
+func (f *fakeAttachmentClient) FetchMeta(_ context.Context, attachmentID string) (attachment.Record, error) {
+	if f.fetchMeta.ID == "" {
+		f.fetchMeta.ID = attachmentID
+	}
+	return f.fetchMeta, f.fetchMetaErr
+}
+
+func (f *fakeAttachmentClient) Open(_ context.Context, attachmentID string, progress attachment.ProgressFunc) (string, error) {
+	f.opens = append(f.opens, fakeAttachmentLookup{AttachmentID: attachmentID})
+	if progress != nil {
+		progress(attachment.Progress{Transferred: 1, Total: 1})
+	}
+	return f.openPath, f.openErr
+}
+
+func (f *fakeAttachmentClient) DownloadToPath(_ context.Context, attachmentID, destPath string, progress attachment.ProgressFunc) (string, error) {
+	f.downloads = append(f.downloads, fakeAttachmentDownload{AttachmentID: attachmentID, DestPath: destPath})
+	if progress != nil {
+		progress(attachment.Progress{Transferred: 1, Total: 1})
+	}
+	return f.downloadPath, f.downloadErr
+}
+
+func (f *fakeAttachmentClient) Delete(_ context.Context, attachmentID string) error {
+	f.deletes = append(f.deletes, attachmentID)
+	return f.deleteErr
 }
 
 func (f *fakeHostRoom) Events() <-chan room.Event {

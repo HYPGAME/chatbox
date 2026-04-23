@@ -6,6 +6,7 @@ It is intentionally small:
 - direct TCP sessions between a host and one or more joiners
 - one side hosts, others join
 - authenticated and encrypted with a pre-shared key
+- encrypted attachments relayed through the host
 - no server, no offline messages
 - encrypted local transcript history
 
@@ -78,6 +79,7 @@ For a router or service host, use the non-interactive relay mode:
 - it does not read stdin
 - it logs only service-level events such as startup and join/leave
 - it does not log chat message bodies
+- it still serves encrypted attachment upload/download requests on the chat port plus one
 - it cannot be combined with `--ui`
 
 The host side must be reachable from the internet. In practice that means:
@@ -136,6 +138,7 @@ Android-specific notes:
 - `self-update` is not supported on Android; replace the binary manually from GitHub Releases
 - macOS Terminal bell/badge notifications do not exist on Android Termux
 - joining a host usually works fine, but hosting from a phone often fails on cellular networks because of carrier NAT or inbound-port restrictions
+- `/open <attachment-id>` uses `termux-open` when available; `/download` always works without it
 - transcript encryption and room history behavior are the same as other platforms
 
 ## Router Deployment
@@ -196,6 +199,7 @@ Behavior:
 
 - the host acts as the room relay
 - every joiner connects only to the host, not to each other
+- the host also exposes the encrypted attachment service on `chat-port + 1`
 - host status shows the current peer count
 - `/status` shows the current online roster to both the host and all joiners
 - the host view shows `joined` and `left` system lines as members connect or disconnect
@@ -207,7 +211,26 @@ This is intentionally a minimal host-relayed room, not a mesh network or a featu
 - `/help`
 - `/status` shows the local connection status and current online participant list
 - `/events` shows join/leave event history visible to the current client
+- `/attach <path>` uploads an image or file to the host and sends a visible attachment message
+- `/open <attachment-id>` downloads the attachment to local cache and opens it with the system default app
+- `/download <attachment-id> [dest]` downloads the attachment without opening it
+- `/update-all [version]` submits a room-wide update request
 - `/quit`
+
+In `--ui tui` copy mode, select an attachment message and press `O` to open it or `D` to download it.
+
+## Attachments
+
+- Attachments are encrypted end-to-end with keys derived from the same chat PSK.
+- The host stores only ciphertext blobs and metadata under `~/Library/Application Support/chatbox/attachments/host/`.
+- Attachment upload/download auth also reuses the PSK; the HTTP attachment service listens on the chat port plus one.
+- Host-side encrypted blobs are deleted automatically after 7 days, including in `--headless` mode.
+- Downloads are on-demand only. Receiving an attachment message never auto-downloads the file.
+- Local attachment cache lives under `~/Library/Application Support/chatbox/attachments/cache/`.
+- `/open` downloads to the local cache and then opens the file with the default system handler.
+- `/download` writes to the provided destination, or to the local cache when no destination is given.
+- TUI shows upload/download progress in the status bar. Scrollback mode keeps progress transient on the input line and only prints the final result.
+- Attachment messages render as compact summaries such as `[image] cat.gif (2.4 MB) #att_abc123`.
 
 ## History and Navigation
 
@@ -310,6 +333,6 @@ Then do one quick `host` and `join` test with a shared PSK before telling others
 
 - No zero-config NAT traversal
 - No signaling or relay server
-- No file transfer
 - No mesh group chat
+- No inline image preview in the terminal
 - No cross-process pending-message recovery

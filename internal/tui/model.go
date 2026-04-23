@@ -85,6 +85,7 @@ type modelOptions struct {
 	updatePerformer  updatePerformerFunc
 	restartLauncher  restartLauncherFunc
 	executablePath   executablePathFunc
+	attachmentClient attachmentClient
 }
 
 type sessionResult struct {
@@ -235,6 +236,10 @@ type model struct {
 	revokeSelection  int
 
 	pendingRestart *update.RestartSpec
+
+	attachmentClient       attachmentClient
+	operationNotice        string
+	operationNoticeIsError bool
 }
 
 var (
@@ -265,6 +270,9 @@ var (
 		{command: "/help", description: "显示支持的命令"},
 		{command: "/status", description: "查询在线成员信息"},
 		{command: "/events", description: "查看成员进出记录"},
+		{command: "/attach", description: "上传图片或文件"},
+		{command: "/open", description: "打开附件"},
+		{command: "/download", description: "下载附件到本地"},
 		{command: "/quit", description: "退出当前会话"},
 		{command: "/update-all", description: "触发全房间更新，可选指定版本"},
 	}
@@ -291,6 +299,7 @@ func RunHostWithUpdateNotices(host *session.Host, localName string, psk []byte, 
 		peerNames:        hostRoom.ParticipantNames,
 		transcriptOpener: defaultTranscriptOpener(localName, psk),
 		updateNotices:    updateNotices,
+		attachmentClient: newAttachmentClientForHost(host.Addr(), psk),
 	}))
 }
 
@@ -312,6 +321,7 @@ func RunJoinWithUpdateNotices(conn *session.Session, localName string, peerAddr 
 		transcriptOpener: defaultTranscriptOpener(localName, cfg.PSK),
 		updateNotices:    updateNotices,
 		startupArgs:      append([]string(nil), os.Args[1:]...),
+		attachmentClient: newAttachmentClientForPeer(peerAddr, cfg.PSK),
 	}))
 }
 
@@ -419,6 +429,7 @@ func newModel(opts modelOptions) model {
 		updatePerformer:     opts.updatePerformer,
 		restartLauncher:     opts.restartLauncher,
 		executablePath:      opts.executablePath,
+		attachmentClient:    opts.attachmentClient,
 		viewport:            viewport.New(80, 20),
 		input:               input,
 		copySelectionPos:    -1,
@@ -536,6 +547,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleUpdateNotice(msg.text)
 	case roomUpdatePerformedMsg:
 		return m.handleRoomUpdatePerformed(msg)
+	case attachmentStreamMsg:
+		return m.handleAttachmentStream(msg)
 	case sessionClosedMsg:
 		return m.handleSessionClosed(msg.err)
 	case tea.KeyMsg:
@@ -845,13 +858,13 @@ func (m *model) handleUpdateNotice(text string) (tea.Model, tea.Cmd) {
 
 func (m *model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 	if strings.HasPrefix(text, "/") {
-		fields := strings.Fields(text)
-		if len(fields) == 0 {
+		command, remainder := splitCommandRemainder(text)
+		if command == "" {
 			return *m, nil
 		}
-		switch fields[0] {
+		switch command {
 		case "/help":
-			m.addSystemEntry("commands: /help /status /events /quit /update-all | Ctrl+R revoke")
+			m.addSystemEntry("commands: /help /status /events /quit /attach /open /download /update-all | Ctrl+Y copy / Ctrl+R revoke")
 			return *m, m.flushScrollbackCmd()
 		case "/status":
 			m.handleStatusCommand()
@@ -859,6 +872,13 @@ func (m *model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 		case "/events":
 			m.handleEventsCommand()
 			return *m, m.flushScrollbackCmd()
+		case "/attach":
+			return m.startAttachCommand(remainder)
+		case "/open":
+			return m.startOpenCommand(remainder)
+		case "/download":
+			attachmentID, destPath := splitFirstToken(remainder)
+			return m.startDownloadCommand(attachmentID, destPath)
 		case "/quit":
 			m.failPendingMessages()
 			if m.session != nil {
@@ -866,7 +886,10 @@ func (m *model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 			}
 			return *m, tea.Quit
 		case "/update-all":
-			return m.handleUpdateAllCommand(fields[1:])
+			if strings.TrimSpace(remainder) == "" {
+				return m.handleUpdateAllCommand(nil)
+			}
+			return m.handleUpdateAllCommand([]string{strings.TrimSpace(remainder)})
 		default:
 			m.addErrorEntry("unknown command")
 			return *m, m.flushScrollbackCmd()
@@ -937,6 +960,26 @@ func (m *model) handleCopyModeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return *m, nil
 	case tea.KeyCtrlR:
 		m.enterRevokeMode()
+		return *m, nil
+	case tea.KeyRunes:
+		if len(msg.Runes) == 1 {
+			switch msg.Runes[0] {
+			case 'o', 'O':
+				attachmentMsg, ok := m.selectedAttachmentMessage()
+				if !ok {
+					m.setStatusNotice("selected message is not an attachment", true)
+					return *m, nil
+				}
+				return m.startOpenCommand(attachmentMsg.ID)
+			case 'd', 'D':
+				attachmentMsg, ok := m.selectedAttachmentMessage()
+				if !ok {
+					m.setStatusNotice("selected message is not an attachment", true)
+					return *m, nil
+				}
+				return m.startDownloadCommand(attachmentMsg.ID, "")
+			}
+		}
 		return *m, nil
 	case tea.KeyEnter:
 		m.quoteSelectedMessage()
@@ -2163,6 +2206,8 @@ func (m *model) resetConversation() {
 	m.revokeMode = false
 	m.revokeCandidates = nil
 	m.revokeSelection = 0
+	m.operationNotice = ""
+	m.operationNoticeIsError = false
 	m.addStartupHints()
 }
 
@@ -2197,7 +2242,7 @@ func (m *model) addStartupHints() {
 	if m.uiMode == uiModeScrollback {
 		return
 	}
-	m.addSystemEntry("commands: /help /status /events /quit /update-all | Ctrl+R revoke")
+	m.addSystemEntry("commands: /help /status /events /quit /attach /open /download /update-all | Ctrl+Y copy / Ctrl+R revoke")
 }
 
 func (m *model) localRequesterName() string {
@@ -2468,6 +2513,9 @@ func renderedMessageBody(entry historyEntry) string {
 	if entry.revoked {
 		return "已撤回一条消息"
 	}
+	if body, ok := formatAttachmentBody(entry.body); ok {
+		return body
+	}
 	return entry.body
 }
 
@@ -2478,7 +2526,12 @@ func renderDateSeparator(date string) string {
 func (m model) renderStatusBar() string {
 	status := m.status
 	style := statusStyle
-	if m.copyMode && strings.TrimSpace(m.statusNotice) == "" {
+	if strings.TrimSpace(m.operationNotice) != "" {
+		status = m.operationNotice
+		if m.operationNoticeIsError {
+			style = errorStyle
+		}
+	} else if m.copyMode && strings.TrimSpace(m.statusNotice) == "" {
 		status = "copy mode"
 	} else if strings.TrimSpace(m.statusNotice) != "" {
 		status = m.statusNotice
@@ -2494,7 +2547,7 @@ func (m model) renderStatusBar() string {
 func (m model) renderInputBox() string {
 	hint := "Enter send / Ctrl+Y copy mode / Ctrl+R revoke"
 	if m.copyMode {
-		hint = "copy mode: Up/Down select / Enter quote / Ctrl+Y copy / Esc cancel"
+		hint = "copy mode: Up/Down select / Enter quote / Ctrl+Y copy / O open / D download / Esc cancel"
 	} else if m.revokeMode {
 		hint = "revoke mode: Up/Down select / Enter confirm / Esc cancel"
 	}

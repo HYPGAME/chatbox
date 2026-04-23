@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/charmbracelet/x/term"
 	"github.com/mattn/go-runewidth"
 
+	"chatbox/internal/attachment"
 	"chatbox/internal/session"
 	"chatbox/internal/transcript"
 )
@@ -29,6 +31,7 @@ type promptConsole struct {
 	history     []string
 	historyPos  int
 	historyLine []rune
+	status      string
 }
 
 func newPromptConsole(out io.Writer) *promptConsole {
@@ -109,6 +112,9 @@ func (c *promptConsole) clearLocked() {
 
 func (c *promptConsole) renderPromptLocked() {
 	c.clearLocked()
+	if strings.TrimSpace(c.status) != "" {
+		_, _ = fmt.Fprintf(c.out, "[%s] ", c.status)
+	}
 	_, _ = fmt.Fprint(c.out, c.prompt, string(c.buffer))
 	if remaining := runewidth.StringWidth(string(c.buffer[c.cursor:])); remaining > 0 {
 		_, _ = fmt.Fprintf(c.out, "\x1b[%dD", remaining)
@@ -120,6 +126,14 @@ func (c *promptConsole) bell() {
 	defer c.mu.Unlock()
 
 	_, _ = fmt.Fprint(c.out, "\a")
+}
+
+func (c *promptConsole) setStatus(text string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.status = strings.TrimSpace(text)
+	c.renderPromptLocked()
 }
 
 func isControlRune(r rune) bool {
@@ -380,7 +394,7 @@ func runScrollbackLoop(m *model, console *promptConsole, input io.Reader) error 
 			if !evt.submitted {
 				continue
 			}
-			if quit := handleScrollbackLine(m, strings.TrimSpace(evt.line)); quit {
+			if quit := handleScrollbackLine(m, console, strings.TrimSpace(evt.line)); quit {
 				if m.session != nil {
 					_ = m.session.Close()
 				}
@@ -488,17 +502,35 @@ func prepareScrollbackInput(input io.Reader) (func(), error) {
 	}, nil
 }
 
-func handleScrollbackLine(m *model, text string) bool {
+func handleScrollbackLine(m *model, console *promptConsole, text string) bool {
 	if strings.HasPrefix(text, "/") {
-		switch text {
+		command, remainder := splitCommandRemainder(text)
+		switch command {
 		case "/help":
-			m.addSystemEntry("commands: /help /status /events /quit")
+			m.addSystemEntry("commands: /help /status /events /quit /attach /open /download /update-all")
 			m.flushScrollbackCmd()
 		case "/status":
 			m.handleStatusCommand()
 			m.flushScrollbackCmd()
 		case "/events":
 			m.handleEventsCommand()
+			m.flushScrollbackCmd()
+		case "/attach":
+			runScrollbackAttach(m, console, remainder)
+			m.flushScrollbackCmd()
+		case "/open":
+			runScrollbackOpen(m, console, remainder)
+			m.flushScrollbackCmd()
+		case "/download":
+			attachmentID, destPath := splitFirstToken(remainder)
+			runScrollbackDownload(m, console, attachmentID, destPath)
+			m.flushScrollbackCmd()
+		case "/update-all":
+			args := []string(nil)
+			if strings.TrimSpace(remainder) != "" {
+				args = []string{strings.TrimSpace(remainder)}
+			}
+			_, _ = m.handleUpdateAllCommand(args)
 			m.flushScrollbackCmd()
 		case "/quit":
 			m.failPendingMessages()
@@ -533,4 +565,81 @@ func handleScrollbackLine(m *model, text string) bool {
 	m.addMessageEntry(message, true, transcript.StatusSending, true)
 	m.flushScrollbackCmd()
 	return false
+}
+
+func runScrollbackAttach(m *model, console *promptConsole, path string) {
+	if m.attachmentClient == nil {
+		m.addErrorEntry("attachments unavailable")
+		return
+	}
+	req, err := m.buildAttachmentUploadRequest(path)
+	if err != nil {
+		m.addErrorEntry(err.Error())
+		return
+	}
+	record, err := m.attachmentClient.UploadPath(context.Background(), req, func(progress attachment.Progress) {
+		console.setStatus(formatAttachmentProgress(attachmentProgressUpdate{
+			action: "uploading",
+			label:  filepath.Base(req.Path),
+			value:  progress,
+		}))
+	})
+	console.setStatus("")
+	if err != nil {
+		m.addErrorEntry(err.Error())
+		return
+	}
+	if err := m.publishUploadedAttachment(record); err != nil {
+		m.addErrorEntry(err.Error())
+	}
+}
+
+func runScrollbackOpen(m *model, console *promptConsole, attachmentID string) {
+	if m.attachmentClient == nil {
+		m.addErrorEntry("attachments unavailable")
+		return
+	}
+	attachmentID = strings.TrimSpace(attachmentID)
+	if attachmentID == "" {
+		m.addErrorEntry("usage: /open <attachment-id>")
+		return
+	}
+	path, err := m.attachmentClient.Open(context.Background(), attachmentID, func(progress attachment.Progress) {
+		console.setStatus(formatAttachmentProgress(attachmentProgressUpdate{
+			action: "opening",
+			label:  attachmentID,
+			value:  progress,
+		}))
+	})
+	console.setStatus("")
+	if err != nil {
+		m.addErrorEntry(err.Error())
+		return
+	}
+	m.addSystemEntry("opened: " + path)
+}
+
+func runScrollbackDownload(m *model, console *promptConsole, attachmentID, destPath string) {
+	if m.attachmentClient == nil {
+		m.addErrorEntry("attachments unavailable")
+		return
+	}
+	attachmentID = strings.TrimSpace(attachmentID)
+	if attachmentID == "" {
+		m.addErrorEntry("usage: /download <attachment-id> [dest]")
+		return
+	}
+	path, err := m.attachmentClient.DownloadToPath(context.Background(), attachmentID, strings.TrimSpace(destPath), func(progress attachment.Progress) {
+		console.setStatus(formatAttachmentProgress(attachmentProgressUpdate{
+			action: "downloading",
+			label:  attachmentID,
+			value:  progress,
+		}))
+	})
+	console.setStatus("")
+	if err != nil {
+		m.addErrorEntry(err.Error())
+		return
+	}
+	m.addSystemEntry("downloaded: " + path)
 }
