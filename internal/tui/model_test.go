@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,6 +28,7 @@ import (
 )
 
 var ansiEscapePattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+var lipglossTestStateMu sync.Mutex
 
 func stripANSI(s string) string {
 	return ansiEscapePattern.ReplaceAllString(s, "")
@@ -35,6 +37,7 @@ func stripANSI(s string) string {
 func enableTrueColorForTest(t *testing.T) {
 	t.Helper()
 
+	lipglossTestStateMu.Lock()
 	oldProfile := lipgloss.ColorProfile()
 	oldDarkBackground := lipgloss.HasDarkBackground()
 	lipgloss.SetColorProfile(termenv.TrueColor)
@@ -42,6 +45,7 @@ func enableTrueColorForTest(t *testing.T) {
 	t.Cleanup(func() {
 		lipgloss.SetColorProfile(oldProfile)
 		lipgloss.SetHasDarkBackground(oldDarkBackground)
+		lipglossTestStateMu.Unlock()
 	})
 }
 
@@ -271,7 +275,7 @@ func TestModelSendsTypedMessageOnEnter(t *testing.T) {
 		t.Fatalf("expected fake session to receive sent message, got %#v", fake.sent)
 	}
 
-	view := uiModel.View()
+	view := stripANSI(uiModel.View())
 	if !strings.Contains(view, "alice: hello from cli") {
 		t.Fatalf("expected local message in view, got %q", view)
 	}
@@ -3565,7 +3569,7 @@ func TestHostModelShowsRelayedMessagesFromOriginalSender(t *testing.T) {
 	})
 	uiModel = updated.(model)
 
-	view := uiModel.View()
+	view := stripANSI(uiModel.View())
 	if !strings.Contains(view, "aaa: hello group") {
 		t.Fatalf("expected relayed message to preserve sender label, got %q", view)
 	}
