@@ -258,6 +258,8 @@ func (m *model) handleAttachmentUploadResult(msg attachmentUploadResultMsg) {
 }
 
 func (m *model) handleAttachmentTransferResult(msg attachmentTransferResultMsg) {
+	m.activeClickHistoryIndex = -1
+	m.refreshViewport(false)
 	if msg.err != nil {
 		m.operationNotice = msg.err.Error()
 		m.operationNoticeIsError = true

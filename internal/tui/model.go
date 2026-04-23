@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"chatbox/internal/admins"
+	"chatbox/internal/attachment"
 	"chatbox/internal/historymeta"
 	"chatbox/internal/identity"
 	"chatbox/internal/room"
@@ -135,6 +136,7 @@ const (
 	uiModeTUI        = "tui"
 	uiModeScrollback = "scrollback"
 	statusRetrying   = "retrying"
+	viewportTopRow   = 1
 )
 
 type historyEntry struct {
@@ -153,12 +155,27 @@ type historyEntry struct {
 type renderedHistoryLine struct {
 	text         string
 	historyIndex int
+	attachmentID string
+	clickable    bool
 }
 
 type renderedViewportState struct {
 	lines      []renderedHistoryLine
 	lineRanges map[int][2]int
 }
+
+type mouseViewportPress struct {
+	x int
+	y int
+}
+
+type attachmentFeedbackState int
+
+const (
+	attachmentFeedbackNone attachmentFeedbackState = iota
+	attachmentFeedbackHover
+	attachmentFeedbackClick
+)
 
 type slashCommandSuggestion struct {
 	command     string
@@ -220,8 +237,11 @@ type model struct {
 	width  int
 	height int
 
-	draggingViewport bool
-	lastMouseY       int
+	draggingViewport        bool
+	lastMouseY              int
+	pendingViewportPress    *mouseViewportPress
+	hoveredHistoryIndex     int
+	activeClickHistoryIndex int
 
 	copyMode            bool
 	copySelection       []int
@@ -253,6 +273,8 @@ var (
 	slashSuggestionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
 	slashPanelStyle      = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8")).Padding(0, 1)
 	separatorStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#59636E"))
+	attachmentHoverStyle = lipgloss.NewStyle().Background(lipgloss.Color("#2B343C")).Underline(true)
+	attachmentClickStyle = lipgloss.NewStyle().Background(lipgloss.Color("#364049")).Underline(true)
 
 	senderPalette = []lipgloss.Color{
 		"#5C7993",
@@ -412,44 +434,46 @@ func newModel(opts modelOptions) model {
 	input.Focus()
 
 	m := model{
-		mode:                opts.mode,
-		uiMode:              opts.uiMode,
-		alertMode:           opts.alertMode,
-		localName:           opts.localName,
-		listeningAddr:       opts.listeningAddr,
-		session:             opts.session,
-		roomEvents:          opts.roomEvents,
-		sessionReady:        opts.sessionReady,
-		connect:             opts.connect,
-		reconnectDelay:      opts.reconnectDelay,
-		peerNames:           opts.peerNames,
-		transcriptKey:       opts.transcriptKey,
-		transcriptOpener:    opts.transcriptOpener,
-		historyPrinter:      opts.historyPrinter,
-		alertNotifier:       opts.alertNotifier,
-		identityLoader:      opts.identityLoader,
-		roomAuthLoader:      opts.roomAuthLoader,
-		updateNotices:       opts.updateNotices,
-		startupArgs:         append([]string(nil), opts.startupArgs...),
-		updatePerformer:     opts.updatePerformer,
-		restartLauncher:     opts.restartLauncher,
-		executablePath:      opts.executablePath,
-		attachmentClient:    opts.attachmentClient,
-		clipboardReader:     opts.clipboardReader,
-		viewport:            viewport.New(80, 20),
-		input:               input,
-		copySelectionPos:    -1,
-		followCopySelection: true,
-		entryIndex:          make(map[string]int),
-		seenMessages:        make(map[string]struct{}),
-		pending:             make(map[string]session.Message),
-		pendingRevokes:      make(map[string][]transcript.RevokeRecord),
-		peerIdentities:      make(map[string]string),
-		syncCapablePeers:    make(map[string]bool),
-		requestedHistory:    make(map[string]struct{}),
-		offeredHistory:      make(map[string]struct{}),
-		executedRoomUpdates: make(map[string]struct{}),
-		updateStatuses:      make(map[string]map[string]string),
+		mode:                    opts.mode,
+		uiMode:                  opts.uiMode,
+		alertMode:               opts.alertMode,
+		localName:               opts.localName,
+		listeningAddr:           opts.listeningAddr,
+		session:                 opts.session,
+		roomEvents:              opts.roomEvents,
+		sessionReady:            opts.sessionReady,
+		connect:                 opts.connect,
+		reconnectDelay:          opts.reconnectDelay,
+		peerNames:               opts.peerNames,
+		transcriptKey:           opts.transcriptKey,
+		transcriptOpener:        opts.transcriptOpener,
+		historyPrinter:          opts.historyPrinter,
+		alertNotifier:           opts.alertNotifier,
+		identityLoader:          opts.identityLoader,
+		roomAuthLoader:          opts.roomAuthLoader,
+		updateNotices:           opts.updateNotices,
+		startupArgs:             append([]string(nil), opts.startupArgs...),
+		updatePerformer:         opts.updatePerformer,
+		restartLauncher:         opts.restartLauncher,
+		executablePath:          opts.executablePath,
+		attachmentClient:        opts.attachmentClient,
+		clipboardReader:         opts.clipboardReader,
+		viewport:                viewport.New(80, 20),
+		input:                   input,
+		copySelectionPos:        -1,
+		hoveredHistoryIndex:     -1,
+		activeClickHistoryIndex: -1,
+		followCopySelection:     true,
+		entryIndex:              make(map[string]int),
+		seenMessages:            make(map[string]struct{}),
+		pending:                 make(map[string]session.Message),
+		pendingRevokes:          make(map[string][]transcript.RevokeRecord),
+		peerIdentities:          make(map[string]string),
+		syncCapablePeers:        make(map[string]bool),
+		requestedHistory:        make(map[string]struct{}),
+		offeredHistory:          make(map[string]struct{}),
+		executedRoomUpdates:     make(map[string]struct{}),
+		updateStatuses:          make(map[string]map[string]string),
 	}
 	if m.uiMode == "" {
 		m.uiMode = uiModeTUI
@@ -536,8 +560,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resize()
 		return m, m.flushScrollbackCmd()
 	case tea.MouseMsg:
-		if handled := m.handleMouse(msg); handled {
-			return m, nil
+		if handled, cmd := m.handleMouse(msg); handled {
+			return m, cmd
 		}
 		var cmd tea.Cmd
 		m.viewport, cmd = m.viewport.Update(msg)
@@ -2099,15 +2123,32 @@ func (m model) buildRenderedViewportState() renderedViewportState {
 			})
 			lastDate = entryDate
 		}
-		line := renderTUIEntry(entry, i == selectedIndex)
+		feedback := attachmentFeedbackNone
+		switch {
+		case i == m.activeClickHistoryIndex:
+			feedback = attachmentFeedbackClick
+		case i == m.hoveredHistoryIndex:
+			feedback = attachmentFeedbackHover
+		}
+		line := renderTUIEntryWithFeedback(entry, i == selectedIndex, feedback)
 		if m.viewport.Width > 0 {
 			line = ansi.Wrap(line, m.viewport.Width, "")
+		}
+		attachmentID := ""
+		clickable := false
+		if entry.kind == historyKindMessage && !entry.revoked {
+			if attachmentMsg, ok := attachment.ParseChatMessage(entry.body); ok {
+				attachmentID = strings.TrimSpace(attachmentMsg.ID)
+				clickable = attachmentID != ""
+			}
 		}
 		start := len(state.lines)
 		for _, wrapped := range strings.Split(line, "\n") {
 			state.lines = append(state.lines, renderedHistoryLine{
 				text:         wrapped,
 				historyIndex: i,
+				attachmentID: attachmentID,
+				clickable:    clickable,
 			})
 		}
 		state.lineRanges[i] = [2]int{start, len(state.lines)}
@@ -2131,41 +2172,112 @@ func (m *model) refreshViewport(stickToBottom bool) {
 	m.viewport.SetYOffset(offset)
 }
 
-func (m *model) handleMouse(msg tea.MouseMsg) bool {
+func (m *model) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 	switch msg.Action {
 	case tea.MouseActionPress:
 		if msg.Button == tea.MouseButtonLeft && m.isWithinViewport(msg.Y) {
-			m.draggingViewport = true
+			m.updateHoveredHistoryIndex(msg.Y)
+			m.pendingViewportPress = &mouseViewportPress{x: msg.X, y: msg.Y}
+			m.draggingViewport = false
 			m.lastMouseY = msg.Y
-			return true
+			return true, nil
 		}
 	case tea.MouseActionMotion:
-		if m.draggingViewport && (msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone) {
-			delta := msg.Y - m.lastMouseY
-			if delta > 0 {
-				m.viewport.ScrollUp(delta)
-			} else if delta < 0 {
-				m.viewport.ScrollDown(-delta)
+		if m.pendingViewportPress != nil && (msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone) {
+			if !m.draggingViewport && absInt(msg.Y-m.pendingViewportPress.y) > 1 {
+				m.draggingViewport = true
 			}
-			m.lastMouseY = msg.Y
-			return true
+			if m.draggingViewport {
+				delta := msg.Y - m.lastMouseY
+				if delta > 0 {
+					m.viewport.ScrollUp(delta)
+				} else if delta < 0 {
+					m.viewport.ScrollDown(-delta)
+				}
+				m.lastMouseY = msg.Y
+				return true, nil
+			}
+		}
+		if msg.Button == tea.MouseButtonNone {
+			if m.updateHoveredHistoryIndex(msg.Y) {
+				return true, nil
+			}
 		}
 	case tea.MouseActionRelease:
-		if m.draggingViewport {
+		if (msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone) && m.pendingViewportPress != nil {
+			wasDragging := m.draggingViewport
+			m.pendingViewportPress = nil
 			m.draggingViewport = false
-			return true
+			if wasDragging {
+				return true, nil
+			}
+			if m.copyMode || m.revokeMode {
+				return true, nil
+			}
+			attachmentID, historyIndex := m.clickedAttachment(msg.Y)
+			if attachmentID == "" {
+				return true, nil
+			}
+			m.activeClickHistoryIndex = historyIndex
+			m.refreshViewport(false)
+			nextModel, cmd := m.startOpenCommand(attachmentID)
+			*m = nextModel.(model)
+			return true, cmd
 		}
 	}
-	return false
+	return false, nil
 }
 
 func (m model) isWithinViewport(mouseY int) bool {
 	if m.viewport.Height <= 0 {
 		return false
 	}
-	viewportTop := 2
-	viewportBottom := viewportTop + m.viewport.Height - 1
-	return mouseY >= viewportTop && mouseY <= viewportBottom
+	viewportBottom := viewportTopRow + m.viewport.Height - 1
+	return mouseY >= viewportTopRow && mouseY <= viewportBottom
+}
+
+func (m model) viewportLineIndex(mouseY int) int {
+	return m.viewport.YOffset + (mouseY - viewportTopRow)
+}
+
+func (m model) clickedAttachment(mouseY int) (string, int) {
+	if !m.isWithinViewport(mouseY) {
+		return "", -1
+	}
+	lineIndex := m.viewportLineIndex(mouseY)
+	if lineIndex < 0 || lineIndex >= len(m.renderedViewport.lines) {
+		return "", -1
+	}
+	line := m.renderedViewport.lines[lineIndex]
+	if !line.clickable {
+		return "", -1
+	}
+	return line.attachmentID, line.historyIndex
+}
+
+func (m model) clickedAttachmentID(mouseY int) string {
+	attachmentID, _ := m.clickedAttachment(mouseY)
+	return attachmentID
+}
+
+func (m *model) updateHoveredHistoryIndex(mouseY int) bool {
+	hoveredIndex := -1
+	if attachmentID, historyIndex := m.clickedAttachment(mouseY); attachmentID != "" {
+		hoveredIndex = historyIndex
+	}
+	if hoveredIndex == m.hoveredHistoryIndex {
+		return false
+	}
+	m.hoveredHistoryIndex = hoveredIndex
+	m.refreshViewport(false)
+	return true
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func (m *model) ensureTranscriptLoaded(conversationKey string) error {
@@ -2222,6 +2334,8 @@ func (m *model) resetConversation() {
 	m.statusNotice = ""
 	m.statusNoticeIsError = false
 	m.renderedViewport = renderedViewportState{}
+	m.hoveredHistoryIndex = -1
+	m.activeClickHistoryIndex = -1
 	m.copyMode = false
 	m.revokeMode = false
 	m.revokeCandidates = nil
@@ -2508,6 +2622,10 @@ func renderEntryWithStatus(entry historyEntry, status string) string {
 }
 
 func renderTUIEntry(entry historyEntry, selected bool) string {
+	return renderTUIEntryWithFeedback(entry, selected, attachmentFeedbackNone)
+}
+
+func renderTUIEntryWithFeedback(entry historyEntry, selected bool, feedback attachmentFeedbackState) string {
 	timestamp := entry.at.Local().Format("15:04")
 	switch entry.kind {
 	case historyKindSystem:
@@ -2519,14 +2637,33 @@ func renderTUIEntry(entry historyEntry, selected bool) string {
 		if entry.outgoing && entry.status != "" && entry.status != transcript.StatusSent && !entry.revoked {
 			statusSuffix = fmt.Sprintf(" [%s]", entry.status)
 		}
-		coloredLabel := senderMessageStyle(entry.from).Render(entry.from)
-		coloredTimestamp := timestampStyle().Render(fmt.Sprintf("[%s]", timestamp))
-		line := fmt.Sprintf("%s %s: %s%s", coloredTimestamp, coloredLabel, renderedMessageBody(entry), statusSuffix)
+		timestampSegmentStyle, senderSegmentStyle, textSegmentStyle := attachmentFeedbackStyles(feedback, senderMessageStyle(entry.from))
+		coloredLabel := senderSegmentStyle.Render(entry.from)
+		coloredTimestamp := timestampSegmentStyle.Render(fmt.Sprintf("[%s]", timestamp))
+		separator := textSegmentStyle.Render(": ")
+		body := textSegmentStyle.Render(renderedMessageBody(entry) + statusSuffix)
+		line := coloredTimestamp + textSegmentStyle.Render(" ") + coloredLabel + separator + body
 		if selected {
 			return inputHintStyle.Render("> ") + line
 		}
 		return line
 	}
+}
+
+func attachmentFeedbackStyles(feedback attachmentFeedbackState, senderStyle lipgloss.Style) (lipgloss.Style, lipgloss.Style, lipgloss.Style) {
+	timestampSegmentStyle := timestampStyle()
+	textSegmentStyle := lipgloss.NewStyle()
+	switch feedback {
+	case attachmentFeedbackHover:
+		timestampSegmentStyle = timestampSegmentStyle.Inherit(attachmentHoverStyle)
+		senderStyle = senderStyle.Inherit(attachmentHoverStyle)
+		textSegmentStyle = textSegmentStyle.Inherit(attachmentHoverStyle)
+	case attachmentFeedbackClick:
+		timestampSegmentStyle = timestampSegmentStyle.Inherit(attachmentClickStyle)
+		senderStyle = senderStyle.Inherit(attachmentClickStyle)
+		textSegmentStyle = textSegmentStyle.Inherit(attachmentClickStyle)
+	}
+	return timestampSegmentStyle, senderStyle, textSegmentStyle
 }
 
 func renderedMessageBody(entry historyEntry) string {
@@ -2604,7 +2741,7 @@ func senderMessageStyle(sender string) lipgloss.Style {
 func programOptionsForMode(uiMode string) []tea.ProgramOption {
 	options := []tea.ProgramOption{}
 	if uiModeUsesAltScreen(uiMode) {
-		options = append(options, tea.WithAltScreen(), tea.WithMouseCellMotion())
+		options = append(options, tea.WithAltScreen(), tea.WithMouseAllMotion())
 	}
 	return options
 }

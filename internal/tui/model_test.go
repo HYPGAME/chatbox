@@ -32,6 +32,39 @@ func stripANSI(s string) string {
 	return ansiEscapePattern.ReplaceAllString(s, "")
 }
 
+func enableTrueColorForTest(t *testing.T) {
+	t.Helper()
+
+	oldProfile := lipgloss.ColorProfile()
+	oldDarkBackground := lipgloss.HasDarkBackground()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	lipgloss.SetHasDarkBackground(true)
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(oldProfile)
+		lipgloss.SetHasDarkBackground(oldDarkBackground)
+	})
+}
+
+func TestAttachmentFeedbackStylesUseMutedHighlightColors(t *testing.T) {
+	t.Parallel()
+
+	hoverBackground := lipgloss.Color("#2B343C")
+	clickBackground := lipgloss.Color("#364049")
+
+	if got := attachmentHoverStyle.GetBackground(); got != hoverBackground {
+		t.Fatalf("expected hover background %v, got %v", hoverBackground, got)
+	}
+	if got := attachmentClickStyle.GetBackground(); got != clickBackground {
+		t.Fatalf("expected click background %v, got %v", clickBackground, got)
+	}
+	if !attachmentHoverStyle.GetUnderline() {
+		t.Fatal("expected hover style to keep underline")
+	}
+	if !attachmentClickStyle.GetUnderline() {
+		t.Fatal("expected click style to keep underline")
+	}
+}
+
 func TestModelShowsConnectedStatusAndIncomingMessage(t *testing.T) {
 	t.Parallel()
 
@@ -3653,6 +3686,467 @@ func TestModelMouseDragScrollsHistory(t *testing.T) {
 		Action: tea.MouseActionRelease,
 	})
 	uiModel = updated.(model)
+}
+
+func TestModelMouseClickOpensAttachment(t *testing.T) {
+	t.Parallel()
+
+	attachments := &fakeAttachmentClient{
+		openPath: "/tmp/opened/cat.gif",
+	}
+	uiModel := newModel(modelOptions{
+		mode:             "join",
+		uiMode:           uiModeTUI,
+		session:          &fakeSession{peerName: "host"},
+		attachmentClient: attachments,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 72, Height: 12})
+	uiModel = updated.(model)
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: attachment.FormatChatMessage(attachment.ChatMessage{
+			Version: 1,
+			ID:      "att_click1",
+			Kind:    attachment.KindImage,
+			Name:    "cat.gif",
+			Size:    6,
+		}),
+		at: time.Date(2026, 4, 23, 19, 0, 0, 0, time.Local),
+	})
+
+	lineRange := uiModel.renderedViewport.lineRanges[len(uiModel.history)-1]
+	clickY := viewportTopRow + lineRange[0] - uiModel.viewport.YOffset
+	if got := uiModel.clickedAttachmentID(clickY); got != "att_click1" {
+		t.Fatalf("expected click Y to resolve attachment id %q, got %q", "att_click1", got)
+	}
+
+	updated, _ = uiModel.Update(tea.MouseMsg{
+		X:      2,
+		Y:      clickY,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionPress,
+	})
+	uiModel = updated.(model)
+	updated, cmd := uiModel.Update(tea.MouseMsg{
+		X:      2,
+		Y:      clickY,
+		Button: tea.MouseButtonNone,
+		Action: tea.MouseActionRelease,
+	})
+	uiModel = updated.(model)
+	if cmd == nil {
+		t.Fatal("expected click release to start attachment open")
+	}
+
+	msg := cmd()
+	if msg == nil {
+		t.Fatal("expected click release to produce open result")
+	}
+	updated, _ = uiModel.Update(msg)
+	uiModel = updated.(model)
+
+	if len(attachments.opens) != 1 || attachments.opens[0].AttachmentID != "att_click1" {
+		t.Fatalf("expected attachment open request, got %#v", attachments.opens)
+	}
+}
+
+func TestModelMouseHoverHighlightsAttachment(t *testing.T) {
+	t.Parallel()
+	enableTrueColorForTest(t)
+
+	uiModel := newModel(modelOptions{
+		mode:    "join",
+		uiMode:  uiModeTUI,
+		session: &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 72, Height: 12})
+	uiModel = updated.(model)
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: attachment.FormatChatMessage(attachment.ChatMessage{
+			Version: 1,
+			ID:      "att_hover1",
+			Kind:    attachment.KindImage,
+			Name:    "hover.gif",
+			Size:    6,
+		}),
+		at: time.Date(2026, 4, 23, 20, 10, 0, 0, time.Local),
+	})
+
+	lineRange := uiModel.renderedViewport.lineRanges[len(uiModel.history)-1]
+	hoverY := viewportTopRow + lineRange[0] - uiModel.viewport.YOffset
+	before := uiModel.renderedViewport.lines[lineRange[0]].text
+
+	updated, _ = uiModel.Update(tea.MouseMsg{
+		X:      2,
+		Y:      hoverY,
+		Button: tea.MouseButtonNone,
+		Action: tea.MouseActionMotion,
+	})
+	uiModel = updated.(model)
+	after := uiModel.renderedViewport.lines[lineRange[0]].text
+
+	if after == before {
+		t.Fatalf("expected hover to restyle attachment row, got %q", after)
+	}
+	if stripANSI(after) != stripANSI(before) {
+		t.Fatalf("expected hover highlight to preserve text, before=%q after=%q", stripANSI(before), stripANSI(after))
+	}
+}
+
+func TestModelMouseClickHighlightsAttachmentWhileOpening(t *testing.T) {
+	t.Parallel()
+	enableTrueColorForTest(t)
+
+	attachments := &fakeAttachmentClient{
+		openPath: "/tmp/opened/click-feedback.gif",
+	}
+	uiModel := newModel(modelOptions{
+		mode:             "join",
+		uiMode:           uiModeTUI,
+		session:          &fakeSession{peerName: "host"},
+		attachmentClient: attachments,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 72, Height: 12})
+	uiModel = updated.(model)
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: attachment.FormatChatMessage(attachment.ChatMessage{
+			Version: 1,
+			ID:      "att_feedback1",
+			Kind:    attachment.KindImage,
+			Name:    "click-feedback.gif",
+			Size:    6,
+		}),
+		at: time.Date(2026, 4, 23, 20, 11, 0, 0, time.Local),
+	})
+
+	lineRange := uiModel.renderedViewport.lineRanges[len(uiModel.history)-1]
+	clickY := viewportTopRow + lineRange[0] - uiModel.viewport.YOffset
+	before := uiModel.renderedViewport.lines[lineRange[0]].text
+
+	updated, _ = uiModel.Update(tea.MouseMsg{
+		X:      2,
+		Y:      clickY,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionPress,
+	})
+	uiModel = updated.(model)
+	updated, cmd := uiModel.Update(tea.MouseMsg{
+		X:      2,
+		Y:      clickY,
+		Button: tea.MouseButtonNone,
+		Action: tea.MouseActionRelease,
+	})
+	uiModel = updated.(model)
+	afterClick := uiModel.renderedViewport.lines[lineRange[0]].text
+
+	if cmd == nil {
+		t.Fatal("expected click release to start attachment open")
+	}
+	if afterClick == before {
+		t.Fatalf("expected click to flash attachment row, got %q", afterClick)
+	}
+	if !strings.Contains(stripANSI(uiModel.View()), "opening att_feedback1") {
+		t.Fatalf("expected opening status feedback, got %q", stripANSI(uiModel.View()))
+	}
+
+	msg := cmd()
+	if msg == nil {
+		t.Fatal("expected click release to produce open result")
+	}
+	updated, cmd = uiModel.Update(msg)
+	uiModel = updated.(model)
+	for cmd != nil {
+		msg = cmd()
+		if msg == nil {
+			break
+		}
+		updated, cmd = uiModel.Update(msg)
+		uiModel = updated.(model)
+	}
+	afterOpen := uiModel.renderedViewport.lines[lineRange[0]].text
+
+	if afterOpen == afterClick {
+		t.Fatalf("expected click flash to clear after open result, got %q", afterOpen)
+	}
+}
+
+func TestModelMouseClickIgnoresNormalMessage(t *testing.T) {
+	t.Parallel()
+
+	attachments := &fakeAttachmentClient{
+		openPath: "/tmp/opened/ignored.txt",
+	}
+	uiModel := newModel(modelOptions{
+		mode:             "join",
+		uiMode:           uiModeTUI,
+		session:          &fakeSession{peerName: "host"},
+		attachmentClient: attachments,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 72, Height: 12})
+	uiModel = updated.(model)
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: "plain message",
+		at:   time.Date(2026, 4, 23, 19, 1, 0, 0, time.Local),
+	})
+
+	lineRange := uiModel.renderedViewport.lineRanges[len(uiModel.history)-1]
+	clickY := viewportTopRow + lineRange[0] - uiModel.viewport.YOffset
+
+	updated, _ = uiModel.Update(tea.MouseMsg{
+		X:      2,
+		Y:      clickY,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionPress,
+	})
+	uiModel = updated.(model)
+	updated, cmd := uiModel.Update(tea.MouseMsg{
+		X:      2,
+		Y:      clickY,
+		Button: tea.MouseButtonNone,
+		Action: tea.MouseActionRelease,
+	})
+	uiModel = updated.(model)
+
+	if cmd != nil {
+		t.Fatalf("expected normal message click not to trigger open, got cmd %#v", cmd)
+	}
+	if len(attachments.opens) != 0 {
+		t.Fatalf("expected normal message click not to open attachment, got %#v", attachments.opens)
+	}
+}
+
+func TestModelMouseDragDoesNotOpenAttachment(t *testing.T) {
+	t.Parallel()
+
+	attachments := &fakeAttachmentClient{
+		openPath: "/tmp/opened/drag.gif",
+	}
+	uiModel := newModel(modelOptions{
+		mode:             "join",
+		uiMode:           uiModeTUI,
+		session:          &fakeSession{peerName: "host"},
+		attachmentClient: attachments,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 72, Height: 8})
+	uiModel = updated.(model)
+	for i := 0; i < 30; i++ {
+		uiModel.addHistoryEntry(historyEntry{
+			kind: historyKindMessage,
+			from: "alice",
+			body: attachment.FormatChatMessage(attachment.ChatMessage{
+				Version: 1,
+				ID:      fmt.Sprintf("att_drag%02d", i),
+				Kind:    attachment.KindImage,
+				Name:    fmt.Sprintf("drag-%02d.gif", i),
+				Size:    6,
+			}),
+			at: time.Date(2026, 4, 23, 19, 2, i, 0, time.Local),
+		})
+	}
+
+	viewportY := 3
+	updated, _ = uiModel.Update(tea.MouseMsg{
+		X:      2,
+		Y:      viewportY,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionPress,
+	})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(tea.MouseMsg{
+		X:      2,
+		Y:      viewportY + 2,
+		Button: tea.MouseButtonNone,
+		Action: tea.MouseActionMotion,
+	})
+	uiModel = updated.(model)
+	updated, cmd := uiModel.Update(tea.MouseMsg{
+		X:      2,
+		Y:      viewportY + 2,
+		Button: tea.MouseButtonNone,
+		Action: tea.MouseActionRelease,
+	})
+	uiModel = updated.(model)
+
+	if cmd != nil {
+		t.Fatalf("expected drag release not to trigger open, got cmd %#v", cmd)
+	}
+	if len(attachments.opens) != 0 {
+		t.Fatalf("expected drag release not to open attachment, got %#v", attachments.opens)
+	}
+}
+
+func TestModelMouseClickWrappedAttachmentLineOpensAttachment(t *testing.T) {
+	t.Parallel()
+
+	attachments := &fakeAttachmentClient{
+		openPath: "/tmp/opened/wrapped.gif",
+	}
+	uiModel := newModel(modelOptions{
+		mode:             "join",
+		uiMode:           uiModeTUI,
+		session:          &fakeSession{peerName: "host"},
+		attachmentClient: attachments,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 36, Height: 12})
+	uiModel = updated.(model)
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: attachment.FormatChatMessage(attachment.ChatMessage{
+			Version: 1,
+			ID:      "att_wrapped1",
+			Kind:    attachment.KindImage,
+			Name:    "very-long-file-name-for-wrap-check.gif",
+			Size:    4096,
+		}),
+		at: time.Date(2026, 4, 23, 19, 3, 0, 0, time.Local),
+	})
+
+	lineRange := uiModel.renderedViewport.lineRanges[len(uiModel.history)-1]
+	if got := lineRange[1] - lineRange[0]; got < 2 {
+		t.Fatalf("expected wrapped attachment to span multiple lines, got range %#v", lineRange)
+	}
+	clickY := viewportTopRow + (lineRange[0] + 1) - uiModel.viewport.YOffset
+	if got := uiModel.clickedAttachmentID(clickY); got != "att_wrapped1" {
+		t.Fatalf("expected wrapped click Y to resolve attachment id %q, got %q", "att_wrapped1", got)
+	}
+
+	updated, _ = uiModel.Update(tea.MouseMsg{
+		X:      2,
+		Y:      clickY,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionPress,
+	})
+	uiModel = updated.(model)
+	updated, cmd := uiModel.Update(tea.MouseMsg{
+		X:      2,
+		Y:      clickY,
+		Button: tea.MouseButtonNone,
+		Action: tea.MouseActionRelease,
+	})
+	uiModel = updated.(model)
+	if cmd == nil {
+		t.Fatal("expected wrapped attachment click to start open")
+	}
+
+	msg := cmd()
+	if msg == nil {
+		t.Fatal("expected wrapped attachment click to produce open result")
+	}
+	updated, _ = uiModel.Update(msg)
+	uiModel = updated.(model)
+
+	if len(attachments.opens) != 1 || attachments.opens[0].AttachmentID != "att_wrapped1" {
+		t.Fatalf("expected wrapped attachment line to open same attachment, got %#v", attachments.opens)
+	}
+}
+
+func TestModelMouseClickIgnoredInCopyAndRevokeModes(t *testing.T) {
+	t.Parallel()
+
+	attachments := &fakeAttachmentClient{
+		openPath: "/tmp/opened/ignored.gif",
+	}
+	uiModel := newModel(modelOptions{
+		mode:             "join",
+		uiMode:           uiModeTUI,
+		session:          &fakeSession{peerName: "host"},
+		attachmentClient: attachments,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 72, Height: 12})
+	uiModel = updated.(model)
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: attachment.FormatChatMessage(attachment.ChatMessage{
+			Version: 1,
+			ID:      "att_mode1",
+			Kind:    attachment.KindImage,
+			Name:    "mode.gif",
+			Size:    6,
+		}),
+		at: time.Date(2026, 4, 23, 19, 4, 0, 0, time.Local),
+	})
+
+	lineRange := uiModel.renderedViewport.lineRanges[len(uiModel.history)-1]
+	clickY := viewportTopRow + lineRange[0] - uiModel.viewport.YOffset
+
+	uiModel.copyMode = true
+	updated, cmd := uiModel.Update(tea.MouseMsg{
+		X:      2,
+		Y:      clickY,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionPress,
+	})
+	uiModel = updated.(model)
+	updated, cmd = uiModel.Update(tea.MouseMsg{
+		X:      2,
+		Y:      clickY,
+		Button: tea.MouseButtonNone,
+		Action: tea.MouseActionRelease,
+	})
+	uiModel = updated.(model)
+	if cmd != nil {
+		t.Fatalf("expected copy mode click not to trigger open, got %#v", cmd)
+	}
+
+	uiModel.copyMode = false
+	uiModel.revokeMode = true
+	updated, _ = uiModel.Update(tea.MouseMsg{
+		X:      2,
+		Y:      clickY,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionPress,
+	})
+	uiModel = updated.(model)
+	updated, cmd = uiModel.Update(tea.MouseMsg{
+		X:      2,
+		Y:      clickY,
+		Button: tea.MouseButtonNone,
+		Action: tea.MouseActionRelease,
+	})
+	uiModel = updated.(model)
+	if cmd != nil {
+		t.Fatalf("expected revoke mode click not to trigger open, got %#v", cmd)
+	}
+	if len(attachments.opens) != 0 {
+		t.Fatalf("expected mode-guarded clicks not to open attachment, got %#v", attachments.opens)
+	}
 }
 
 func TestModelLoadsTranscriptEntriesOnConnect(t *testing.T) {
