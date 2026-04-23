@@ -137,7 +137,11 @@ func (c Client) DownloadToPath(ctx context.Context, attachmentID, destPath strin
 		return "", err
 	}
 
-	targetPath, err := c.resolveDestination(meta, destPath)
+	return c.downloadRecordToPath(ctx, attachmentID, meta, destPath, c.resolveDestination, progress)
+}
+
+func (c Client) downloadRecordToPath(ctx context.Context, attachmentID string, meta Record, destPath string, resolver func(Record, string) (string, error), progress ProgressFunc) (string, error) {
+	targetPath, err := resolver(meta, destPath)
 	if err != nil {
 		return "", err
 	}
@@ -188,7 +192,11 @@ func (c Client) DownloadToPath(ctx context.Context, attachmentID, destPath strin
 }
 
 func (c Client) Open(ctx context.Context, attachmentID string, progress ProgressFunc) (string, error) {
-	path, err := c.DownloadToPath(ctx, attachmentID, "", progress)
+	meta, err := c.FetchMeta(ctx, attachmentID)
+	if err != nil {
+		return "", err
+	}
+	path, err := c.downloadRecordToPath(ctx, attachmentID, meta, "", c.resolveOpenDestination, progress)
 	if err != nil {
 		return "", err
 	}
@@ -294,15 +302,11 @@ func (c Client) signedRequest(ctx context.Context, method, path string, body io.
 func (c Client) resolveDestination(meta Record, destPath string) (string, error) {
 	destPath = strings.TrimSpace(destPath)
 	if destPath == "" {
-		cacheDir := strings.TrimSpace(c.CacheDir)
-		if cacheDir == "" {
-			var err error
-			cacheDir, err = DefaultCacheDir()
-			if err != nil {
-				return "", err
-			}
+		downloadDir, err := DefaultDownloadDir()
+		if err != nil {
+			return "", err
 		}
-		return filepath.Join(cacheDir, meta.FileName), nil
+		return filepath.Join(downloadDir, meta.FileName), nil
 	}
 
 	info, err := os.Stat(destPath)
@@ -313,6 +317,18 @@ func (c Client) resolveDestination(meta Record, destPath string) (string, error)
 		return "", fmt.Errorf("stat attachment destination: %w", err)
 	}
 	return destPath, nil
+}
+
+func (c Client) resolveOpenDestination(meta Record, _ string) (string, error) {
+	cacheDir := strings.TrimSpace(c.CacheDir)
+	if cacheDir == "" {
+		var err error
+		cacheDir, err = DefaultCacheDir()
+		if err != nil {
+			return "", err
+		}
+	}
+	return filepath.Join(cacheDir, meta.FileName), nil
 }
 
 func (c Client) open(path string) error {

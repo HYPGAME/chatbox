@@ -228,7 +228,7 @@ In `--ui tui` copy mode, select an attachment message and press `O` to open it o
 - Downloads are on-demand only. Receiving an attachment message never auto-downloads the file.
 - Local attachment cache lives under `~/Library/Application Support/chatbox/attachments/cache/`.
 - `/open` downloads to the local cache and then opens the file with the default system handler.
-- `/download` writes to the provided destination, or to the local cache when no destination is given.
+- `/download` writes to the provided destination, or to `~/Downloads/` when no destination is given.
 - TUI shows upload/download progress in the status bar. Scrollback mode keeps progress transient on the input line and only prints the final result.
 - Attachment messages render as compact summaries such as `[image] cat.gif (2.4 MB) #att_abc123`.
 
