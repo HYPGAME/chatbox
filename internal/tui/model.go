@@ -2285,7 +2285,17 @@ func (m *model) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 			if wasDragging {
 				return true, nil
 			}
-			if m.copyMode || m.revokeMode {
+			historyIndex := m.clickedHistoryIndex(msg.Y)
+			if m.copyMode {
+				if historyIndex >= 0 && m.setCopySelectionByHistoryIndex(historyIndex) {
+					m.refreshViewport(false)
+				}
+				return true, nil
+			}
+			if m.revokeMode {
+				if historyIndex >= 0 && m.setRevokeSelectionByHistoryIndex(historyIndex) {
+					m.refreshViewport(false)
+				}
 				return true, nil
 			}
 			attachmentID, historyIndex := m.clickedAttachment(msg.Y)
@@ -2329,6 +2339,17 @@ func (m model) clickedAttachment(mouseY int) (string, int) {
 	return line.attachmentID, line.historyIndex
 }
 
+func (m model) clickedHistoryIndex(mouseY int) int {
+	if !m.isWithinViewport(mouseY) {
+		return -1
+	}
+	lineIndex := m.viewportLineIndex(mouseY)
+	if lineIndex < 0 || lineIndex >= len(m.renderedViewport.lines) {
+		return -1
+	}
+	return m.renderedViewport.lines[lineIndex].historyIndex
+}
+
 func (m model) clickedAttachmentID(mouseY int) string {
 	attachmentID, _ := m.clickedAttachment(mouseY)
 	return attachmentID
@@ -2352,6 +2373,28 @@ func absInt(value int) int {
 		return -value
 	}
 	return value
+}
+
+func (m *model) setCopySelectionByHistoryIndex(historyIndex int) bool {
+	for i, candidate := range m.copySelection {
+		if candidate == historyIndex {
+			m.copySelectionPos = i
+			m.followCopySelection = i == len(m.copySelection)-1
+			m.scrollSelectedMessageIntoView()
+			return true
+		}
+	}
+	return false
+}
+
+func (m *model) setRevokeSelectionByHistoryIndex(historyIndex int) bool {
+	for i, candidate := range m.revokeCandidates {
+		if candidate == historyIndex {
+			m.revokeSelection = i
+			return true
+		}
+	}
+	return false
 }
 
 func (m *model) ensureTranscriptLoaded(conversationKey string) error {

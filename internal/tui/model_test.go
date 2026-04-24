@@ -509,6 +509,94 @@ func TestRevokeModeRendersMouseActionBar(t *testing.T) {
 	}
 }
 
+func TestModelMouseSelectsMessageInCopyMode(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 72, Height: 12})
+	uiModel = updated.(model)
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: "first",
+		at:   time.Date(2026, 4, 23, 21, 10, 0, 0, time.Local),
+	})
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "bob",
+		body: "second",
+		at:   time.Date(2026, 4, 23, 21, 10, 1, 0, time.Local),
+	})
+
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	uiModel = updated.(model)
+	lineRange := uiModel.renderedViewport.lineRanges[1]
+	clickY := viewportTopRow + lineRange[0] - uiModel.viewport.YOffset
+
+	updated, _ = uiModel.Update(tea.MouseMsg{X: 2, Y: clickY, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(tea.MouseMsg{X: 2, Y: clickY, Button: tea.MouseButtonNone, Action: tea.MouseActionRelease})
+	uiModel = updated.(model)
+
+	if got := uiModel.selectedCopyHistoryIndex(); got != 1 {
+		t.Fatalf("expected copy selection to move to history index 1, got %d", got)
+	}
+}
+
+func TestModelMouseSelectsEligibleMessageInRevokeMode(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 72, Height: 12})
+	uiModel = updated.(model)
+	uiModel.identityID = "identity-a"
+	uiModel.addHistoryEntry(historyEntry{
+		kind:           historyKindMessage,
+		messageID:      "mrevoke1",
+		from:           "alice",
+		authorIdentity: "identity-a",
+		body:           "older",
+		at:             time.Date(2026, 4, 23, 21, 11, 0, 0, time.Local),
+		outgoing:       true,
+		status:         transcript.StatusSent,
+	})
+	uiModel.addHistoryEntry(historyEntry{
+		kind:           historyKindMessage,
+		messageID:      "mrevoke2",
+		from:           "alice",
+		authorIdentity: "identity-a",
+		body:           "newer",
+		at:             time.Date(2026, 4, 23, 21, 11, 1, 0, time.Local),
+		outgoing:       true,
+		status:         transcript.StatusSent,
+	})
+
+	uiModel.enterRevokeMode()
+	lineRange := uiModel.renderedViewport.lineRanges[1]
+	clickY := viewportTopRow + lineRange[0] - uiModel.viewport.YOffset
+
+	updated, _ = uiModel.Update(tea.MouseMsg{X: 2, Y: clickY, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(tea.MouseMsg{X: 2, Y: clickY, Button: tea.MouseButtonNone, Action: tea.MouseActionRelease})
+	uiModel = updated.(model)
+
+	if got := uiModel.selectedRevokeHistoryIndex(); got != 1 {
+		t.Fatalf("expected revoke selection to move to history index 1, got %d", got)
+	}
+}
+
 func TestCtrlYCopiesSelectedMessageInCopyMode(t *testing.T) {
 	t.Parallel()
 
