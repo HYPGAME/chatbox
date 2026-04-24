@@ -640,7 +640,7 @@ func TestModelMouseCopyActionCopiesAndStaysInCopyMode(t *testing.T) {
 	}
 }
 
-func TestModelMouseQuoteActionQuotesAndExitsCopyMode(t *testing.T) {
+func TestModelMouseQuoteActionCreatesReplyDraftAndExitsCopyMode(t *testing.T) {
 	t.Parallel()
 
 	uiModel := newModel(modelOptions{
@@ -673,8 +673,14 @@ func TestModelMouseQuoteActionQuotesAndExitsCopyMode(t *testing.T) {
 	if uiModel.copyMode {
 		t.Fatal("expected quote action to exit copy mode")
 	}
-	if !strings.Contains(uiModel.input.Value(), "quote me") {
-		t.Fatalf("expected quoted input, got %q", uiModel.input.Value())
+	if uiModel.replyDraft == nil {
+		t.Fatal("expected mouse quote action to create a reply draft")
+	}
+	if uiModel.replyDraft.sender != "alice" || uiModel.replyDraft.preview != "quote me" {
+		t.Fatalf("unexpected reply draft after mouse quote: %#v", uiModel.replyDraft)
+	}
+	if got := uiModel.input.Value(); got != "" {
+		t.Fatalf("expected mouse quote action not to mutate input, got %q", got)
 	}
 }
 
@@ -1136,9 +1142,17 @@ func TestCopyModeEnterQuotesSelectedMessage(t *testing.T) {
 	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	uiModel = updated.(model)
 
-	want := "> alice [11:20] hello world\n"
-	if got := uiModel.input.Value(); got != want {
-		t.Fatalf("expected quote text %q, got %q", want, got)
+	if got := uiModel.input.Value(); got != "" {
+		t.Fatalf("expected quote action not to edit input, got %q", got)
+	}
+	if uiModel.replyDraft == nil {
+		t.Fatal("expected quote action to create a reply draft")
+	}
+	if uiModel.replyDraft.sender != "alice" || uiModel.replyDraft.preview != "hello world" {
+		t.Fatalf("unexpected reply draft: %#v", uiModel.replyDraft)
+	}
+	if !strings.Contains(stripANSI(uiModel.View()), "reply alice [11:20] hello world [x]") {
+		t.Fatalf("expected reply bar in view, got %q", stripANSI(uiModel.View()))
 	}
 	if uiModel.copyMode {
 		t.Fatal("expected quote insertion to exit copy mode")
@@ -1171,9 +1185,14 @@ func TestCopyModeEnterQuotesMultilineMessage(t *testing.T) {
 	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	uiModel = updated.(model)
 
-	want := "> alice [11:21] line one\n> line two\n"
-	if got := uiModel.input.Value(); got != want {
-		t.Fatalf("expected multiline quote text %q, got %q", want, got)
+	if uiModel.replyDraft == nil {
+		t.Fatal("expected multiline quote to create a reply draft")
+	}
+	if uiModel.replyDraft.preview != "line one" {
+		t.Fatalf("expected multiline quote preview to use the first line, got %#v", uiModel.replyDraft)
+	}
+	if got := uiModel.input.Value(); got != "" {
+		t.Fatalf("expected multiline quote not to edit input, got %q", got)
 	}
 }
 
@@ -1205,9 +1224,74 @@ func TestCopyModeEnterAppendsQuoteAfterExistingInput(t *testing.T) {
 	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	uiModel = updated.(model)
 
-	want := "draft reply\n> alice [11:22] hello world\n"
-	if got := uiModel.input.Value(); got != want {
-		t.Fatalf("expected appended quote text %q, got %q", want, got)
+	if got := uiModel.input.Value(); got != "draft reply" {
+		t.Fatalf("expected input to stay editable, got %q", got)
+	}
+	if uiModel.replyDraft == nil {
+		t.Fatal("expected quote action to create a reply draft")
+	}
+	if uiModel.replyDraft.sender != "alice" || uiModel.replyDraft.preview != "hello world" {
+		t.Fatalf("unexpected reply draft: %#v", uiModel.replyDraft)
+	}
+	if !strings.Contains(stripANSI(uiModel.View()), "reply alice [11:22] hello world [x]") {
+		t.Fatalf("expected reply bar after quoting, got %q", stripANSI(uiModel.View()))
+	}
+}
+
+func TestReplyDraftRendersSingleLineBarAboveInput(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	uiModel.width = 80
+	uiModel.height = 12
+	uiModel.replyDraft = &replyDraft{
+		targetMessageID: "msg-1",
+		sender:          "alice",
+		sentAt:          time.Date(2026, 4, 24, 11, 22, 0, 0, time.Local),
+		preview:         "hello world",
+	}
+	uiModel.resize()
+
+	view := stripANSI(uiModel.View())
+	if !strings.Contains(view, "reply alice [11:22] hello world [x]") {
+		t.Fatalf("expected reply bar in view, got %q", view)
+	}
+}
+
+func TestEscapeClearsReplyDraftInNormalMode(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	uiModel.width = 80
+	uiModel.height = 12
+	uiModel.replyDraft = &replyDraft{
+		targetMessageID: "msg-1",
+		sender:          "alice",
+		sentAt:          time.Date(2026, 4, 24, 11, 22, 0, 0, time.Local),
+		preview:         "hello world",
+	}
+	uiModel.resize()
+
+	updated, _ := uiModel.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	uiModel = updated.(model)
+
+	if uiModel.replyDraft != nil {
+		t.Fatalf("expected Esc to clear reply draft, got %#v", uiModel.replyDraft)
+	}
+	if strings.Contains(stripANSI(uiModel.View()), "reply alice [11:22]") {
+		t.Fatalf("expected reply bar to disappear, got %q", stripANSI(uiModel.View()))
 	}
 }
 

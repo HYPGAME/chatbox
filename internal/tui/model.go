@@ -186,6 +186,19 @@ type renderedActionBarState struct {
 	buttons []renderedActionButton
 }
 
+type replyDraft struct {
+	targetMessageID string
+	sender          string
+	sentAt          time.Time
+	preview         string
+}
+
+type renderedReplyBarState struct {
+	text       string
+	clearStart int
+	clearEnd   int
+}
+
 type mouseViewportPress struct {
 	x          int
 	y          int
@@ -275,6 +288,8 @@ type model struct {
 	statusNoticeIsError bool
 	renderedViewport    renderedViewportState
 	renderedActionBar   renderedActionBarState
+	replyDraft          *replyDraft
+	renderedReplyBar    renderedReplyBarState
 
 	revokeMode       bool
 	revokeCandidates []int
@@ -615,6 +630,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.copyMode {
 			return m.handleCopyModeKey(msg)
 		}
+		if msg.Type == tea.KeyEsc && m.clearReplyDraft() {
+			return m, nil
+		}
 		if msg.Paste {
 			if handledModel, handledCmd, handled := m.handleAttachmentPaste(msg); handled {
 				return handledModel, handledCmd
@@ -691,6 +709,9 @@ func (m model) View() string {
 	}
 	if suggestions := m.renderSlashCommandSuggestions(); suggestions != "" {
 		lines = append(lines, suggestions)
+	}
+	if replyBar := m.renderReplyBar(); replyBar != "" {
+		lines = append(lines, replyBar)
 	}
 	lines = append(lines, m.renderInputBox())
 	return strings.Join(lines, "\n")
@@ -1671,7 +1692,11 @@ func (m *model) resize() {
 	if strings.TrimSpace(m.buildRenderedActionBarState().text) != "" {
 		actionBarHeight = 1
 	}
-	viewportHeight := m.height - inputHeight - 1 - suggestionHeight - actionBarHeight
+	replyBarHeight := 0
+	if strings.TrimSpace(m.buildRenderedReplyBarState().text) != "" {
+		replyBarHeight = 1
+	}
+	viewportHeight := m.height - inputHeight - 1 - suggestionHeight - actionBarHeight - replyBarHeight
 	if viewportHeight < 5 {
 		viewportHeight = 5
 	}
@@ -1750,6 +1775,69 @@ func (m model) buildRenderedActionBarState() renderedActionBarState {
 	}
 	state.text = strings.Join(parts, " ")
 	return state
+}
+
+func truncateRunes(text string, limit int) string {
+	runes := []rune(strings.TrimSpace(text))
+	if len(runes) <= limit {
+		return string(runes)
+	}
+	return string(runes[:limit]) + "..."
+}
+
+func buildReplyPreview(entry historyEntry) string {
+	body := strings.ReplaceAll(renderedMessageBody(entry), "\r\n", "\n")
+	line := strings.TrimSpace(strings.Split(body, "\n")[0])
+	if line == "" {
+		return "消息"
+	}
+	return truncateRunes(line, 48)
+}
+
+func (m *model) setReplyDraft(entry historyEntry) {
+	draft := replyDraft{
+		targetMessageID: strings.TrimSpace(entry.messageID),
+		sender:          strings.TrimSpace(entry.from),
+		sentAt:          entry.at,
+		preview:         buildReplyPreview(entry),
+	}
+	m.replyDraft = &draft
+	m.resize()
+}
+
+func (m *model) clearReplyDraft() bool {
+	if m.replyDraft == nil {
+		return false
+	}
+	m.replyDraft = nil
+	m.resize()
+	return true
+}
+
+func (m model) buildRenderedReplyBarState() renderedReplyBarState {
+	if m.uiMode != uiModeTUI || m.replyDraft == nil {
+		return renderedReplyBarState{}
+	}
+	label := fmt.Sprintf(
+		"reply %s [%s] %s [x]",
+		m.replyDraft.sender,
+		m.replyDraft.sentAt.Local().Format("15:04"),
+		m.replyDraft.preview,
+	)
+	clearStart := strings.LastIndex(label, "[x]")
+	return renderedReplyBarState{
+		text:       label,
+		clearStart: clearStart,
+		clearEnd:   clearStart + len("[x]"),
+	}
+}
+
+func (m model) renderReplyBar() string {
+	state := m.buildRenderedReplyBarState()
+	if strings.TrimSpace(state.text) == "" {
+		return ""
+	}
+	return inputHintStyle.Render(state.text)
 }
 
 func (m model) renderActionBar() string {
@@ -2164,17 +2252,7 @@ func (m *model) quoteSelectedMessage() {
 		m.setStatusNotice("no message to copy", true)
 		return
 	}
-	quote := formatQuotedReply(m.history[index])
-	current := m.input.Value()
-	switch {
-	case current == "":
-		m.input.SetValue(quote)
-	case strings.HasSuffix(current, "\n"):
-		m.input.SetValue(current + quote)
-	default:
-		m.input.SetValue(current + "\n" + quote)
-	}
-	m.input.SetCursor(len([]rune(m.input.Value())))
+	m.setReplyDraft(m.history[index])
 	m.exitCopyMode()
 }
 
@@ -2238,6 +2316,7 @@ func (m *model) refreshViewport(stickToBottom bool) {
 	state := m.buildRenderedViewportState()
 	m.renderedViewport = state
 	m.renderedActionBar = m.buildRenderedActionBarState()
+	m.renderedReplyBar = m.buildRenderedReplyBarState()
 	lines := make([]string, 0, len(state.lines))
 	for _, line := range state.lines {
 		lines = append(lines, line.text)
