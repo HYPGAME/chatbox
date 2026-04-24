@@ -315,7 +315,7 @@ var (
 	separatorStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#59636E"))
 	attachmentHoverStyle = lipgloss.NewStyle().Background(lipgloss.Color("#2B343C")).Underline(true)
 	attachmentClickStyle = lipgloss.NewStyle().Background(lipgloss.Color("#364049")).Underline(true)
-	compactReplyPattern  = regexp.MustCompile(`^> .+ \[[0-9]{2}:[0-9]{2}\] .+$`)
+	compactReplyPattern  = regexp.MustCompile(`^> (.+) \[([0-9]{2}:[0-9]{2})\] (.+)$`)
 
 	senderPalette = []lipgloss.Color{
 		"#5C7993",
@@ -2247,18 +2247,34 @@ func formatReplySubmission(draft *replyDraft, body string) string {
 	)
 }
 
-func parseCompactReply(body string) (header string, replyBody string, ok bool) {
+type compactReply struct {
+	sender  string
+	sentAt  string
+	summary string
+	body    string
+}
+
+func parseCompactReply(body string) (compactReply, bool) {
 	body = strings.ReplaceAll(body, "\r\n", "\n")
 	lines := strings.SplitN(body, "\n", 2)
 	if len(lines) != 2 {
-		return "", "", false
+		return compactReply{}, false
 	}
 	first := strings.TrimSpace(lines[0])
-	second := strings.TrimSpace(lines[1])
-	if second == "" || !compactReplyPattern.MatchString(first) {
-		return "", "", false
+	replyBody := strings.TrimSpace(lines[1])
+	if replyBody == "" {
+		return compactReply{}, false
 	}
-	return strings.TrimPrefix(first, "> "), second, true
+	matches := compactReplyPattern.FindStringSubmatch(first)
+	if matches == nil {
+		return compactReply{}, false
+	}
+	return compactReply{
+		sender:  strings.TrimSpace(matches[1]),
+		sentAt:  matches[2],
+		summary: strings.TrimSpace(matches[3]),
+		body:    replyBody,
+	}, true
 }
 
 func (m *model) quoteSelectedMessage() {
@@ -2970,15 +2986,13 @@ func renderTUIEntryWithFeedback(entry historyEntry, selected bool, feedback atta
 		timestampSegmentStyle, senderSegmentStyle, textSegmentStyle := attachmentFeedbackStyles(feedback, senderMessageStyle(entry.from))
 		coloredLabel := senderSegmentStyle.Render(entry.from)
 		coloredTimestamp := timestampSegmentStyle.Render(fmt.Sprintf("[%s]", timestamp))
-		separator := textSegmentStyle.Render(": ")
-		bodyText := renderedMessageBody(entry)
+		header := coloredTimestamp + textSegmentStyle.Render(" ") + coloredLabel
+		line := header + textSegmentStyle.Render(": ") + textSegmentStyle.Render(renderedMessageBody(entry)+statusSuffix)
 		if !entry.revoked {
-			if compact, ok := renderCompactReplyBody(entry.body); ok {
-				bodyText = compact
+			if compact, ok := renderCompactReplyBody(entry.body, senderSegmentStyle, textSegmentStyle, statusSuffix); ok {
+				line = header + textSegmentStyle.Render(":") + "\n" + compact
 			}
 		}
-		body := textSegmentStyle.Render(bodyText + statusSuffix)
-		line := coloredTimestamp + textSegmentStyle.Render(" ") + coloredLabel + separator + body
 		if selected {
 			return inputHintStyle.Render("> ") + line
 		}
@@ -2986,12 +3000,25 @@ func renderTUIEntryWithFeedback(entry historyEntry, selected bool, feedback atta
 	}
 }
 
-func renderCompactReplyBody(body string) (string, bool) {
-	header, replyBody, ok := parseCompactReply(body)
+func renderCompactReplyBody(body string, senderStyle lipgloss.Style, textStyle lipgloss.Style, statusSuffix string) (string, bool) {
+	reply, ok := parseCompactReply(body)
 	if !ok {
 		return "", false
 	}
-	return fmt.Sprintf("reply %s\n%s", header, replyBody), true
+	bar := replyCardBarStyle().Render("  │ ")
+	meta := bar + senderStyle.Render(reply.sender) + replyCardMetaStyle().Render(" · "+reply.sentAt)
+	summary := bar + textStyle.Render(reply.summary)
+	replyBody := textStyle.Render(appendStatusSuffixToLastLine(reply.body, statusSuffix))
+	return strings.Join([]string{meta, summary, replyBody}, "\n"), true
+}
+
+func appendStatusSuffixToLastLine(body string, statusSuffix string) string {
+	if statusSuffix == "" {
+		return body
+	}
+	lines := strings.Split(body, "\n")
+	lines[len(lines)-1] += statusSuffix
+	return strings.Join(lines, "\n")
 }
 
 func attachmentFeedbackStyles(feedback attachmentFeedbackState, senderStyle lipgloss.Style) (lipgloss.Style, lipgloss.Style, lipgloss.Style) {
@@ -3069,6 +3096,14 @@ func systemLineStyle() lipgloss.Style {
 
 func historyErrorStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color("#8A666A"))
+}
+
+func replyCardBarStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#5F6871"))
+}
+
+func replyCardMetaStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#7A8088"))
 }
 
 func senderMessageStyle(sender string) lipgloss.Style {

@@ -1676,25 +1676,108 @@ func TestRenderTUIEntryUsesCompactTime(t *testing.T) {
 	}
 }
 
-func TestRenderTUIEntryShowsCompactReplyPreview(t *testing.T) {
+func TestRenderTUIEntryShowsReplyCard(t *testing.T) {
 	t.Parallel()
 
 	entry := historyEntry{
 		kind: historyKindMessage,
 		from: "bob",
 		body: "> alice [11:22] hello world...\n收到，我晚点处理",
-		at:   time.Date(2026, 4, 24, 11, 23, 0, 0, time.Local),
+		at:   time.Date(2026, 4, 24, 15, 4, 0, 0, time.Local),
 	}
 
 	got := stripANSI(renderTUIEntry(entry, false))
-	if !strings.Contains(got, "reply alice [11:22] hello world...") {
-		t.Fatalf("expected compact reply header, got %q", got)
+	if !strings.Contains(got, "[15:04] bob:") {
+		t.Fatalf("expected message header, got %q", got)
+	}
+	if !strings.Contains(got, "│ alice · 11:22") {
+		t.Fatalf("expected reply card meta line, got %q", got)
+	}
+	if !strings.Contains(got, "│ hello world...") {
+		t.Fatalf("expected reply card summary line, got %q", got)
 	}
 	if !strings.Contains(got, "收到，我晚点处理") {
-		t.Fatalf("expected reply body in view, got %q", got)
+		t.Fatalf("expected reply body line, got %q", got)
 	}
-	if strings.Contains(got, "\n\n") {
-		t.Fatalf("expected no extra blank line, got %q", got)
+}
+
+func TestRenderTUIEntryKeepsReplyCardAboveBodyWithoutBlankLine(t *testing.T) {
+	t.Parallel()
+
+	entry := historyEntry{
+		kind: historyKindMessage,
+		from: "bob",
+		body: "> alice [11:22] hello world...\n收到，我晚点处理",
+		at:   time.Date(2026, 4, 24, 15, 4, 0, 0, time.Local),
+	}
+
+	lines := strings.Split(stripANSI(renderTUIEntry(entry, false)), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("expected 4 rendered lines, got %#v", lines)
+	}
+	if lines[0] != "[15:04] bob:" {
+		t.Fatalf("expected header line, got %#v", lines)
+	}
+	if lines[1] != "  │ alice · 11:22" {
+		t.Fatalf("expected meta line directly under header, got %#v", lines)
+	}
+	if lines[2] != "  │ hello world..." {
+		t.Fatalf("expected summary line directly under meta, got %#v", lines)
+	}
+	if lines[3] != "收到，我晚点处理" {
+		t.Fatalf("expected body directly under card, got %#v", lines)
+	}
+}
+
+func TestRenderTUIEntryShowsAttachmentReplyCard(t *testing.T) {
+	t.Parallel()
+
+	entry := historyEntry{
+		kind: historyKindMessage,
+		from: "bob",
+		body: "> alice [11:22] [图片] cat.gif\n看这个",
+		at:   time.Date(2026, 4, 24, 15, 4, 0, 0, time.Local),
+	}
+
+	got := stripANSI(renderTUIEntry(entry, false))
+	if !strings.Contains(got, "│ alice · 11:22") || !strings.Contains(got, "│ [图片] cat.gif") {
+		t.Fatalf("expected attachment reply card, got %q", got)
+	}
+}
+
+func TestRenderTUIEntryShowsRevokedReplySummaryCard(t *testing.T) {
+	t.Parallel()
+
+	entry := historyEntry{
+		kind: historyKindMessage,
+		from: "bob",
+		body: "> alice [11:22] 已撤回一条消息\n收到",
+		at:   time.Date(2026, 4, 24, 15, 4, 0, 0, time.Local),
+	}
+
+	got := stripANSI(renderTUIEntry(entry, false))
+	if !strings.Contains(got, "│ alice · 11:22") || !strings.Contains(got, "│ 已撤回一条消息") {
+		t.Fatalf("expected revoked reply summary card, got %q", got)
+	}
+}
+
+func TestRenderTUIEntryDoesNotLeakRevokedReplyContent(t *testing.T) {
+	t.Parallel()
+
+	entry := historyEntry{
+		kind:    historyKindMessage,
+		from:    "bob",
+		body:    "> alice [11:22] hello world...\n收到，我晚点处理",
+		at:      time.Date(2026, 4, 24, 15, 4, 0, 0, time.Local),
+		revoked: true,
+	}
+
+	got := stripANSI(renderTUIEntry(entry, false))
+	if strings.Contains(got, "alice · 11:22") || strings.Contains(got, "hello world...") {
+		t.Fatalf("expected revoked message not to leak reply preview, got %q", got)
+	}
+	if !strings.Contains(got, "已撤回一条消息") {
+		t.Fatalf("expected revoked text, got %q", got)
 	}
 }
 
