@@ -597,6 +597,132 @@ func TestModelMouseSelectsEligibleMessageInRevokeMode(t *testing.T) {
 	}
 }
 
+func TestModelMouseCopyActionCopiesAndStaysInCopyMode(t *testing.T) {
+	t.Parallel()
+
+	var copied string
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	uiModel.clipboardWriter = func(text string) error {
+		copied = text
+		return nil
+	}
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 72, Height: 12})
+	uiModel = updated.(model)
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: "copy me",
+		at:   time.Date(2026, 4, 23, 21, 20, 0, 0, time.Local),
+	})
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	uiModel = updated.(model)
+
+	actionBar := uiModel.buildRenderedActionBarState()
+	copyX := actionBar.buttons[0].startX + 1
+	clickY := viewportTopRow + uiModel.viewport.Height
+
+	updated, _ = uiModel.Update(tea.MouseMsg{X: copyX, Y: clickY, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(tea.MouseMsg{X: copyX, Y: clickY, Button: tea.MouseButtonNone, Action: tea.MouseActionRelease})
+	uiModel = updated.(model)
+
+	if !strings.Contains(copied, "copy me") {
+		t.Fatalf("expected copied text, got %q", copied)
+	}
+	if !uiModel.copyMode {
+		t.Fatal("expected copy mode to remain active")
+	}
+}
+
+func TestModelMouseQuoteActionQuotesAndExitsCopyMode(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 72, Height: 12})
+	uiModel = updated.(model)
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: "quote me",
+		at:   time.Date(2026, 4, 23, 21, 21, 0, 0, time.Local),
+	})
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	uiModel = updated.(model)
+
+	actionBar := uiModel.buildRenderedActionBarState()
+	quoteX := actionBar.buttons[1].startX + 1
+	clickY := viewportTopRow + uiModel.viewport.Height
+
+	updated, _ = uiModel.Update(tea.MouseMsg{X: quoteX, Y: clickY, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(tea.MouseMsg{X: quoteX, Y: clickY, Button: tea.MouseButtonNone, Action: tea.MouseActionRelease})
+	uiModel = updated.(model)
+
+	if uiModel.copyMode {
+		t.Fatal("expected quote action to exit copy mode")
+	}
+	if !strings.Contains(uiModel.input.Value(), "quote me") {
+		t.Fatalf("expected quoted input, got %q", uiModel.input.Value())
+	}
+}
+
+func TestModelMouseRevokeActionConfirmsAndExits(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeSession{peerName: "host", localName: "alice"}
+	uiModel := newModel(modelOptions{
+		mode:    "join",
+		uiMode:  uiModeTUI,
+		session: fake,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	uiModel.identityID = "identity-a"
+	uiModel.roomAuthorization = historymeta.Record{RoomKey: "room-key", IdentityID: "identity-a"}
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 72, Height: 12})
+	uiModel = updated.(model)
+	uiModel.addHistoryEntry(historyEntry{
+		kind:           historyKindMessage,
+		messageID:      "m_revoke_action",
+		from:           "alice",
+		authorIdentity: "identity-a",
+		body:           "revoke me",
+		at:             time.Date(2026, 4, 23, 21, 22, 0, 0, time.Local),
+		outgoing:       true,
+		status:         transcript.StatusSent,
+	})
+	uiModel.enterRevokeMode()
+
+	actionBar := uiModel.buildRenderedActionBarState()
+	revokeX := actionBar.buttons[0].startX + 1
+	clickY := viewportTopRow + uiModel.viewport.Height
+
+	updated, _ = uiModel.Update(tea.MouseMsg{X: revokeX, Y: clickY, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(tea.MouseMsg{X: revokeX, Y: clickY, Button: tea.MouseButtonNone, Action: tea.MouseActionRelease})
+	uiModel = updated.(model)
+
+	if uiModel.revokeMode {
+		t.Fatal("expected revoke action to exit revoke mode")
+	}
+	if len(fake.sent) == 0 || !room.IsRevokeControl(fake.sent[len(fake.sent)-1].Body) {
+		t.Fatalf("expected revoke control message, got %#v", fake.sent)
+	}
+}
+
 func TestCtrlYCopiesSelectedMessageInCopyMode(t *testing.T) {
 	t.Parallel()
 

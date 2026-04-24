@@ -187,8 +187,9 @@ type renderedActionBarState struct {
 }
 
 type mouseViewportPress struct {
-	x int
-	y int
+	x          int
+	y          int
+	inViewport bool
 }
 
 type attachmentFeedbackState int
@@ -2234,6 +2235,7 @@ func (m *model) refreshViewport(stickToBottom bool) {
 	offset := m.viewport.YOffset
 	state := m.buildRenderedViewportState()
 	m.renderedViewport = state
+	m.renderedActionBar = m.buildRenderedActionBarState()
 	lines := make([]string, 0, len(state.lines))
 	for _, line := range state.lines {
 		lines = append(lines, line.text)
@@ -2249,15 +2251,17 @@ func (m *model) refreshViewport(stickToBottom bool) {
 func (m *model) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 	switch msg.Action {
 	case tea.MouseActionPress:
-		if msg.Button == tea.MouseButtonLeft && m.isWithinViewport(msg.Y) {
-			m.updateHoveredHistoryIndex(msg.Y)
-			m.pendingViewportPress = &mouseViewportPress{x: msg.X, y: msg.Y}
+		if msg.Button == tea.MouseButtonLeft && (m.isWithinViewport(msg.Y) || m.isWithinActionBar(msg.Y)) {
+			if m.isWithinViewport(msg.Y) {
+				m.updateHoveredHistoryIndex(msg.Y)
+			}
+			m.pendingViewportPress = &mouseViewportPress{x: msg.X, y: msg.Y, inViewport: m.isWithinViewport(msg.Y)}
 			m.draggingViewport = false
 			m.lastMouseY = msg.Y
 			return true, nil
 		}
 	case tea.MouseActionMotion:
-		if m.pendingViewportPress != nil && (msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone) {
+		if m.pendingViewportPress != nil && m.pendingViewportPress.inViewport && (msg.Button == tea.MouseButtonLeft || msg.Button == tea.MouseButtonNone) {
 			if !m.draggingViewport && absInt(msg.Y-m.pendingViewportPress.y) > 1 {
 				m.draggingViewport = true
 			}
@@ -2285,6 +2289,11 @@ func (m *model) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 			if wasDragging {
 				return true, nil
 			}
+			if action, ok := m.clickedActionBarAction(msg.X, msg.Y); ok {
+				nextModel, cmd := m.handleActionBarAction(action)
+				*m = nextModel.(model)
+				return true, cmd
+			}
 			historyIndex := m.clickedHistoryIndex(msg.Y)
 			if m.copyMode {
 				if historyIndex >= 0 && m.setCopySelectionByHistoryIndex(historyIndex) {
@@ -2310,6 +2319,26 @@ func (m *model) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 		}
 	}
 	return false, nil
+}
+
+func (m model) actionBarRow() int {
+	return viewportTopRow + m.viewport.Height
+}
+
+func (m model) isWithinActionBar(mouseY int) bool {
+	return strings.TrimSpace(m.renderedActionBar.text) != "" && mouseY == m.actionBarRow()
+}
+
+func (m model) clickedActionBarAction(mouseX, mouseY int) (actionBarAction, bool) {
+	if !m.isWithinActionBar(mouseY) {
+		return "", false
+	}
+	for _, button := range m.renderedActionBar.buttons {
+		if mouseX >= button.startX && mouseX < button.endX {
+			return button.action, true
+		}
+	}
+	return "", false
 }
 
 func (m model) isWithinViewport(mouseY int) bool {
@@ -2373,6 +2402,46 @@ func absInt(value int) int {
 		return -value
 	}
 	return value
+}
+
+func (m *model) handleActionBarAction(action actionBarAction) (tea.Model, tea.Cmd) {
+	switch action {
+	case actionBarCopy:
+		m.copySelectedMessage()
+		return *m, nil
+	case actionBarQuote:
+		m.quoteSelectedMessage()
+		m.resize()
+		m.refreshViewport(false)
+		return *m, nil
+	case actionBarOpen:
+		msg, ok := m.selectedAttachmentMessage()
+		if !ok {
+			m.setStatusNotice("selected message is not an attachment", true)
+			return *m, nil
+		}
+		return m.startOpenCommand(msg.ID)
+	case actionBarDownload:
+		msg, ok := m.selectedAttachmentMessage()
+		if !ok {
+			m.setStatusNotice("selected message is not an attachment", true)
+			return *m, nil
+		}
+		return m.startDownloadCommand(msg.ID, "")
+	case actionBarRevoke:
+		return m.confirmSelectedRevoke()
+	case actionBarCancel:
+		if m.copyMode {
+			m.exitCopyMode()
+		} else if m.revokeMode {
+			m.exitRevokeMode()
+		}
+		m.resize()
+		m.refreshViewport(false)
+		return *m, nil
+	default:
+		return *m, nil
+	}
 }
 
 func (m *model) setCopySelectionByHistoryIndex(historyIndex int) bool {
