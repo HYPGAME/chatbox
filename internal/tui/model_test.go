@@ -412,6 +412,103 @@ func TestCtrlYEntersCopyModeAndEscExits(t *testing.T) {
 	}
 }
 
+func TestCopyModeRendersMouseActionBarForPlainMessage(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	uiModel.width = 80
+	uiModel.height = 12
+	uiModel.resize()
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: "copy me",
+		at:   time.Date(2026, 4, 23, 21, 0, 0, 0, time.Local),
+	})
+
+	updated, _ := uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	uiModel = updated.(model)
+
+	view := stripANSI(uiModel.View())
+	if !strings.Contains(view, "[copy] [quote] [cancel]") {
+		t.Fatalf("expected copy-mode action bar, got %q", view)
+	}
+}
+
+func TestCopyModeRendersMouseActionBarForAttachmentMessage(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	uiModel.width = 80
+	uiModel.height = 12
+	uiModel.resize()
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: attachment.FormatChatMessage(attachment.ChatMessage{
+			Version: 1,
+			ID:      "att_plan1",
+			Kind:    attachment.KindImage,
+			Name:    "cat.gif",
+			Size:    6,
+		}),
+		at: time.Date(2026, 4, 23, 21, 1, 0, 0, time.Local),
+	})
+
+	updated, _ := uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	uiModel = updated.(model)
+
+	view := stripANSI(uiModel.View())
+	if !strings.Contains(view, "[copy] [quote] [open] [download] [cancel]") {
+		t.Fatalf("expected attachment action bar, got %q", view)
+	}
+}
+
+func TestRevokeModeRendersMouseActionBar(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	uiModel.identityID = "identity-a"
+	uiModel.width = 80
+	uiModel.height = 12
+	uiModel.resize()
+	uiModel.addHistoryEntry(historyEntry{
+		kind:           historyKindMessage,
+		messageID:      "m-plan-1",
+		from:           "alice",
+		authorIdentity: "identity-a",
+		body:           "revoke me",
+		at:             time.Date(2026, 4, 23, 21, 2, 0, 0, time.Local),
+		outgoing:       true,
+		status:         transcript.StatusSent,
+	})
+
+	uiModel.enterRevokeMode()
+
+	view := stripANSI(uiModel.View())
+	if !strings.Contains(view, "[revoke] [cancel]") {
+		t.Fatalf("expected revoke-mode action bar, got %q", view)
+	}
+}
+
 func TestCtrlYCopiesSelectedMessageInCopyMode(t *testing.T) {
 	t.Parallel()
 

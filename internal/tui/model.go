@@ -164,6 +164,28 @@ type renderedViewportState struct {
 	lineRanges map[int][2]int
 }
 
+type actionBarAction string
+
+const (
+	actionBarCopy     actionBarAction = "copy"
+	actionBarQuote    actionBarAction = "quote"
+	actionBarOpen     actionBarAction = "open"
+	actionBarDownload actionBarAction = "download"
+	actionBarRevoke   actionBarAction = "revoke"
+	actionBarCancel   actionBarAction = "cancel"
+)
+
+type renderedActionButton struct {
+	action actionBarAction
+	startX int
+	endX   int
+}
+
+type renderedActionBarState struct {
+	text    string
+	buttons []renderedActionButton
+}
+
 type mouseViewportPress struct {
 	x int
 	y int
@@ -251,6 +273,7 @@ type model struct {
 	statusNotice        string
 	statusNoticeIsError bool
 	renderedViewport    renderedViewportState
+	renderedActionBar   renderedActionBarState
 
 	revokeMode       bool
 	revokeCandidates []int
@@ -662,6 +685,9 @@ func (m model) View() string {
 
 	lines := []string{m.renderStatusBar()}
 	lines = append(lines, m.viewport.View())
+	if actionBar := m.renderActionBar(); actionBar != "" {
+		lines = append(lines, actionBar)
+	}
 	if suggestions := m.renderSlashCommandSuggestions(); suggestions != "" {
 		lines = append(lines, suggestions)
 	}
@@ -1638,7 +1664,11 @@ func (m *model) resize() {
 	if len(m.activeSlashCommandSuggestions()) > 0 {
 		suggestionHeight = len(m.activeSlashCommandSuggestions()) + 2
 	}
-	viewportHeight := m.height - inputHeight - 1 - suggestionHeight
+	actionBarHeight := 0
+	if strings.TrimSpace(m.buildRenderedActionBarState().text) != "" {
+		actionBarHeight = 1
+	}
+	viewportHeight := m.height - inputHeight - 1 - suggestionHeight - actionBarHeight
 	if viewportHeight < 5 {
 		viewportHeight = 5
 	}
@@ -1681,6 +1711,50 @@ func (m model) renderSlashCommandSuggestions() string {
 		lines = append(lines, slashSuggestionStyle.Render(fmt.Sprintf("%s -- %s", suggestion.command, suggestion.description)))
 	}
 	return slashPanelStyle.Width(max(20, m.viewport.Width-4)).Render(strings.Join(lines, "\n"))
+}
+
+func (m model) buildRenderedActionBarState() renderedActionBarState {
+	actions := make([]actionBarAction, 0, 5)
+	switch {
+	case m.copyMode:
+		actions = append(actions, actionBarCopy, actionBarQuote)
+		if _, ok := m.selectedAttachmentMessage(); ok {
+			actions = append(actions, actionBarOpen, actionBarDownload)
+		}
+		actions = append(actions, actionBarCancel)
+	case m.revokeMode:
+		actions = append(actions, actionBarRevoke, actionBarCancel)
+	default:
+		return renderedActionBarState{}
+	}
+
+	state := renderedActionBarState{}
+	parts := make([]string, 0, len(actions))
+	cursor := 0
+	for _, action := range actions {
+		label := fmt.Sprintf("[%s]", string(action))
+		if len(parts) > 0 {
+			cursor++
+		}
+		start := cursor
+		cursor += lipgloss.Width(label)
+		state.buttons = append(state.buttons, renderedActionButton{
+			action: action,
+			startX: start,
+			endX:   cursor,
+		})
+		parts = append(parts, label)
+	}
+	state.text = strings.Join(parts, " ")
+	return state
+}
+
+func (m model) renderActionBar() string {
+	state := m.buildRenderedActionBarState()
+	if strings.TrimSpace(state.text) == "" {
+		return ""
+	}
+	return inputHintStyle.Render(state.text)
 }
 
 func (m *model) addSystemEntry(text string) {
