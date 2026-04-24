@@ -295,6 +295,81 @@ func TestModelSendsTypedMessageOnEnter(t *testing.T) {
 	}
 }
 
+func TestSubmitReplyDraftFormatsOutgoingBody(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeSession{peerName: "host", localName: "bob"}
+	uiModel := newModel(modelOptions{
+		mode:    "join",
+		session: fake,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	uiModel = updated.(model)
+	uiModel.replyDraft = &replyDraft{
+		targetMessageID: "msg-1",
+		sender:          "alice",
+		sentAt:          time.Date(2026, 4, 24, 11, 22, 0, 0, time.Local),
+		preview:         "hello world...",
+	}
+	uiModel.input.SetValue("收到，我晚点处理")
+	uiModel.input.SetCursor(len([]rune(uiModel.input.Value())))
+
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	uiModel = updated.(model)
+
+	if len(fake.sent) != 1 {
+		t.Fatalf("expected one sent reply message, got %#v", fake.sent)
+	}
+	want := "> alice [11:22] hello world...\n收到，我晚点处理"
+	if fake.sent[0].Body != want {
+		t.Fatalf("expected reply body %q, got %q", want, fake.sent[0].Body)
+	}
+	if uiModel.replyDraft != nil {
+		t.Fatalf("expected reply draft to clear after send, got %#v", uiModel.replyDraft)
+	}
+}
+
+func TestSubmitReplyDraftRequiresNonEmptyBody(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeSession{peerName: "host", localName: "bob"}
+	uiModel := newModel(modelOptions{
+		mode:    "join",
+		session: fake,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	uiModel = updated.(model)
+	uiModel.replyDraft = &replyDraft{
+		targetMessageID: "msg-1",
+		sender:          "alice",
+		sentAt:          time.Date(2026, 4, 24, 11, 22, 0, 0, time.Local),
+		preview:         "hello world",
+	}
+	uiModel.input.SetValue("   ")
+	uiModel.input.SetCursor(3)
+
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	uiModel = updated.(model)
+
+	if len(fake.sent) != 0 {
+		t.Fatalf("expected empty reply body not to send, got %#v", fake.sent)
+	}
+	if uiModel.replyDraft == nil {
+		t.Fatal("expected reply draft to remain so the user can keep editing")
+	}
+	if !strings.Contains(stripANSI(uiModel.View()), "reply body required") {
+		t.Fatalf("expected reply-body notice, got %q", stripANSI(uiModel.View()))
+	}
+}
+
 func TestCopySelectionSkipsSystemAndErrorEntries(t *testing.T) {
 	t.Parallel()
 
@@ -1497,6 +1572,28 @@ func TestRenderTUIEntryUsesCompactTime(t *testing.T) {
 
 	if got := stripANSI(renderTUIEntry(entry, false)); got != "[15:10] alice: hello" {
 		t.Fatalf("expected compact TUI message timestamp, got %q", got)
+	}
+}
+
+func TestRenderTUIEntryShowsCompactReplyPreview(t *testing.T) {
+	t.Parallel()
+
+	entry := historyEntry{
+		kind: historyKindMessage,
+		from: "bob",
+		body: "> alice [11:22] hello world...\n收到，我晚点处理",
+		at:   time.Date(2026, 4, 24, 11, 23, 0, 0, time.Local),
+	}
+
+	got := stripANSI(renderTUIEntry(entry, false))
+	if !strings.Contains(got, "reply alice [11:22] hello world...") {
+		t.Fatalf("expected compact reply header, got %q", got)
+	}
+	if !strings.Contains(got, "收到，我晚点处理") {
+		t.Fatalf("expected reply body in view, got %q", got)
+	}
+	if strings.Contains(got, "\n\n") {
+		t.Fatalf("expected no extra blank line, got %q", got)
 	}
 }
 

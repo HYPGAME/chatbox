@@ -7,6 +7,7 @@ import (
 	"hash/fnv"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -314,6 +315,7 @@ var (
 	separatorStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#59636E"))
 	attachmentHoverStyle = lipgloss.NewStyle().Background(lipgloss.Color("#2B343C")).Underline(true)
 	attachmentClickStyle = lipgloss.NewStyle().Background(lipgloss.Color("#364049")).Underline(true)
+	compactReplyPattern  = regexp.MustCompile(`^> .+ \[[0-9]{2}:[0-9]{2}\] .+$`)
 
 	senderPalette = []lipgloss.Color{
 		"#5C7993",
@@ -658,13 +660,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		case tea.KeyEnter:
-			text := strings.TrimSpace(m.input.Value())
-			m.input.Reset()
-			m.resize()
-			if text == "" {
-				return m, nil
-			}
-			return m.handleSubmit(text)
+			return m.submitInput()
 		case tea.KeyPgUp:
 			m.viewport.PageUp()
 			return m, nil
@@ -2227,23 +2223,31 @@ func (m *model) copySelectedMessage() {
 	m.setStatusNotice("copied message", false)
 }
 
-func formatQuotedReply(entry historyEntry) string {
-	body := strings.ReplaceAll(renderedMessageBody(entry), "\r\n", "\n")
-	lines := strings.Split(body, "\n")
-	firstLine := ""
-	if len(lines) > 0 {
-		firstLine = lines[0]
+func formatReplySubmission(draft *replyDraft, body string) string {
+	if draft == nil {
+		return strings.TrimSpace(body)
 	}
-	firstQuotedLine := fmt.Sprintf("> %s [%s]", entry.from, entry.at.Local().Format("15:04"))
-	if firstLine != "" {
-		firstQuotedLine += " " + firstLine
+	return fmt.Sprintf(
+		"> %s [%s] %s\n%s",
+		draft.sender,
+		draft.sentAt.Local().Format("15:04"),
+		draft.preview,
+		strings.TrimSpace(body),
+	)
+}
+
+func parseCompactReply(body string) (header string, replyBody string, ok bool) {
+	body = strings.ReplaceAll(body, "\r\n", "\n")
+	lines := strings.SplitN(body, "\n", 2)
+	if len(lines) != 2 {
+		return "", "", false
 	}
-	quoted := make([]string, 0, len(lines))
-	quoted = append(quoted, firstQuotedLine)
-	for _, line := range lines[1:] {
-		quoted = append(quoted, "> "+line)
+	first := strings.TrimSpace(lines[0])
+	second := strings.TrimSpace(lines[1])
+	if second == "" || !compactReplyPattern.MatchString(first) {
+		return "", "", false
 	}
-	return strings.Join(quoted, "\n") + "\n"
+	return strings.TrimPrefix(first, "> "), second, true
 }
 
 func (m *model) quoteSelectedMessage() {
@@ -2254,6 +2258,28 @@ func (m *model) quoteSelectedMessage() {
 	}
 	m.setReplyDraft(m.history[index])
 	m.exitCopyMode()
+}
+
+func (m *model) submitInput() (tea.Model, tea.Cmd) {
+	raw := m.input.Value()
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		if m.replyDraft != nil {
+			m.setStatusNotice("reply body required", true)
+			return *m, nil
+		}
+		m.input.Reset()
+		m.resize()
+		return *m, nil
+	}
+
+	text := formatReplySubmission(m.replyDraft, raw)
+	if m.replyDraft != nil {
+		m.replyDraft = nil
+	}
+	m.input.Reset()
+	m.resize()
+	return m.handleSubmit(text)
 }
 
 func (m model) buildRenderedViewportState() renderedViewportState {
@@ -2908,13 +2934,27 @@ func renderTUIEntryWithFeedback(entry historyEntry, selected bool, feedback atta
 		coloredLabel := senderSegmentStyle.Render(entry.from)
 		coloredTimestamp := timestampSegmentStyle.Render(fmt.Sprintf("[%s]", timestamp))
 		separator := textSegmentStyle.Render(": ")
-		body := textSegmentStyle.Render(renderedMessageBody(entry) + statusSuffix)
+		bodyText := renderedMessageBody(entry)
+		if !entry.revoked {
+			if compact, ok := renderCompactReplyBody(entry.body); ok {
+				bodyText = compact
+			}
+		}
+		body := textSegmentStyle.Render(bodyText + statusSuffix)
 		line := coloredTimestamp + textSegmentStyle.Render(" ") + coloredLabel + separator + body
 		if selected {
 			return inputHintStyle.Render("> ") + line
 		}
 		return line
 	}
+}
+
+func renderCompactReplyBody(body string) (string, bool) {
+	header, replyBody, ok := parseCompactReply(body)
+	if !ok {
+		return "", false
+	}
+	return fmt.Sprintf("reply %s\n%s", header, replyBody), true
 }
 
 func attachmentFeedbackStyles(feedback attachmentFeedbackState, senderStyle lipgloss.Style) (lipgloss.Style, lipgloss.Style, lipgloss.Style) {
