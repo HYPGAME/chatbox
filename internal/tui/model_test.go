@@ -723,6 +723,263 @@ func TestModelMouseRevokeActionConfirmsAndExits(t *testing.T) {
 	}
 }
 
+func TestModelMouseAttachmentActionsUseSelectedAttachment(t *testing.T) {
+	t.Parallel()
+
+	attachments := &fakeAttachmentClient{
+		openPath:     "/tmp/opened/selected.gif",
+		downloadPath: "/tmp/downloaded/selected.gif",
+	}
+	uiModel := newModel(modelOptions{
+		mode:             "join",
+		uiMode:           uiModeTUI,
+		session:          &fakeSession{peerName: "host"},
+		attachmentClient: attachments,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 72, Height: 12})
+	uiModel = updated.(model)
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: attachment.FormatChatMessage(attachment.ChatMessage{
+			Version: 1,
+			ID:      "att_reg1",
+			Kind:    attachment.KindImage,
+			Name:    "selected.gif",
+			Size:    6,
+		}),
+		at: time.Date(2026, 4, 23, 21, 30, 0, 0, time.Local),
+	})
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	uiModel = updated.(model)
+
+	runAction := func(buttonIndex int) {
+		t.Helper()
+		actionBar := uiModel.buildRenderedActionBarState()
+		clickX := actionBar.buttons[buttonIndex].startX + 1
+		clickY := viewportTopRow + uiModel.viewport.Height
+
+		updated, _ = uiModel.Update(tea.MouseMsg{X: clickX, Y: clickY, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+		uiModel = updated.(model)
+		updated, cmd := uiModel.Update(tea.MouseMsg{X: clickX, Y: clickY, Button: tea.MouseButtonNone, Action: tea.MouseActionRelease})
+		uiModel = updated.(model)
+		if cmd == nil {
+			t.Fatal("expected attachment action command")
+		}
+		msg := cmd()
+		for msg != nil {
+			updated, cmd = uiModel.Update(msg)
+			uiModel = updated.(model)
+			if cmd == nil {
+				break
+			}
+			msg = cmd()
+		}
+	}
+
+	runAction(2)
+	runAction(3)
+
+	if len(attachments.opens) != 1 || attachments.opens[0].AttachmentID != "att_reg1" {
+		t.Fatalf("expected selected attachment open request, got %#v", attachments.opens)
+	}
+	if len(attachments.downloads) != 1 || attachments.downloads[0].AttachmentID != "att_reg1" {
+		t.Fatalf("expected selected attachment download request, got %#v", attachments.downloads)
+	}
+}
+
+func TestModelMouseCancelActionExitsCopyMode(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 72, Height: 12})
+	uiModel = updated.(model)
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: "cancel me",
+		at:   time.Date(2026, 4, 23, 21, 31, 0, 0, time.Local),
+	})
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	uiModel = updated.(model)
+	beforeHeight := uiModel.viewport.Height
+
+	actionBar := uiModel.buildRenderedActionBarState()
+	cancelX := actionBar.buttons[len(actionBar.buttons)-1].startX + 1
+	clickY := viewportTopRow + uiModel.viewport.Height
+
+	updated, _ = uiModel.Update(tea.MouseMsg{X: cancelX, Y: clickY, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(tea.MouseMsg{X: cancelX, Y: clickY, Button: tea.MouseButtonNone, Action: tea.MouseActionRelease})
+	uiModel = updated.(model)
+
+	if uiModel.copyMode {
+		t.Fatal("expected cancel action to exit copy mode")
+	}
+	if uiModel.viewport.Height != beforeHeight+1 {
+		t.Fatalf("expected cancel action to restore viewport height, got %d want %d", uiModel.viewport.Height, beforeHeight+1)
+	}
+}
+
+func TestModelMouseDragDoesNotTriggerActionBarOrSelection(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 72, Height: 8})
+	uiModel = updated.(model)
+	for i := 0; i < 20; i++ {
+		uiModel.addHistoryEntry(historyEntry{
+			kind: historyKindMessage,
+			from: "alice",
+			body: fmt.Sprintf("drag-%02d", i),
+			at:   time.Date(2026, 4, 23, 21, 32, i, 0, time.Local),
+		})
+	}
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	uiModel = updated.(model)
+	initialSelection := uiModel.selectedCopyHistoryIndex()
+
+	updated, _ = uiModel.Update(tea.MouseMsg{X: 2, Y: 3, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(tea.MouseMsg{X: 2, Y: 5, Button: tea.MouseButtonNone, Action: tea.MouseActionMotion})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(tea.MouseMsg{X: 2, Y: 5, Button: tea.MouseButtonNone, Action: tea.MouseActionRelease})
+	uiModel = updated.(model)
+
+	if got := uiModel.selectedCopyHistoryIndex(); got != initialSelection {
+		t.Fatalf("expected drag not to change selection, got %d want %d", got, initialSelection)
+	}
+}
+
+func TestCopyModeInputHintMentionsMouseActions(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 72, Height: 12})
+	uiModel = updated.(model)
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: "copy me",
+		at:   time.Date(2026, 4, 23, 21, 33, 0, 0, time.Local),
+	})
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	uiModel = updated.(model)
+
+	if !strings.Contains(stripANSI(uiModel.View()), "Click message/actions") {
+		t.Fatalf("expected copy-mode hint to mention mouse actions, got %q", stripANSI(uiModel.View()))
+	}
+}
+
+func TestCopyModeResizesViewportForActionBar(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 72, Height: 12})
+	uiModel = updated.(model)
+	initialHeight := uiModel.viewport.Height
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: "copy me",
+		at:   time.Date(2026, 4, 23, 21, 33, 30, 0, time.Local),
+	})
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	uiModel = updated.(model)
+
+	if uiModel.viewport.Height != initialHeight-1 {
+		t.Fatalf("expected copy mode to reserve one row for action bar, got %d want %d", uiModel.viewport.Height, initialHeight-1)
+	}
+}
+
+func TestRevokeModeResizesViewportForActionBar(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 72, Height: 12})
+	uiModel = updated.(model)
+	initialHeight := uiModel.viewport.Height
+	uiModel.identityID = "identity-a"
+	uiModel.addHistoryEntry(historyEntry{
+		kind:           historyKindMessage,
+		messageID:      "mhint2",
+		from:           "alice",
+		authorIdentity: "identity-a",
+		body:           "revoke me",
+		at:             time.Date(2026, 4, 23, 21, 34, 30, 0, time.Local),
+		outgoing:       true,
+		status:         transcript.StatusSent,
+	})
+	uiModel.enterRevokeMode()
+
+	if uiModel.viewport.Height != initialHeight-1 {
+		t.Fatalf("expected revoke mode to reserve one row for action bar, got %d want %d", uiModel.viewport.Height, initialHeight-1)
+	}
+}
+
+func TestRevokeModeInputHintMentionsMouseActions(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 72, Height: 12})
+	uiModel = updated.(model)
+	uiModel.identityID = "identity-a"
+	uiModel.addHistoryEntry(historyEntry{
+		kind:           historyKindMessage,
+		messageID:      "mhint1",
+		from:           "alice",
+		authorIdentity: "identity-a",
+		body:           "revoke me",
+		at:             time.Date(2026, 4, 23, 21, 34, 0, 0, time.Local),
+		outgoing:       true,
+		status:         transcript.StatusSent,
+	})
+	uiModel.enterRevokeMode()
+
+	if !strings.Contains(stripANSI(uiModel.View()), "Click message/actions") {
+		t.Fatalf("expected revoke-mode hint to mention mouse actions, got %q", stripANSI(uiModel.View()))
+	}
+}
+
 func TestCtrlYCopiesSelectedMessageInCopyMode(t *testing.T) {
 	t.Parallel()
 

@@ -1073,7 +1073,7 @@ func (m *model) enterRevokeMode() {
 	}
 	m.revokeMode = true
 	m.revokeSelection = len(m.revokeCandidates) - 1
-	m.refreshViewport(false)
+	m.resize()
 }
 
 func (m *model) enterCopyMode() bool {
@@ -1091,6 +1091,7 @@ func (m *model) enterCopyMode() bool {
 	}
 	m.followCopySelection = m.copySelectionPos == len(m.copySelection)-1
 	m.scrollSelectedMessageIntoView()
+	m.resize()
 	return true
 }
 
@@ -1100,6 +1101,7 @@ func (m *model) exitCopyMode() {
 	}
 	m.copyMode = false
 	m.setStatusNotice("", false)
+	m.resize()
 }
 
 func (m *model) exitRevokeMode() {
@@ -1109,7 +1111,7 @@ func (m *model) exitRevokeMode() {
 	m.revokeMode = false
 	m.revokeCandidates = nil
 	m.revokeSelection = 0
-	m.refreshViewport(false)
+	m.resize()
 }
 
 func (m *model) rebuildRevokeCandidates() {
@@ -2890,9 +2892,9 @@ func (m model) renderStatusBar() string {
 func (m model) renderInputBox() string {
 	hint := "Enter send / Ctrl+V attach clipboard / Ctrl+Y copy mode / Ctrl+R revoke"
 	if m.copyMode {
-		hint = "copy mode: Up/Down select / Enter quote / Ctrl+Y copy / O open / D download / Esc cancel"
+		hint = "copy mode: Click message/actions or use Up/Down / Enter quote / Ctrl+Y copy / O open / D download / Esc cancel"
 	} else if m.revokeMode {
-		hint = "revoke mode: Up/Down select / Enter confirm / Esc cancel"
+		hint = "revoke mode: Click message/actions or use Up/Down / Enter confirm / Esc cancel"
 	}
 	content := strings.Join([]string{
 		m.input.View(),
