@@ -1782,6 +1782,17 @@ func truncateRunes(text string, limit int) string {
 }
 
 func buildReplyPreview(entry historyEntry) string {
+	if entry.revoked {
+		return "已撤回一条消息"
+	}
+	if attachmentMsg, ok := attachment.ParseChatMessage(entry.body); ok {
+		switch attachmentMsg.Kind {
+		case attachment.KindImage:
+			return fmt.Sprintf("[图片] %s", attachmentMsg.Name)
+		default:
+			return fmt.Sprintf("[文件] %s", attachmentMsg.Name)
+		}
+	}
 	body := strings.ReplaceAll(renderedMessageBody(entry), "\r\n", "\n")
 	line := strings.TrimSpace(strings.Split(body, "\n")[0])
 	if line == "" {
@@ -2358,7 +2369,7 @@ func (m *model) refreshViewport(stickToBottom bool) {
 func (m *model) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 	switch msg.Action {
 	case tea.MouseActionPress:
-		if msg.Button == tea.MouseButtonLeft && (m.isWithinViewport(msg.Y) || m.isWithinActionBar(msg.Y)) {
+		if msg.Button == tea.MouseButtonLeft && (m.isWithinViewport(msg.Y) || m.isWithinActionBar(msg.Y) || m.isWithinReplyBar(msg.Y)) {
 			if m.isWithinViewport(msg.Y) {
 				m.updateHoveredHistoryIndex(msg.Y)
 			}
@@ -2394,6 +2405,10 @@ func (m *model) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 			m.pendingViewportPress = nil
 			m.draggingViewport = false
 			if wasDragging {
+				return true, nil
+			}
+			if m.clickedReplyBarClear(msg.X, msg.Y) {
+				m.clearReplyDraft()
 				return true, nil
 			}
 			if action, ok := m.clickedActionBarAction(msg.X, msg.Y); ok {
@@ -2432,8 +2447,23 @@ func (m model) actionBarRow() int {
 	return viewportTopRow + m.viewport.Height
 }
 
+func (m model) replyBarRow() int {
+	row := viewportTopRow + m.viewport.Height
+	if strings.TrimSpace(m.renderedActionBar.text) != "" {
+		row++
+	}
+	if suggestions := m.renderSlashCommandSuggestions(); suggestions != "" {
+		row += strings.Count(suggestions, "\n") + 1
+	}
+	return row
+}
+
 func (m model) isWithinActionBar(mouseY int) bool {
 	return strings.TrimSpace(m.renderedActionBar.text) != "" && mouseY == m.actionBarRow()
+}
+
+func (m model) isWithinReplyBar(mouseY int) bool {
+	return strings.TrimSpace(m.renderedReplyBar.text) != "" && mouseY == m.replyBarRow()
 }
 
 func (m model) clickedActionBarAction(mouseX, mouseY int) (actionBarAction, bool) {
@@ -2446,6 +2476,13 @@ func (m model) clickedActionBarAction(mouseX, mouseY int) (actionBarAction, bool
 		}
 	}
 	return "", false
+}
+
+func (m model) clickedReplyBarClear(mouseX, mouseY int) bool {
+	if !m.isWithinReplyBar(mouseY) {
+		return false
+	}
+	return mouseX >= m.renderedReplyBar.clearStart && mouseX < m.renderedReplyBar.clearEnd
 }
 
 func (m model) isWithinViewport(mouseY int) bool {

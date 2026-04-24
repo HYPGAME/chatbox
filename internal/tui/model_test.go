@@ -1370,6 +1370,107 @@ func TestEscapeClearsReplyDraftInNormalMode(t *testing.T) {
 	}
 }
 
+func TestQuoteAttachmentUsesCompactAttachmentPreview(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	uiModel.width = 80
+	uiModel.height = 12
+	uiModel.resize()
+	uiModel.addHistoryEntry(historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: attachment.FormatChatMessage(attachment.ChatMessage{
+			Version: 1,
+			ID:      "att_a1",
+			Kind:    attachment.KindImage,
+			Name:    "cat.gif",
+			Size:    6,
+		}),
+		at: time.Date(2026, 4, 24, 11, 24, 0, 0, time.Local),
+	})
+
+	updated, _ := uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	uiModel = updated.(model)
+
+	if uiModel.replyDraft == nil || uiModel.replyDraft.preview != "[图片] cat.gif" {
+		t.Fatalf("expected compact attachment preview, got %#v", uiModel.replyDraft)
+	}
+}
+
+func TestQuoteRevokedMessageUsesRevokedPreview(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	uiModel.width = 80
+	uiModel.height = 12
+	uiModel.resize()
+	uiModel.addHistoryEntry(historyEntry{
+		kind:    historyKindMessage,
+		from:    "alice",
+		body:    "hello world",
+		at:      time.Date(2026, 4, 24, 11, 25, 0, 0, time.Local),
+		revoked: true,
+	})
+
+	updated, _ := uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	uiModel = updated.(model)
+
+	if uiModel.replyDraft == nil || uiModel.replyDraft.preview != "已撤回一条消息" {
+		t.Fatalf("expected revoked preview, got %#v", uiModel.replyDraft)
+	}
+}
+
+func TestClickReplyBarClearButtonRemovesDraft(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeTUI,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	uiModel.width = 80
+	uiModel.height = 12
+	uiModel.replyDraft = &replyDraft{
+		targetMessageID: "msg-1",
+		sender:          "alice",
+		sentAt:          time.Date(2026, 4, 24, 11, 22, 0, 0, time.Local),
+		preview:         "hello world",
+	}
+	uiModel.resize()
+	uiModel.refreshViewport(false)
+
+	replyY := uiModel.replyBarRow()
+	clickX := uiModel.renderedReplyBar.clearStart + 1
+
+	updated, _ := uiModel.Update(tea.MouseMsg{X: clickX, Y: replyY, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(tea.MouseMsg{X: clickX, Y: replyY, Button: tea.MouseButtonNone, Action: tea.MouseActionRelease})
+	uiModel = updated.(model)
+
+	if uiModel.replyDraft != nil {
+		t.Fatalf("expected click to clear reply draft, got %#v", uiModel.replyDraft)
+	}
+}
+
 func TestCtrlYWithoutMessagesDoesNotEnterCopyMode(t *testing.T) {
 	t.Parallel()
 
@@ -1594,6 +1695,25 @@ func TestRenderTUIEntryShowsCompactReplyPreview(t *testing.T) {
 	}
 	if strings.Contains(got, "\n\n") {
 		t.Fatalf("expected no extra blank line, got %q", got)
+	}
+}
+
+func TestLegacyMultiLineQuoteStillRendersAsPlainText(t *testing.T) {
+	t.Parallel()
+
+	entry := historyEntry{
+		kind: historyKindMessage,
+		from: "bob",
+		body: "> alice [11:22]\n> hello world\n收到，我晚点处理",
+		at:   time.Date(2026, 4, 24, 11, 26, 0, 0, time.Local),
+	}
+
+	got := stripANSI(renderTUIEntry(entry, false))
+	if !strings.Contains(got, "> alice [11:22]") {
+		t.Fatalf("expected legacy quote text to remain visible, got %q", got)
+	}
+	if strings.Contains(got, "reply alice [11:22]") {
+		t.Fatalf("expected legacy quote not to be compacted, got %q", got)
 	}
 }
 
