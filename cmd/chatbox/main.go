@@ -217,6 +217,7 @@ func runHost(ctx context.Context, args []string) error {
 	pskFile := fs.String("psk-file", "", "Path to the PSK file")
 	groupName := fs.String("group-name", "", "Stable group name used to derive the room key")
 	groupPassword := fs.String("group-password", "", "Shared group password used to derive the PSK")
+	groupPasswordFile := fs.String("group-password-file", "", "Path to a file whose first line is used as the shared group password")
 	name := fs.String("name", defaultName(), "Local display name")
 	headless := fs.Bool("headless", false, "Run as a non-interactive relay service")
 	ui := fs.String("ui", "", "UI mode: scrollback or tui")
@@ -236,7 +237,7 @@ func runHost(ctx context.Context, args []string) error {
 		return err
 	}
 
-	creds, err := resolveSessionCredentials(*pskFile, *groupName, *groupPassword)
+	creds, err := resolveSessionCredentials(*pskFile, *groupName, *groupPassword, *groupPasswordFile)
 	if err != nil {
 		return err
 	}
@@ -282,6 +283,7 @@ func runJoin(ctx context.Context, args []string) error {
 	pskFile := fs.String("psk-file", "", "Path to the PSK file")
 	groupName := fs.String("group-name", "", "Stable group name used to derive the room key")
 	groupPassword := fs.String("group-password", "", "Shared group password used to derive the PSK")
+	groupPasswordFile := fs.String("group-password-file", "", "Path to a file whose first line is used as the shared group password")
 	name := fs.String("name", defaultName(), "Local display name")
 	ui := fs.String("ui", "", "UI mode: scrollback or tui")
 	alert := fs.String("alert", "", "Alert mode: bell or off")
@@ -300,7 +302,7 @@ func runJoin(ctx context.Context, args []string) error {
 		return err
 	}
 
-	creds, err := resolveSessionCredentials(*pskFile, *groupName, *groupPassword)
+	creds, err := resolveSessionCredentials(*pskFile, *groupName, *groupPassword, *groupPasswordFile)
 	if err != nil {
 		return err
 	}

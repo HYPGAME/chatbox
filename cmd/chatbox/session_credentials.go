@@ -37,12 +37,29 @@ var promptForGroupPassword = func(groupName string) (string, error) {
 	return string(secret), nil
 }
 
-func resolveSessionCredentials(pskFile, groupName, groupPassword string) (sessionCredentials, error) {
+func loadGroupPasswordFromFile(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read group password file: %w", err)
+	}
+	password := string(data)
+	if idx := strings.IndexByte(password, '\n'); idx >= 0 {
+		password = password[:idx]
+	}
+	password = strings.TrimSuffix(password, "\r")
+	if password == "" {
+		return "", errors.New("group password file must contain a non-empty first line")
+	}
+	return password, nil
+}
+
+func resolveSessionCredentials(pskFile, groupName, groupPassword, groupPasswordFile string) (sessionCredentials, error) {
 	trimmedFile := strings.TrimSpace(pskFile)
 	trimmedGroupName := strings.TrimSpace(groupName)
+	trimmedGroupPasswordFile := strings.TrimSpace(groupPasswordFile)
 
-	if trimmedFile != "" && (trimmedGroupName != "" || groupPassword != "") {
-		return sessionCredentials{}, errors.New("cannot combine --psk-file with --group-name/--group-password")
+	if trimmedFile != "" && (trimmedGroupName != "" || groupPassword != "" || trimmedGroupPasswordFile != "") {
+		return sessionCredentials{}, errors.New("cannot combine --psk-file with --group-name/--group-password/--group-password-file")
 	}
 	if trimmedFile != "" {
 		psk, err := keys.LoadPSKFromFile(trimmedFile)
@@ -55,11 +72,21 @@ func resolveSessionCredentials(pskFile, groupName, groupPassword string) (sessio
 	if groupPassword != "" && trimmedGroupName == "" {
 		return sessionCredentials{}, errors.New("--group-password requires --group-name")
 	}
+	if trimmedGroupPasswordFile != "" && trimmedGroupName == "" {
+		return sessionCredentials{}, errors.New("--group-password-file requires --group-name")
+	}
 	if trimmedGroupName == "" {
 		return sessionCredentials{}, errors.New("requires either --psk-file or --group-name")
 	}
 
 	password := groupPassword
+	if password == "" && trimmedGroupPasswordFile != "" {
+		var err error
+		password, err = loadGroupPasswordFromFile(trimmedGroupPasswordFile)
+		if err != nil {
+			return sessionCredentials{}, err
+		}
+	}
 	if password == "" {
 		var err error
 		password, err = promptForGroupPassword(trimmedGroupName)

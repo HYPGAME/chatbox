@@ -627,6 +627,44 @@ func TestRunHostGroupModePassesStableTranscriptKeyToUI(t *testing.T) {
 	}
 }
 
+func TestRunHostGroupModePassesStableTranscriptKeyToUIWhenUsingPasswordFile(t *testing.T) {
+	passwordFile := filepath.Join(t.TempDir(), "group-password.txt")
+	if err := os.WriteFile(passwordFile, []byte("abc123\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	creds, err := keys.DeriveGroupCredentials("team-alpha", "abc123")
+	if err != nil {
+		t.Fatalf("DeriveGroupCredentials returned error: %v", err)
+	}
+
+	originalRunHostUI := runHostUI
+	t.Cleanup(func() {
+		runHostUI = originalRunHostUI
+	})
+
+	var gotTranscriptKey string
+	runHostUI = func(_ *session.Host, _ string, gotPSK []byte, transcriptKey string, _ string, _ string) error {
+		if !bytes.Equal(gotPSK, creds.PSK) {
+			t.Fatal("expected password-file host to use derived PSK")
+		}
+		gotTranscriptKey = transcriptKey
+		return nil
+	}
+
+	if err := runHost(context.Background(), []string{
+		"--listen", "127.0.0.1:0",
+		"--group-name", "team-alpha",
+		"--group-password-file", passwordFile,
+		"--name", "alice",
+	}); err != nil {
+		t.Fatalf("runHost returned error: %v", err)
+	}
+	if gotTranscriptKey != creds.RoomKey {
+		t.Fatalf("expected transcript key %q, got %q", creds.RoomKey, gotTranscriptKey)
+	}
+}
+
 func TestRunJoinGroupModeConnectsWithMatchingDerivedPSK(t *testing.T) {
 	creds, err := keys.DeriveGroupCredentials("team-alpha", "abc123")
 	if err != nil {

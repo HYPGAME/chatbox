@@ -116,6 +116,14 @@ For automation or router services, pass the password explicitly:
 ./chatbox host --headless --listen 0.0.0.0:7331 --name router --group-name team-alpha --group-password abc123
 ```
 
+If you do not want the password to appear in the process list, point `chatbox` at a password file instead. Only the first line is used:
+
+```bash
+printf '%s\n' 'abc123' > /etc/chatbox/team-alpha.password
+chmod 600 /etc/chatbox/team-alpha.password
+./chatbox host --headless --listen 0.0.0.0:7331 --name router --group-name team-alpha --group-password-file /etc/chatbox/team-alpha.password
+```
+
 Room history, offline sync, revoke control, and room authorization stay on the same logical room as long as both the group name and password stay the same, even if the host IP changes.
 
 ## Compatibility Notes

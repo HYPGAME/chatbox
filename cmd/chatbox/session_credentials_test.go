@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,7 +19,7 @@ func TestResolveSessionCredentialsLoadsPSKFileMode(t *testing.T) {
 		t.Fatalf("GeneratePSKFile returned error: %v", err)
 	}
 
-	got, err := resolveSessionCredentials(path, "", "")
+	got, err := resolveSessionCredentials(path, "", "", "")
 	if err != nil {
 		t.Fatalf("resolveSessionCredentials returned error: %v", err)
 	}
@@ -38,7 +40,7 @@ func TestResolveSessionCredentialsRejectsMixedModes(t *testing.T) {
 		t.Fatalf("GeneratePSKFile returned error: %v", err)
 	}
 
-	_, err := resolveSessionCredentials(path, "team-alpha", "abc123")
+	_, err := resolveSessionCredentials(path, "team-alpha", "abc123", "")
 	if err == nil {
 		t.Fatal("expected mixed psk-file and group mode to fail")
 	}
@@ -63,7 +65,7 @@ func TestResolveSessionCredentialsPromptsForGroupPasswordWhenInteractive(t *test
 		return "abc123", nil
 	}
 
-	got, err := resolveSessionCredentials("", " team-alpha ", "")
+	got, err := resolveSessionCredentials("", " team-alpha ", "", "")
 	if err != nil {
 		t.Fatalf("resolveSessionCredentials returned error: %v", err)
 	}
@@ -82,7 +84,7 @@ func TestResolveSessionCredentialsRejectsMissingPasswordWithoutTTY(t *testing.T)
 	})
 	stdinIsTerminal = func() bool { return false }
 
-	_, err := resolveSessionCredentials("", "team-alpha", "")
+	_, err := resolveSessionCredentials("", "team-alpha", "", "")
 	if err == nil {
 		t.Fatal("expected non-interactive password resolution to fail")
 	}
@@ -94,9 +96,73 @@ func TestResolveSessionCredentialsRejectsMissingPasswordWithoutTTY(t *testing.T)
 func TestResolveSessionCredentialsRejectsPasswordWithoutGroupName(t *testing.T) {
 	t.Parallel()
 
-	_, err := resolveSessionCredentials("", "", "abc123")
+	_, err := resolveSessionCredentials("", "", "abc123", "")
 	if err == nil {
 		t.Fatal("expected password without group name to fail")
+	}
+	if !strings.Contains(err.Error(), "--group-name") {
+		t.Fatalf("expected group-name guidance, got %q", err.Error())
+	}
+}
+
+func TestResolveSessionCredentialsLoadsGroupPasswordFromFile(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "group-password.txt")
+	if err := os.WriteFile(path, []byte("abc123\nignored\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	got, err := resolveSessionCredentials("", "team-alpha", "", path)
+	if err != nil {
+		t.Fatalf("resolveSessionCredentials returned error: %v", err)
+	}
+
+	want, err := keys.DeriveGroupCredentials("team-alpha", "abc123")
+	if err != nil {
+		t.Fatalf("DeriveGroupCredentials returned error: %v", err)
+	}
+	if !bytes.Equal(got.psk, want.PSK) {
+		t.Fatal("expected password file to derive the same PSK as the first line")
+	}
+	if got.transcriptKey != want.RoomKey {
+		t.Fatalf("expected transcript key %q, got %q", want.RoomKey, got.transcriptKey)
+	}
+}
+
+func TestResolveSessionCredentialsPrefersExplicitPasswordOverPasswordFile(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "group-password.txt")
+	if err := os.WriteFile(path, []byte("wrong-password\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	got, err := resolveSessionCredentials("", "team-alpha", "abc123", path)
+	if err != nil {
+		t.Fatalf("resolveSessionCredentials returned error: %v", err)
+	}
+
+	want, err := keys.DeriveGroupCredentials("team-alpha", "abc123")
+	if err != nil {
+		t.Fatalf("DeriveGroupCredentials returned error: %v", err)
+	}
+	if !bytes.Equal(got.psk, want.PSK) {
+		t.Fatal("expected explicit password to win over password file")
+	}
+}
+
+func TestResolveSessionCredentialsRejectsPasswordFileWithoutGroupName(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "group-password.txt")
+	if err := os.WriteFile(path, []byte("abc123\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	_, err := resolveSessionCredentials("", "", "", path)
+	if err == nil {
+		t.Fatal("expected password file without group name to fail")
 	}
 	if !strings.Contains(err.Error(), "--group-name") {
 		t.Fatalf("expected group-name guidance, got %q", err.Error())
