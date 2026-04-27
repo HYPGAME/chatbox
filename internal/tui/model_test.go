@@ -2054,8 +2054,14 @@ func TestJoinStatusCommandSendsHiddenRequestAndRendersRosterResponse(t *testing.
 	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	uiModel = updated.(model)
 
-	if len(fake.sent) != 1 || fake.sent[0].Body != room.StatusRequestBody() {
-		t.Fatalf("expected hidden status request to be sent, got %#v", fake.sent)
+	if len(fake.sent) != 2 {
+		t.Fatalf("expected version announce and status request, got %#v", fake.sent)
+	}
+	if announce, ok := room.ParseVersionAnnounce(fake.sent[0].Body); !ok || strings.TrimSpace(announce.ClientVersion) == "" {
+		t.Fatalf("expected version announce before status request, got %#v", fake.sent)
+	}
+	if fake.sent[1].Body != room.StatusRequestBody() {
+		t.Fatalf("expected hidden status request to be sent after version announce, got %#v", fake.sent)
 	}
 	view := stripANSI(uiModel.View())
 	if !strings.Contains(view, "connected to host") {
@@ -2195,10 +2201,17 @@ func TestModelJoinUpdateAllSendsHiddenRequest(t *testing.T) {
 
 	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
 	uiModel = updated.(model)
+	sentBeforeCommand := len(fake.sent)
 	uiModel.input.SetValue("/update-all v0.1.24")
 	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	uiModel = updated.(model)
 
+	if got := len(fake.sent) - sentBeforeCommand; got != 2 {
+		t.Fatalf("expected version announce and update request from command, got %#v", fake.sent[sentBeforeCommand:])
+	}
+	if announce, ok := room.ParseVersionAnnounce(fake.sent[sentBeforeCommand].Body); !ok || strings.TrimSpace(announce.ClientVersion) == "" {
+		t.Fatalf("expected command to refresh version announce, got %#v", fake.sent[sentBeforeCommand:])
+	}
 	request, ok := room.ParseUpdateRequest(fake.sent[len(fake.sent)-1].Body)
 	if !ok {
 		t.Fatalf("expected hidden update request, got %#v", fake.sent)

@@ -1461,6 +1461,7 @@ func (m *model) handleStatusCommand() {
 	if m.session == nil {
 		return
 	}
+	m.announceClientVersion()
 	if _, err := m.session.Send(room.StatusRequestBody()); err != nil {
 		m.addErrorEntry(err.Error())
 	}
@@ -1513,6 +1514,7 @@ func (m *model) handleUpdateAllCommand(args []string) (tea.Model, tea.Cmd) {
 			return *m, m.flushScrollbackCmd()
 		}
 	} else {
+		m.announceClientVersion()
 		if _, err := m.session.Send(room.UpdateRequestBody(request)); err != nil {
 			m.addErrorEntry(err.Error())
 			return *m, m.flushScrollbackCmd()
