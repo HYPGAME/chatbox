@@ -94,6 +94,30 @@ The host side must be reachable from the internet. In practice that means:
 
 `join` also accepts `--ui tui` if you prefer the full-screen mode.
 
+## Group Name Mode
+
+You can create or join a stable room without generating a `.psk` file first:
+
+```bash
+./chatbox host --listen 0.0.0.0:7331 --name alice --group-name team-alpha
+./chatbox join --peer 203.0.113.10:7331 --name bob --group-name team-alpha
+```
+
+If `--group-password` is omitted, `chatbox` prompts for it silently in an interactive terminal:
+
+```bash
+./chatbox host --listen 0.0.0.0:7331 --name alice --group-name team-alpha
+group password for team-alpha:
+```
+
+For automation or router services, pass the password explicitly:
+
+```bash
+./chatbox host --headless --listen 0.0.0.0:7331 --name router --group-name team-alpha --group-password abc123
+```
+
+Room history, offline sync, revoke control, and room authorization stay on the same logical room as long as both the group name and password stay the same, even if the host IP changes.
+
 ## Compatibility Notes
 
 - Peers are expected to run the same released version when joining the same room.

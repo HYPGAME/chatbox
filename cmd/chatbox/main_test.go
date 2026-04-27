@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"chatbox/internal/keys"
 	"chatbox/internal/session"
@@ -591,4 +592,127 @@ func TestRunJoinPassesAlertModeToLauncher(t *testing.T) {
 	if gotAlert != "off" {
 		t.Fatalf("expected launcher alert %q, got %q", "off", gotAlert)
 	}
+}
+
+func TestRunHostGroupModePassesStableTranscriptKeyToUI(t *testing.T) {
+	creds, err := keys.DeriveGroupCredentials("team-alpha", "abc123")
+	if err != nil {
+		t.Fatalf("DeriveGroupCredentials returned error: %v", err)
+	}
+
+	originalRunHostUI := runHostUI
+	t.Cleanup(func() {
+		runHostUI = originalRunHostUI
+	})
+
+	var gotTranscriptKey string
+	runHostUI = func(_ *session.Host, _ string, gotPSK []byte, transcriptKey string, _ string, _ string) error {
+		if !bytes.Equal(gotPSK, creds.PSK) {
+			t.Fatal("expected group-mode host to use derived PSK")
+		}
+		gotTranscriptKey = transcriptKey
+		return nil
+	}
+
+	if err := runHost(context.Background(), []string{
+		"--listen", "127.0.0.1:0",
+		"--group-name", " team-alpha ",
+		"--group-password", "abc123",
+		"--name", "alice",
+	}); err != nil {
+		t.Fatalf("runHost returned error: %v", err)
+	}
+	if gotTranscriptKey != creds.RoomKey {
+		t.Fatalf("expected transcript key %q, got %q", creds.RoomKey, gotTranscriptKey)
+	}
+}
+
+func TestRunJoinGroupModeConnectsWithMatchingDerivedPSK(t *testing.T) {
+	creds, err := keys.DeriveGroupCredentials("team-alpha", "abc123")
+	if err != nil {
+		t.Fatalf("DeriveGroupCredentials returned error: %v", err)
+	}
+
+	host, err := session.Listen("127.0.0.1:0", session.Config{
+		Name: "host",
+		PSK:  creds.PSK,
+	})
+	if err != nil {
+		t.Fatalf("Listen returned error: %v", err)
+	}
+	defer host.Close()
+
+	acceptCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	acceptDone := make(chan error, 1)
+	go func() {
+		conn, err := host.Accept(acceptCtx)
+		if err == nil && conn != nil {
+			_ = conn.Close()
+		}
+		acceptDone <- err
+	}()
+
+	originalRunJoinUI := runJoinUI
+	t.Cleanup(func() {
+		runJoinUI = originalRunJoinUI
+	})
+
+	var gotTranscriptKey string
+	runJoinUI = func(_ *session.Session, _ string, _ string, _ session.Config, transcriptKey string, _ string, _ string) error {
+		gotTranscriptKey = transcriptKey
+		return nil
+	}
+
+	if err := runJoin(context.Background(), []string{
+		"--peer", host.Addr(),
+		"--group-name", "team-alpha",
+		"--group-password", "abc123",
+		"--name", "bob",
+	}); err != nil {
+		t.Fatalf("runJoin returned error: %v", err)
+	}
+	if err := <-acceptDone; err != nil {
+		t.Fatalf("Accept returned error: %v", err)
+	}
+	if gotTranscriptKey != creds.RoomKey {
+		t.Fatalf("expected transcript key %q, got %q", creds.RoomKey, gotTranscriptKey)
+	}
+}
+
+func TestRunJoinGroupModeRejectsWrongPassword(t *testing.T) {
+	creds, err := keys.DeriveGroupCredentials("team-alpha", "abc123")
+	if err != nil {
+		t.Fatalf("DeriveGroupCredentials returned error: %v", err)
+	}
+
+	host, err := session.Listen("127.0.0.1:0", session.Config{
+		Name: "host",
+		PSK:  creds.PSK,
+	})
+	if err != nil {
+		t.Fatalf("Listen returned error: %v", err)
+	}
+	defer host.Close()
+
+	acceptCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	acceptDone := make(chan error, 1)
+	go func() {
+		conn, err := host.Accept(acceptCtx)
+		if err == nil && conn != nil {
+			_ = conn.Close()
+		}
+		acceptDone <- err
+	}()
+
+	if err := runJoin(context.Background(), []string{
+		"--peer", host.Addr(),
+		"--group-name", "team-alpha",
+		"--group-password", "wrong-password",
+		"--name", "bob",
+	}); err == nil {
+		t.Fatal("expected join with wrong group password to fail")
+	}
+	<-acceptDone
 }
