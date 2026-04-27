@@ -84,12 +84,33 @@ host 端短期池必须加密落盘。
 
 - 某个 identity 只能拿到自己“首次加入该房间之后”的消息
 - 知道群名和密码不等于可以直接拉取最近 30 天全量
+- host 不能直接信任客户端上报的 `joined_at`
 
 host 返回消息时必须同时满足：
 
 - `record.room_key == request.room_key`
-- `record.at >= requester.joined_at`
+- `record.at >= host_authoritative_joined_at`
 - `record.at >= now - 30 days`
+
+### Host-Authoritative Join Timestamp
+
+由于当前 `identity` 只有可导入导出的随机 ID，没有签名能力，host 无法证明客户端上报的更早 `joined_at` 真实可信。
+
+因此 host 端 `30 天` 留存的授权下界必须改为：
+
+- `host 首次看到该 identity 进入该 room 的时间`
+
+也就是说：
+
+- host short retention 只对“host 自己见过的加入时间”负责
+- peer-to-peer sync 继续负责补更早、但仍属于同一 identity 的长期历史
+
+这会带来一个明确边界：
+
+- 某个 identity 第一次被这个 host 看到时，host 只能给它这之后的 30 天消息
+- 如果该 identity 实际上更早就在别处加入过房间，更老历史仍然只能依赖 peer sync
+
+这不是缺陷，而是当前“无签名 identity”模型下的安全边界。
 
 ## Data Model
 
@@ -195,6 +216,11 @@ host 端短期池不是 transcript 副本，而是独立的短期留存层。
 - `joined_at`
 - `newest_local`
 
+其中：
+
+- `identity_id` 必须是该客户端长期持有、可导入导出的稳定身份 ID
+- `joined_at` 只能作为客户端本地同步优化提示，不能作为 host 授权依据
+
 首版不建议加入重量级 `known_message_ids` 集合，避免协议和载荷复杂度上升。
 
 ### Host History Chunk
@@ -211,7 +237,7 @@ host 端短期池不是 transcript 副本，而是独立的短期留存层。
 
 首版 host 不做复杂 diff，只按时间窗口返回：
 
-- `record.at >= max(joined_at, newest_local - drift_buffer)`
+- `record.at >= max(host_authoritative_joined_at, newest_local - drift_buffer)`
 
 其中 `drift_buffer` 建议保留一个小缓冲窗口，例如 `2 分钟`，用于吸收：
 
@@ -287,6 +313,29 @@ host 应定期清理过期记录：
 
 这与当前附件清理模型保持一致。
 
+### Authorization Metadata Persistence
+
+host 还必须持久化一份独立的 room authorization 元数据，用来记录：
+
+- `room_key`
+- `identity_id`
+- `host_authoritative_joined_at`
+
+要求：
+
+- 以 `(room_key, identity_id)` 作为稳定键，不能使用进程内临时连接 ID
+- 这份元数据必须跨 host 重启保留
+- 不能只存在内存里
+- host 重启后仍应继续使用先前记录的 `host_authoritative_joined_at`
+
+否则：
+
+- host 一重启就会“忘记”某个 identity 何时首次加入
+- 进而破坏 `joined_at` 授权边界
+- 还可能让离线补历史窗口在每次重启后漂移
+
+因此，host 短期池和 host 授权元数据必须一起持久化。
+
 ## UI Expectations
 
 首版 UI 只做轻量提示，不扩展复杂状态面板。
@@ -341,7 +390,7 @@ host 应定期清理过期记录：
 
 测试点：
 
-- 只能返回 `joined_at` 之后的消息
+- 只能返回 `host_authoritative_joined_at` 之后的消息
 - 同房间不同 identity 返回窗口不同
 - 同群名不同密码不会看到同一房间短期池
 
