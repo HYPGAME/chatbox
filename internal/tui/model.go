@@ -20,6 +20,7 @@ import (
 	"chatbox/internal/admins"
 	"chatbox/internal/attachment"
 	"chatbox/internal/historymeta"
+	"chatbox/internal/hosthistory"
 	"chatbox/internal/identity"
 	"chatbox/internal/room"
 	"chatbox/internal/session"
@@ -353,6 +354,16 @@ func RunHost(host *session.Host, localName string, psk []byte, transcriptKey str
 func RunHostWithUpdateNotices(host *session.Host, localName string, psk []byte, transcriptKey string, uiMode string, alertMode string, updateNotices <-chan string) error {
 	hostRoom := room.NewHostRoom(localName)
 	hostRoom.ConfigureUpdates(loadHostAdminStore(), defaultRoomReleaseResolver)
+	if baseDir, err := hosthistory.DefaultBaseDir(); err == nil {
+		if retained, openErr := hosthistory.OpenStore(baseDir, psk); openErr == nil {
+			if metaDir, metaErr := historymeta.DefaultBaseDir(); metaErr == nil {
+				hostRoom.ConfigureHistoryRetention(retained, hostRetentionRoomKey(host.Addr(), transcriptKey), func(roomKey, identityID string) (historymeta.Record, error) {
+					return historymeta.OpenOrCreateFirstSeenRecord(metaDir, roomKey, identityID, time.Now)
+				})
+				_, _ = retained.CleanupExpired(time.Now())
+			}
+		}
+	}
 	go hostRoom.Serve(context.Background(), host)
 
 	return runUI(newModel(modelOptions{
@@ -403,6 +414,13 @@ func defaultTranscriptOpener(localName string, psk []byte) func(string) (transcr
 		}
 		return transcript.OpenStore(baseDir, localName, peerName, psk)
 	}
+}
+
+func hostRetentionRoomKey(listenAddr, transcriptKey string) string {
+	if strings.TrimSpace(transcriptKey) != "" {
+		return transcriptKey
+	}
+	return transcript.JoinRoomKey(listenAddr)
 }
 
 func defaultUpdatePerformer(ctx context.Context, targetVersion string) (update.Outcome, error) {
@@ -3074,7 +3092,7 @@ func renderDateSeparator(date string) string {
 func (m model) renderStatusBar() string {
 	headerText := "chatbox " + m.mode
 	if roomName := m.displayRoomName(); roomName != "" {
-		headerText += " | room: " + roomName
+		headerText += " | chat: " + roomName
 	}
 	status := m.status
 	style := statusStyle

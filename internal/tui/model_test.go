@@ -2014,7 +2014,7 @@ func TestRenderStatusBarShowsGroupRoomName(t *testing.T) {
 	uiModel.status = "connected to host"
 
 	got := stripANSI(uiModel.renderStatusBar())
-	if !strings.Contains(got, "room: 帝影剑域") {
+	if !strings.Contains(got, "chat: 帝影剑域") {
 		t.Fatalf("expected group room label, got %q", got)
 	}
 }
@@ -2031,7 +2031,7 @@ func TestRenderStatusBarOmitsRoomNameForNonGroupSession(t *testing.T) {
 	uiModel.status = "connected to host"
 
 	got := stripANSI(uiModel.renderStatusBar())
-	if strings.Contains(got, "room:") {
+	if strings.Contains(got, "chat:") {
 		t.Fatalf("expected no room label, got %q", got)
 	}
 }
@@ -5279,6 +5279,17 @@ func TestRunHostWithUpdateNoticesSignatureSupportsTranscriptKey(t *testing.T) {
 	var fn func(*session.Host, string, []byte, string, string, string, <-chan string) error = RunHostWithUpdateNotices
 	if fn == nil {
 		t.Fatal("expected host launcher")
+	}
+}
+
+func TestHostRetentionRoomKeyUsesTranscriptOverride(t *testing.T) {
+	t.Parallel()
+
+	if got := hostRetentionRoomKey("0.0.0.0:7331", "group:demo:abcd1234"); got != "group:demo:abcd1234" {
+		t.Fatalf("expected transcript key override, got %q", got)
+	}
+	if got := hostRetentionRoomKey("0.0.0.0:7331", ""); got != transcript.JoinRoomKey("0.0.0.0:7331") {
+		t.Fatalf("expected join-form room key, got %q", got)
 	}
 }
 

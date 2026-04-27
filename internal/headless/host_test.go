@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"chatbox/internal/hosthistory"
 	"chatbox/internal/session"
+	"chatbox/internal/transcript"
 )
 
 func TestHeadlessHostRuntimeLogsLifecycle(t *testing.T) {
@@ -21,7 +23,7 @@ func TestHeadlessHostRuntimeLogsLifecycle(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- RunHost(ctx, host, "router", logs, nil)
+		errCh <- RunHost(ctx, host, "router", psk, transcript.JoinRoomKey(host.Addr()), logs, nil, nil)
 	}()
 
 	waitForLogContains(t, logs, "headless host listening on "+host.Addr())
@@ -56,7 +58,7 @@ func TestHeadlessHostDoesNotLogChatBodies(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- RunHost(ctx, host, "router", logs, nil)
+		errCh <- RunHost(ctx, host, "router", psk, transcript.JoinRoomKey(host.Addr()), logs, nil, nil)
 	}()
 
 	waitForLogContains(t, logs, "headless host listening on "+host.Addr())
@@ -94,7 +96,7 @@ func TestHeadlessHostStopsOnContextCancel(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- RunHost(ctx, host, "router", logs, nil)
+		errCh <- RunHost(ctx, host, "router", bytes.Repeat([]byte{0x44}, 32), transcript.JoinRoomKey(host.Addr()), logs, nil, nil)
 	}()
 
 	waitForLogContains(t, logs, "headless host listening on "+host.Addr())
@@ -113,10 +115,29 @@ func TestHeadlessHostRunsAttachmentCleanupOnStart(t *testing.T) {
 	store := &fakeHeadlessAttachmentStore{cleanupSignal: make(chan struct{}, 1)}
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- RunHost(ctx, host, "router", logs, store)
+		errCh <- RunHost(ctx, host, "router", bytes.Repeat([]byte{0x44}, 32), transcript.JoinRoomKey(host.Addr()), logs, store, nil)
 	}()
 
 	waitForHeadlessCleanup(t, store.cleanupSignal)
+	cancel()
+	waitForHeadlessExit(t, errCh)
+}
+
+func TestHeadlessHostRunsRetentionCleanupOnStart(t *testing.T) {
+	t.Parallel()
+
+	host, psk := newTestHost(t, "router")
+	logs := &lockedBuffer{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	retention := &fakeHeadlessHistoryStore{cleanupSignal: make(chan struct{}, 1)}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- RunHost(ctx, host, "router", psk, "join:127.0.0.1:7331", logs, nil, retention)
+	}()
+
+	waitForHeadlessCleanup(t, retention.cleanupSignal)
 	cancel()
 	waitForHeadlessExit(t, errCh)
 }
@@ -191,6 +212,10 @@ type fakeHeadlessAttachmentStore struct {
 	cleanupSignal chan struct{}
 }
 
+type fakeHeadlessHistoryStore struct {
+	cleanupSignal chan struct{}
+}
+
 func (b *lockedBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -213,6 +238,26 @@ func (f *fakeHeadlessAttachmentStore) CleanupExpired(context.Context, time.Time)
 
 func (f *fakeHeadlessAttachmentStore) DeleteByMessageID(string) error {
 	return nil
+}
+
+func (f *fakeHeadlessHistoryStore) AppendMessage(string, transcript.Record, time.Time) error {
+	return nil
+}
+
+func (f *fakeHeadlessHistoryStore) AppendRevoke(string, transcript.RevokeRecord, time.Time) error {
+	return nil
+}
+
+func (f *fakeHeadlessHistoryStore) LoadWindow(string, time.Time, time.Time) (hosthistory.Window, error) {
+	return hosthistory.Window{}, nil
+}
+
+func (f *fakeHeadlessHistoryStore) CleanupExpired(time.Time) (int, error) {
+	select {
+	case f.cleanupSignal <- struct{}{}:
+	default:
+	}
+	return 0, nil
 }
 
 func waitForHeadlessCleanup(t *testing.T, signal <-chan struct{}) {

@@ -410,7 +410,7 @@ func TestRunHostHeadlessDelegatesToHeadlessLauncher(t *testing.T) {
 		uiCalled = true
 		return nil
 	}
-	runHostHeadless = func(_ context.Context, _ *session.Host, _ string, _ []byte, store hostAttachmentStore) error {
+	runHostHeadless = func(_ context.Context, _ *session.Host, _ string, _ []byte, _ string, store hostAttachmentStore) error {
 		headlessCalled = true
 		if store == nil {
 			t.Fatal("expected host attachment store for headless mode")
@@ -464,7 +464,7 @@ func TestRunSkipsBackgroundUpdateCheckForHeadlessHost(t *testing.T) {
 	launchBackgroundUpdateCheck = func(context.Context) {
 		launched = true
 	}
-	runHostHeadless = func(_ context.Context, _ *session.Host, _ string, _ []byte, _ hostAttachmentStore) error {
+	runHostHeadless = func(_ context.Context, _ *session.Host, _ string, _ []byte, _ string, _ hostAttachmentStore) error {
 		return nil
 	}
 
@@ -473,6 +473,32 @@ func TestRunSkipsBackgroundUpdateCheckForHeadlessHost(t *testing.T) {
 	}
 	if launched {
 		t.Fatal("expected headless host to skip background update checks")
+	}
+}
+
+func TestRunHostPassesSharedHistoryRoomKeyToHeadlessRuntime(t *testing.T) {
+	tempDir := t.TempDir()
+	path := filepath.Join(tempDir, "chatbox.psk")
+	if err := run(context.Background(), []string{"keygen", "--out", path}); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	originalRunHostHeadless := runHostHeadless
+	t.Cleanup(func() {
+		runHostHeadless = originalRunHostHeadless
+	})
+
+	var gotRoomKey string
+	runHostHeadless = func(_ context.Context, _ *session.Host, _ string, _ []byte, roomKey string, _ hostAttachmentStore) error {
+		gotRoomKey = roomKey
+		return nil
+	}
+
+	if err := runHost(context.Background(), []string{"--listen", "127.0.0.1:0", "--psk-file", path, "--name", "tester", "--headless"}); err != nil {
+		t.Fatalf("runHost returned error: %v", err)
+	}
+	if !strings.HasPrefix(gotRoomKey, "join:") {
+		t.Fatalf("expected psk-file host room key to use join-form key, got %q", gotRoomKey)
 	}
 }
 
