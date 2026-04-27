@@ -13,7 +13,10 @@ import (
 	"unicode/utf8"
 
 	"chatbox/internal/admins"
+	"chatbox/internal/historymeta"
+	"chatbox/internal/hosthistory"
 	"chatbox/internal/session"
+	"chatbox/internal/transcript"
 	"chatbox/internal/version"
 )
 
@@ -45,6 +48,14 @@ type attachmentCleaner interface {
 	DeleteByMessageID(messageID string) error
 }
 
+type retainedHistoryStore interface {
+	AppendMessage(roomKey string, record transcript.Record, now time.Time) error
+	AppendRevoke(roomKey string, revoke transcript.RevokeRecord, now time.Time) error
+	LoadWindow(roomKey string, since, now time.Time) (hosthistory.Window, error)
+}
+
+type firstSeenLoader func(roomKey, identityID string) (historymeta.Record, error)
+
 type trackedMember struct {
 	id          uint64
 	session     memberSession
@@ -75,6 +86,10 @@ type HostRoom struct {
 	versionByMemberID  map[uint64]string
 	processedUpdates   map[string]struct{}
 	activeUpdateStatus map[string]map[string]string
+	retainedHistory    retainedHistoryStore
+	retainedRoomKey    string
+	firstSeenLoader    firstSeenLoader
+	now                func() time.Time
 }
 
 func NewHostRoom(localName string) *HostRoom {
@@ -93,6 +108,7 @@ func NewHostRoom(localName string) *HostRoom {
 		versionByMemberID:  make(map[uint64]string),
 		processedUpdates:   make(map[string]struct{}),
 		activeUpdateStatus: make(map[string]map[string]string),
+		now:                time.Now,
 	}
 }
 
@@ -109,6 +125,17 @@ func (r *HostRoom) ConfigureUpdates(store admins.Store, resolver func(context.Co
 func (r *HostRoom) ConfigureAttachments(cleaner attachmentCleaner) {
 	r.mu.Lock()
 	r.attachmentCleaner = cleaner
+	r.mu.Unlock()
+}
+
+func (r *HostRoom) ConfigureHistoryRetention(store retainedHistoryStore, roomKey string, loader firstSeenLoader) {
+	r.mu.Lock()
+	r.retainedHistory = store
+	r.retainedRoomKey = strings.TrimSpace(roomKey)
+	r.firstSeenLoader = loader
+	if r.now == nil {
+		r.now = time.Now
+	}
 	r.mu.Unlock()
 }
 
@@ -320,6 +347,7 @@ func (r *HostRoom) runMember(member trackedMember) {
 			if err := r.broadcast(message, member.id); err != nil {
 				continue
 			}
+			r.retainVisibleMessage(message, r.memberIdentity(member.id))
 			r.publishMessage(message)
 		}
 	}
@@ -380,7 +408,17 @@ func (r *HostRoom) handleHistorySyncControl(member trackedMember, message sessio
 		r.markMemberSyncCapable(member.id, true)
 		r.rememberMemberIdentity(member.id, member.session.PeerName(), hello.IdentityID)
 		r.rememberMemberVersion(member.id, hello.ClientVersion)
+		if loader := r.firstSeenRecordLoader(); loader != nil && strings.TrimSpace(hello.RoomKey) != "" {
+			_, _ = loader(hello.RoomKey, hello.IdentityID)
+		}
 		_ = r.broadcastHistorySync(message, member.id)
+		return true
+	}
+	if request, ok := ParseHostHistoryRequest(message.Body); ok {
+		r.respondHostHistory(member, request)
+		return true
+	}
+	if IsHostHistorySyncControl(message.Body) {
 		return true
 	}
 	if !IsHistorySyncControl(message.Body) {
@@ -424,6 +462,7 @@ func (r *HostRoom) handleRevokeControl(member trackedMember, message session.Mes
 		_ = cleaner.DeleteByMessageID(revoke.TargetMessageID)
 	}
 	_ = r.broadcast(message, member.id)
+	r.retainRevoke(revoke)
 	r.publishMessage(message)
 	return true
 }
@@ -568,6 +607,61 @@ func (r *HostRoom) broadcastHistorySync(message session.Message, excludeMemberID
 	return nil
 }
 
+func (r *HostRoom) respondHostHistory(member trackedMember, request HostHistoryRequest) {
+	if member.session == nil {
+		return
+	}
+	request.RoomKey = strings.TrimSpace(request.RoomKey)
+	request.IdentityID = strings.TrimSpace(request.IdentityID)
+	if request.RoomKey == "" || request.IdentityID == "" {
+		return
+	}
+	r.rememberMemberIdentity(member.id, member.session.PeerName(), request.IdentityID)
+
+	store, loader, now := r.historyRetentionConfig()
+	if store == nil || loader == nil {
+		return
+	}
+
+	record, err := loader(request.RoomKey, request.IdentityID)
+	if err != nil {
+		return
+	}
+	since := record.JoinedAt
+	if !request.NewestLocal.IsZero() {
+		if candidate := request.NewestLocal.Add(-2 * time.Minute); candidate.After(since) {
+			since = candidate
+		}
+	}
+
+	window, err := store.LoadWindow(request.RoomKey, since, now())
+	if err != nil {
+		return
+	}
+	records := make([]transcript.Record, 0, len(window.Records))
+	for _, record := range window.Records {
+		if strings.TrimSpace(record.AuthorIdentity) == request.IdentityID {
+			record.Direction = transcript.DirectionOutgoing
+		} else {
+			record.Direction = transcript.DirectionIncoming
+		}
+		records = append(records, record)
+	}
+
+	_ = member.session.Resend(session.Message{
+		ID:   controlMessageID("hostsync-" + request.IdentityID),
+		From: r.localName,
+		Body: HostHistoryChunkBody(HostHistoryChunk{
+			Version:        1,
+			RoomKey:        request.RoomKey,
+			TargetIdentity: request.IdentityID,
+			Records:        records,
+			Revokes:        window.Revokes,
+		}),
+		At: now(),
+	})
+}
+
 func (r *HostRoom) memberSnapshot() []trackedMember {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -577,6 +671,24 @@ func (r *HostRoom) memberSnapshot() []trackedMember {
 		members = append(members, member)
 	}
 	return members
+}
+
+func (r *HostRoom) historyRetentionConfig() (retainedHistoryStore, firstSeenLoader, func() time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.retainedHistory, r.firstSeenLoader, r.now
+}
+
+func (r *HostRoom) retainedHistoryRoom() (retainedHistoryStore, string, func() time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.retainedHistory, r.retainedRoomKey, r.now
+}
+
+func (r *HostRoom) firstSeenRecordLoader() firstSeenLoader {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.firstSeenLoader
 }
 
 func (r *HostRoom) markMemberSyncCapable(memberID uint64, syncCapable bool) {
@@ -608,6 +720,40 @@ func (r *HostRoom) removeMember(member trackedMember) {
 		PeerCount: peerCount,
 		At:        time.Now(),
 	})
+}
+
+func (r *HostRoom) retainVisibleMessage(message session.Message, authorIdentity string) {
+	store, roomKey, now := r.retainedHistoryRoom()
+	if store == nil || roomKey == "" {
+		return
+	}
+	body := strings.TrimSpace(message.Body)
+	if body == "" || strings.HasPrefix(body, "\x00chatbox:") {
+		return
+	}
+
+	_ = store.AppendMessage(roomKey, transcript.Record{
+		MessageID:      message.ID,
+		Direction:      transcript.DirectionIncoming,
+		From:           message.From,
+		AuthorIdentity: strings.TrimSpace(authorIdentity),
+		Body:           message.Body,
+		At:             message.At,
+		Status:         transcript.StatusSent,
+	}, now())
+}
+
+func (r *HostRoom) retainRevoke(revoke Revoke) {
+	store, roomKey, now := r.retainedHistoryRoom()
+	if store == nil || roomKey == "" || strings.TrimSpace(revoke.TargetMessageID) == "" {
+		return
+	}
+
+	_ = store.AppendRevoke(roomKey, transcript.RevokeRecord{
+		TargetMessageID:  revoke.TargetMessageID,
+		OperatorIdentity: strings.TrimSpace(revoke.OperatorIdentity),
+		At:               revoke.At,
+	}, now())
 }
 
 func (r *HostRoom) publishMessage(message session.Message) {
