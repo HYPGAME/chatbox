@@ -9,6 +9,7 @@ import (
 )
 
 const historySyncControlPrefix = "\x00chatbox:sync:"
+const hostHistorySyncControlPrefix = "\x00chatbox:hostsync:"
 
 type HistorySyncSummary struct {
 	Count  int       `json:"count"`
@@ -45,6 +46,22 @@ type HistorySyncChunk struct {
 	SourceIdentity string                    `json:"source_identity"`
 	TargetIdentity string                    `json:"target_identity"`
 	RoomKey        string                    `json:"room_key"`
+	Records        []transcript.Record       `json:"records"`
+	Revokes        []transcript.RevokeRecord `json:"revokes,omitempty"`
+}
+
+type HostHistoryRequest struct {
+	Version     int       `json:"version"`
+	RoomKey     string    `json:"room_key"`
+	IdentityID  string    `json:"identity_id"`
+	JoinedAt    time.Time `json:"joined_at"`
+	NewestLocal time.Time `json:"newest_local"`
+}
+
+type HostHistoryChunk struct {
+	Version        int                       `json:"version"`
+	RoomKey        string                    `json:"room_key"`
+	TargetIdentity string                    `json:"target_identity"`
 	Records        []transcript.Record       `json:"records"`
 	Revokes        []transcript.RevokeRecord `json:"revokes,omitempty"`
 }
@@ -89,18 +106,48 @@ func ParseHistorySyncChunk(body string) (HistorySyncChunk, bool) {
 	return chunk, parseHistorySyncControl(body, "chunk", &chunk)
 }
 
+func IsHostHistorySyncControl(body string) bool {
+	return strings.HasPrefix(body, hostHistorySyncControlPrefix)
+}
+
+func HostHistoryRequestBody(request HostHistoryRequest) string {
+	return marshalControl(hostHistorySyncControlPrefix, "request", request)
+}
+
+func ParseHostHistoryRequest(body string) (HostHistoryRequest, bool) {
+	var request HostHistoryRequest
+	return request, parseControl(hostHistorySyncControlPrefix, body, "request", &request)
+}
+
+func HostHistoryChunkBody(chunk HostHistoryChunk) string {
+	return marshalControl(hostHistorySyncControlPrefix, "chunk", chunk)
+}
+
+func ParseHostHistoryChunk(body string) (HostHistoryChunk, bool) {
+	var chunk HostHistoryChunk
+	return chunk, parseControl(hostHistorySyncControlPrefix, body, "chunk", &chunk)
+}
+
 func marshalHistorySyncControl(kind string, payload any) string {
+	return marshalControl(historySyncControlPrefix, kind, payload)
+}
+
+func marshalControl(prefix, kind string, payload any) string {
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return historySyncControlPrefix + kind + ":{}"
+		return prefix + kind + ":{}"
 	}
-	return historySyncControlPrefix + kind + ":" + string(data)
+	return prefix + kind + ":" + string(data)
 }
 
 func parseHistorySyncControl(body, kind string, out any) bool {
-	prefix := historySyncControlPrefix + kind + ":"
-	if !strings.HasPrefix(body, prefix) {
+	return parseControl(historySyncControlPrefix, body, kind, out)
+}
+
+func parseControl(prefix, body, kind string, out any) bool {
+	expected := prefix + kind + ":"
+	if !strings.HasPrefix(body, expected) {
 		return false
 	}
-	return json.Unmarshal([]byte(strings.TrimPrefix(body, prefix)), out) == nil
+	return json.Unmarshal([]byte(strings.TrimPrefix(body, expected)), out) == nil
 }
