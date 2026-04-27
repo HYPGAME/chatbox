@@ -241,6 +241,7 @@ func runHost(ctx context.Context, args []string) error {
 		return err
 	}
 	psk := creds.psk
+	transcriptKey := creds.transcriptKey
 
 	host, err := session.Listen(*listenAddr, session.Config{
 		Name: *name,
@@ -270,9 +271,9 @@ func runHost(ctx context.Context, args []string) error {
 		return runHostHeadless(ctx, host, *name, psk, attachmentStore)
 	}
 	if uiMode == "tui" {
-		return runHostUIWithUpdates(host, *name, psk, uiMode, alertMode, backgroundUpdateNoticeChannel(ctx))
+		return runHostUIWithUpdates(host, *name, psk, transcriptKey, uiMode, alertMode, backgroundUpdateNoticeChannel(ctx))
 	}
-	return runHostUI(host, *name, psk, uiMode, alertMode)
+	return runHostUI(host, *name, psk, transcriptKey, uiMode, alertMode)
 }
 
 func runJoin(ctx context.Context, args []string) error {
@@ -304,6 +305,7 @@ func runJoin(ctx context.Context, args []string) error {
 		return err
 	}
 	psk := creds.psk
+	transcriptKey := creds.transcriptKey
 
 	conn, err := session.Dial(ctx, *peer, session.Config{
 		Name: *name,
@@ -318,13 +320,13 @@ func runJoin(ctx context.Context, args []string) error {
 		return runJoinUIWithUpdates(conn, *name, *peer, session.Config{
 			Name: *name,
 			PSK:  psk,
-		}, uiMode, alertMode, backgroundUpdateNoticeChannel(ctx))
+		}, transcriptKey, uiMode, alertMode, backgroundUpdateNoticeChannel(ctx))
 	}
 
 	return runJoinUI(conn, *name, *peer, session.Config{
 		Name: *name,
 		PSK:  psk,
-	}, uiMode, alertMode)
+	}, transcriptKey, uiMode, alertMode)
 }
 
 func defaultName() string {

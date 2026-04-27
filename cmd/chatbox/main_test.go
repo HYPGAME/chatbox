@@ -348,7 +348,7 @@ func TestRunHostPassesDefaultScrollbackUIToLauncher(t *testing.T) {
 	})
 
 	var gotUI string
-	runHostUI = func(_ *session.Host, _ string, _ []byte, ui string, _ string) error {
+	runHostUI = func(_ *session.Host, _ string, _ []byte, _ string, ui string, _ string) error {
 		gotUI = ui
 		return nil
 	}
@@ -375,7 +375,7 @@ func TestRunHostPassesAlertModeToLauncher(t *testing.T) {
 	})
 
 	var gotAlert string
-	runHostUI = func(_ *session.Host, _ string, _ []byte, _ string, alert string) error {
+	runHostUI = func(_ *session.Host, _ string, _ []byte, _ string, _ string, alert string) error {
 		gotAlert = alert
 		return nil
 	}
@@ -405,7 +405,7 @@ func TestRunHostHeadlessDelegatesToHeadlessLauncher(t *testing.T) {
 
 	uiCalled := false
 	headlessCalled := false
-	runHostUI = func(_ *session.Host, _ string, _ []byte, _ string, _ string) error {
+	runHostUI = func(_ *session.Host, _ string, _ []byte, _ string, _ string, _ string) error {
 		uiCalled = true
 		return nil
 	}
@@ -518,13 +518,13 @@ func TestRunSkipsStderrBackgroundUpdateCheckForTUIJoin(t *testing.T) {
 	launchBackgroundUpdateCheck = func(context.Context) {
 		launched = true
 	}
-	runJoinUIWithUpdates = func(_ *session.Session, _ string, _ string, _ session.Config, _ string, _ string, notices <-chan string) error {
+	runJoinUIWithUpdates = func(_ *session.Session, _ string, _ string, _ session.Config, _ string, _ string, _ string, notices <-chan string) error {
 		if notices == nil {
 			t.Fatal("expected update notices channel for tui join")
 		}
 		return nil
 	}
-	runJoinUI = func(_ *session.Session, _ string, _ string, _ session.Config, _ string, _ string) error {
+	runJoinUI = func(_ *session.Session, _ string, _ string, _ session.Config, _ string, _ string, _ string) error {
 		t.Fatal("expected legacy join ui launcher to stay unused for tui mode")
 		return nil
 	}
@@ -576,7 +576,7 @@ func TestRunJoinPassesAlertModeToLauncher(t *testing.T) {
 	})
 
 	var gotAlert string
-	runJoinUI = func(_ *session.Session, _ string, _ string, _ session.Config, _ string, alert string) error {
+	runJoinUI = func(_ *session.Session, _ string, _ string, _ session.Config, _ string, _ string, alert string) error {
 		gotAlert = alert
 		return nil
 	}

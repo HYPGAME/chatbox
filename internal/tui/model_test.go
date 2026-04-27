@@ -3742,6 +3742,66 @@ func TestModelLoadsHistoryAcrossDisplayNameChangesForSameRoom(t *testing.T) {
 	}
 }
 
+func TestModelLoadsHistoryAcrossAddressChangesForExplicitTranscriptKey(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	psk := bytes.Repeat([]byte{0x52}, 32)
+	roomKey := "group:team-alpha:abcd1234"
+	openStore := func(localName string) func(string) (transcriptStore, error) {
+		return func(conversationKey string) (transcriptStore, error) {
+			return transcript.OpenStore(baseDir, localName, conversationKey, psk)
+		}
+	}
+	authLoader := func(roomKeyArg, identityID string) (historymeta.Record, error) {
+		return historymeta.Record{
+			RoomKey:    roomKeyArg,
+			IdentityID: identityID,
+			JoinedAt:   time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC),
+		}, nil
+	}
+	identityLoader := func() (identity.Store, error) {
+		return identity.Store{IdentityID: "identity-local", Path: "/tmp/identity.json"}, nil
+	}
+
+	firstSession := &fakeSession{peerName: "host", localName: "a"}
+	firstModel := newModel(modelOptions{
+		mode:             "join",
+		listeningAddr:    "203.0.113.10:7331",
+		transcriptKey:    roomKey,
+		session:          firstSession,
+		transcriptOpener: openStore("a"),
+		identityLoader:   identityLoader,
+		roomAuthLoader:   authLoader,
+	})
+	updated, _ := firstModel.Update(sessionReadyMsg{session: firstSession})
+	firstModel = updated.(model)
+	firstModel.input.SetValue("message on old host")
+	updated, _ = firstModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	firstModel = updated.(model)
+
+	secondSession := &fakeSession{peerName: "host", localName: "a"}
+	secondModel := newModel(modelOptions{
+		mode:             "join",
+		listeningAddr:    "198.51.100.20:7331",
+		transcriptKey:    roomKey,
+		session:          secondSession,
+		transcriptOpener: openStore("a"),
+		identityLoader:   identityLoader,
+		roomAuthLoader:   authLoader,
+	})
+	updated, _ = secondModel.Update(sessionReadyMsg{session: secondSession})
+	secondModel = updated.(model)
+
+	view := stripANSI(secondModel.View())
+	if !strings.Contains(view, "message on old host") {
+		t.Fatalf("expected transcript history to survive address change, got %q", view)
+	}
+	if secondModel.roomAuthorization.RoomKey != roomKey {
+		t.Fatalf("expected room authorization key %q, got %q", roomKey, secondModel.roomAuthorization.RoomKey)
+	}
+}
+
 func TestModelShowsSlashCommandSuggestions(t *testing.T) {
 	t.Parallel()
 
@@ -5165,6 +5225,15 @@ func TestHostTranscriptUsesRoomScopedKey(t *testing.T) {
 	}
 }
 
+func TestRunHostWithUpdateNoticesSignatureSupportsTranscriptKey(t *testing.T) {
+	t.Parallel()
+
+	var fn func(*session.Host, string, []byte, string, string, string, <-chan string) error = RunHostWithUpdateNotices
+	if fn == nil {
+		t.Fatal("expected host launcher")
+	}
+}
+
 func TestJoinTranscriptUsesTargetScopedKey(t *testing.T) {
 	t.Parallel()
 
@@ -5184,6 +5253,15 @@ func TestJoinTranscriptUsesTargetScopedKey(t *testing.T) {
 	want := transcript.JoinRoomKey("203.0.113.10:7331")
 	if len(opened) != 1 || opened[0] != want {
 		t.Fatalf("expected join transcript opener to use %q, got %#v", want, opened)
+	}
+}
+
+func TestRunJoinWithUpdateNoticesSignatureSupportsTranscriptKey(t *testing.T) {
+	t.Parallel()
+
+	var fn func(*session.Session, string, string, session.Config, string, string, string, <-chan string) error = RunJoinWithUpdateNotices
+	if fn == nil {
+		t.Fatal("expected join launcher")
 	}
 }
 

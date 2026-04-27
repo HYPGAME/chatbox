@@ -346,11 +346,11 @@ var (
 	}
 )
 
-func RunHost(host *session.Host, localName string, psk []byte, uiMode string, alertMode string) error {
-	return RunHostWithUpdateNotices(host, localName, psk, uiMode, alertMode, nil)
+func RunHost(host *session.Host, localName string, psk []byte, transcriptKey string, uiMode string, alertMode string) error {
+	return RunHostWithUpdateNotices(host, localName, psk, transcriptKey, uiMode, alertMode, nil)
 }
 
-func RunHostWithUpdateNotices(host *session.Host, localName string, psk []byte, uiMode string, alertMode string, updateNotices <-chan string) error {
+func RunHostWithUpdateNotices(host *session.Host, localName string, psk []byte, transcriptKey string, uiMode string, alertMode string, updateNotices <-chan string) error {
 	hostRoom := room.NewHostRoom(localName)
 	hostRoom.ConfigureUpdates(loadHostAdminStore(), defaultRoomReleaseResolver)
 	go hostRoom.Serve(context.Background(), host)
@@ -365,17 +365,18 @@ func RunHostWithUpdateNotices(host *session.Host, localName string, psk []byte, 
 		roomEvents:       hostRoom.Events(),
 		peerCount:        hostRoom.PeerCount,
 		peerNames:        hostRoom.ParticipantNames,
+		transcriptKey:    transcriptKey,
 		transcriptOpener: defaultTranscriptOpener(localName, psk),
 		updateNotices:    updateNotices,
 		attachmentClient: newAttachmentClientForHost(host.Addr(), psk),
 	}))
 }
 
-func RunJoin(conn *session.Session, localName string, peerAddr string, cfg session.Config, uiMode string, alertMode string) error {
-	return RunJoinWithUpdateNotices(conn, localName, peerAddr, cfg, uiMode, alertMode, nil)
+func RunJoin(conn *session.Session, localName string, peerAddr string, cfg session.Config, transcriptKey string, uiMode string, alertMode string) error {
+	return RunJoinWithUpdateNotices(conn, localName, peerAddr, cfg, transcriptKey, uiMode, alertMode, nil)
 }
 
-func RunJoinWithUpdateNotices(conn *session.Session, localName string, peerAddr string, cfg session.Config, uiMode string, alertMode string, updateNotices <-chan string) error {
+func RunJoinWithUpdateNotices(conn *session.Session, localName string, peerAddr string, cfg session.Config, transcriptKey string, uiMode string, alertMode string, updateNotices <-chan string) error {
 	return runUI(newModel(modelOptions{
 		mode:          "join",
 		uiMode:        uiMode,
@@ -386,6 +387,7 @@ func RunJoinWithUpdateNotices(conn *session.Session, localName string, peerAddr 
 		connect: func(ctx context.Context) (sessionClient, error) {
 			return session.Dial(ctx, peerAddr, cfg)
 		},
+		transcriptKey:    transcriptKey,
 		transcriptOpener: defaultTranscriptOpener(localName, cfg.PSK),
 		updateNotices:    updateNotices,
 		startupArgs:      append([]string(nil), os.Args[1:]...),
