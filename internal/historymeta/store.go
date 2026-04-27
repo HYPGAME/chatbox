@@ -16,6 +16,10 @@ type Record struct {
 }
 
 func OpenOrCreateRoomAuthorization(baseDir, roomKey, identityID string, now func() time.Time) (Record, error) {
+	return OpenOrCreateFirstSeenRecord(baseDir, roomKey, identityID, now)
+}
+
+func OpenOrCreateFirstSeenRecord(baseDir, roomKey, identityID string, now func() time.Time) (Record, error) {
 	if strings.TrimSpace(roomKey) == "" {
 		return Record{}, fmt.Errorf("room authorization: missing room key")
 	}
