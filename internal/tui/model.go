@@ -2707,6 +2707,10 @@ func (m model) conversationKeyForPeer(peerName string) string {
 	}
 }
 
+func (m model) displayRoomName() string {
+	return groupRoomNameFromKey(firstNonEmpty(m.currentConversationKey, m.transcriptKey))
+}
+
 func (m *model) resendPendingMessages() {
 	if m.session == nil {
 		return
@@ -2938,6 +2942,18 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+func groupRoomNameFromKey(roomKey string) string {
+	roomKey = strings.TrimSpace(roomKey)
+	if !strings.HasPrefix(roomKey, "group:") {
+		return ""
+	}
+	parts := strings.SplitN(roomKey, ":", 3)
+	if len(parts) != 3 {
+		return ""
+	}
+	return strings.TrimSpace(parts[1])
+}
+
 func renderEntry(entry historyEntry) string {
 	return renderEntryWithStatus(entry, entry.status)
 }
@@ -3054,6 +3070,10 @@ func renderDateSeparator(date string) string {
 }
 
 func (m model) renderStatusBar() string {
+	headerText := "chatbox " + m.mode
+	if roomName := m.displayRoomName(); roomName != "" {
+		headerText += " | room: " + roomName
+	}
 	status := m.status
 	style := statusStyle
 	if strings.TrimSpace(m.operationNotice) != "" {
@@ -3071,7 +3091,7 @@ func (m model) renderStatusBar() string {
 	} else if strings.Contains(strings.ToLower(status), "disconnected") {
 		style = errorStyle
 	}
-	return fmt.Sprintf("%s %s %s %s", headerStyle.Render("chatbox "+m.mode), timestampStyle().Render("|"), style.Render(status), timestampStyle().Render("| /help"))
+	return fmt.Sprintf("%s %s %s %s", headerStyle.Render(headerText), timestampStyle().Render("|"), style.Render(status), timestampStyle().Render("| /help"))
 }
 
 func (m model) renderInputBox() string {

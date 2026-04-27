@@ -2001,6 +2001,41 @@ func TestHostEventsCommandShowsJoinLeaveLog(t *testing.T) {
 	}
 }
 
+func TestRenderStatusBarShowsGroupRoomName(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		uiMode:        uiModeTUI,
+		localName:     "alice",
+		listeningAddr: "203.0.113.10:7331",
+		transcriptKey: "group:帝影剑域:abcd1234",
+	})
+	uiModel.status = "connected to host"
+
+	got := stripANSI(uiModel.renderStatusBar())
+	if !strings.Contains(got, "room: 帝影剑域") {
+		t.Fatalf("expected group room label, got %q", got)
+	}
+}
+
+func TestRenderStatusBarOmitsRoomNameForNonGroupSession(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		uiMode:        uiModeTUI,
+		localName:     "alice",
+		listeningAddr: "203.0.113.10:7331",
+	})
+	uiModel.status = "connected to host"
+
+	got := stripANSI(uiModel.renderStatusBar())
+	if strings.Contains(got, "room:") {
+		t.Fatalf("expected no room label, got %q", got)
+	}
+}
+
 func TestJoinStatusCommandSendsHiddenRequestAndRendersRosterResponse(t *testing.T) {
 	t.Parallel()
 
