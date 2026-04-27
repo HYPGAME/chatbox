@@ -215,15 +215,14 @@ func runHost(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("host", flag.ContinueOnError)
 	listenAddr := fs.String("listen", "0.0.0.0:7331", "TCP address to listen on")
 	pskFile := fs.String("psk-file", "", "Path to the PSK file")
+	groupName := fs.String("group-name", "", "Stable group name used to derive the room key")
+	groupPassword := fs.String("group-password", "", "Shared group password used to derive the PSK")
 	name := fs.String("name", defaultName(), "Local display name")
 	headless := fs.Bool("headless", false, "Run as a non-interactive relay service")
 	ui := fs.String("ui", "", "UI mode: scrollback or tui")
 	alert := fs.String("alert", "", "Alert mode: bell or off")
 	if err := fs.Parse(args); err != nil {
 		return err
-	}
-	if *pskFile == "" {
-		return errors.New("host requires --psk-file")
 	}
 	if *headless && strings.TrimSpace(*ui) != "" {
 		return errors.New("host --headless cannot be combined with --ui")
@@ -237,10 +236,11 @@ func runHost(ctx context.Context, args []string) error {
 		return err
 	}
 
-	psk, err := keys.LoadPSKFromFile(*pskFile)
+	creds, err := resolveSessionCredentials(*pskFile, *groupName, *groupPassword)
 	if err != nil {
 		return err
 	}
+	psk := creds.psk
 
 	host, err := session.Listen(*listenAddr, session.Config{
 		Name: *name,
@@ -279,6 +279,8 @@ func runJoin(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("join", flag.ContinueOnError)
 	peer := fs.String("peer", "", "Remote IP:port to connect to")
 	pskFile := fs.String("psk-file", "", "Path to the PSK file")
+	groupName := fs.String("group-name", "", "Stable group name used to derive the room key")
+	groupPassword := fs.String("group-password", "", "Shared group password used to derive the PSK")
 	name := fs.String("name", defaultName(), "Local display name")
 	ui := fs.String("ui", "", "UI mode: scrollback or tui")
 	alert := fs.String("alert", "", "Alert mode: bell or off")
@@ -287,9 +289,6 @@ func runJoin(ctx context.Context, args []string) error {
 	}
 	if *peer == "" {
 		return errors.New("join requires --peer")
-	}
-	if *pskFile == "" {
-		return errors.New("join requires --psk-file")
 	}
 	uiMode, err := resolveUI(*ui)
 	if err != nil {
@@ -300,10 +299,11 @@ func runJoin(ctx context.Context, args []string) error {
 		return err
 	}
 
-	psk, err := keys.LoadPSKFromFile(*pskFile)
+	creds, err := resolveSessionCredentials(*pskFile, *groupName, *groupPassword)
 	if err != nil {
 		return err
 	}
+	psk := creds.psk
 
 	conn, err := session.Dial(ctx, *peer, session.Config{
 		Name: *name,
