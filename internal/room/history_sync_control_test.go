@@ -114,3 +114,70 @@ func TestHistorySyncControlIgnoresNonSyncMessages(t *testing.T) {
 		t.Fatal("expected regular message not to parse as sync hello")
 	}
 }
+
+func TestHostHistorySyncControlRequestRoundTrips(t *testing.T) {
+	t.Parallel()
+
+	request := HostHistoryRequest{
+		Version:     1,
+		RoomKey:     "join:127.0.0.1:7331",
+		IdentityID:  "identity-a",
+		JoinedAt:    time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC),
+		NewestLocal: time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC),
+	}
+
+	parsed, ok := ParseHostHistoryRequest(HostHistoryRequestBody(request))
+	if !ok {
+		t.Fatal("expected host history request to parse")
+	}
+	if parsed.RoomKey != request.RoomKey || parsed.IdentityID != request.IdentityID {
+		t.Fatalf("expected request to round-trip, got %#v", parsed)
+	}
+}
+
+func TestHostHistorySyncControlChunkRoundTrips(t *testing.T) {
+	t.Parallel()
+
+	chunk := HostHistoryChunk{
+		Version:        1,
+		RoomKey:        "join:127.0.0.1:7331",
+		TargetIdentity: "identity-a",
+		Records: []transcript.Record{
+			{
+				MessageID:      "msg-1",
+				Direction:      transcript.DirectionIncoming,
+				From:           "bob",
+				AuthorIdentity: "identity-b",
+				Body:           "synced",
+				At:             time.Date(2026, 4, 27, 11, 59, 0, 0, time.UTC),
+				Status:         transcript.StatusSent,
+			},
+		},
+		Revokes: []transcript.RevokeRecord{
+			{
+				TargetMessageID:  "msg-1",
+				OperatorIdentity: "identity-b",
+				At:               time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+
+	parsed, ok := ParseHostHistoryChunk(HostHistoryChunkBody(chunk))
+	if !ok {
+		t.Fatal("expected host history chunk to parse")
+	}
+	if len(parsed.Records) != 1 || len(parsed.Revokes) != 1 {
+		t.Fatalf("expected chunk payloads to round-trip, got %#v", parsed)
+	}
+}
+
+func TestHostHistorySyncControlDetectionIgnoresRegularMessages(t *testing.T) {
+	t.Parallel()
+
+	if IsHostHistorySyncControl("hello") {
+		t.Fatal("expected regular body not to be host-sync control")
+	}
+	if _, ok := ParseHostHistoryRequest("hello"); ok {
+		t.Fatal("expected regular body not to parse as host-sync request")
+	}
+}

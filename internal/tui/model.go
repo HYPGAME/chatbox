@@ -20,6 +20,7 @@ import (
 	"chatbox/internal/admins"
 	"chatbox/internal/attachment"
 	"chatbox/internal/historymeta"
+	"chatbox/internal/hosthistory"
 	"chatbox/internal/identity"
 	"chatbox/internal/room"
 	"chatbox/internal/session"
@@ -127,6 +128,10 @@ type roomUpdatePerformedMsg struct {
 	err     error
 }
 
+type hostSyncTimeoutMsg struct {
+	attempt uint64
+}
+
 type historyKind string
 
 const (
@@ -138,6 +143,7 @@ const (
 	uiModeScrollback = "scrollback"
 	statusRetrying   = "retrying"
 	viewportTopRow   = 1
+	hostSyncTimeout  = 1500 * time.Millisecond
 )
 
 type historyEntry struct {
@@ -263,6 +269,11 @@ type model struct {
 	syncCapablePeers       map[string]bool
 	requestedHistory       map[string]struct{}
 	offeredHistory         map[string]struct{}
+	hostSyncPending        bool
+	hostSyncCompleted      bool
+	pendingPeerOffers      []room.HistorySyncOffer
+	hostSyncTimeout        time.Duration
+	hostSyncAttempt        uint64
 	executedRoomUpdates    map[string]struct{}
 	updateStatuses         map[string]map[string]string
 
@@ -353,6 +364,16 @@ func RunHost(host *session.Host, localName string, psk []byte, transcriptKey str
 func RunHostWithUpdateNotices(host *session.Host, localName string, psk []byte, transcriptKey string, uiMode string, alertMode string, updateNotices <-chan string) error {
 	hostRoom := room.NewHostRoom(localName)
 	hostRoom.ConfigureUpdates(loadHostAdminStore(), defaultRoomReleaseResolver)
+	if baseDir, err := hosthistory.DefaultBaseDir(); err == nil {
+		if retained, openErr := hosthistory.OpenStore(baseDir, psk); openErr == nil {
+			if metaDir, metaErr := historymeta.DefaultBaseDir(); metaErr == nil {
+				hostRoom.ConfigureHistoryRetention(retained, hostRetentionRoomKey(host.Addr(), transcriptKey), func(roomKey, identityID string) (historymeta.Record, error) {
+					return historymeta.OpenOrCreateFirstSeenRecord(metaDir, roomKey, identityID, time.Now)
+				})
+				_, _ = retained.CleanupExpired(time.Now())
+			}
+		}
+	}
 	go hostRoom.Serve(context.Background(), host)
 
 	return runUI(newModel(modelOptions{
@@ -403,6 +424,13 @@ func defaultTranscriptOpener(localName string, psk []byte) func(string) (transcr
 		}
 		return transcript.OpenStore(baseDir, localName, peerName, psk)
 	}
+}
+
+func hostRetentionRoomKey(listenAddr, transcriptKey string) string {
+	if strings.TrimSpace(transcriptKey) != "" {
+		return transcriptKey
+	}
+	return transcript.JoinRoomKey(listenAddr)
 }
 
 func defaultUpdatePerformer(ctx context.Context, targetVersion string) (update.Outcome, error) {
@@ -553,6 +581,9 @@ func newModel(opts modelOptions) model {
 	if m.reconnectDelay == 0 {
 		m.reconnectDelay = time.Second
 	}
+	if m.hostSyncTimeout == 0 {
+		m.hostSyncTimeout = hostSyncTimeout
+	}
 	if opts.peerCount != nil {
 		m.peerCountValue = opts.peerCount()
 	}
@@ -625,6 +656,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleRoomUpdatePerformed(msg)
 	case attachmentStreamMsg:
 		return m.handleAttachmentStream(msg)
+	case hostSyncTimeoutMsg:
+		if msg.attempt != m.hostSyncAttempt {
+			return m, nil
+		}
+		if m.hostSyncPending {
+			m.hostSyncPending = false
+			m.flushQueuedPeerOffers()
+		}
+		return m, nil
 	case sessionClosedMsg:
 		return m.handleSessionClosed(msg.err)
 	case tea.KeyMsg:
@@ -724,6 +764,7 @@ func (m *model) handleSessionReady(msg sessionReadyMsg) (tea.Model, tea.Cmd) {
 		m.addErrorEntry(err.Error())
 	}
 	m.announceClientVersion()
+	hostHistoryRequested, hostSyncAttempt := m.requestHostHistory()
 	m.announceHistorySyncCapability()
 
 	cmds := []tea.Cmd{
@@ -731,6 +772,9 @@ func (m *model) handleSessionReady(msg sessionReadyMsg) (tea.Model, tea.Cmd) {
 		waitForReceipt(m.session),
 		waitForSessionClose(m.session),
 		m.flushScrollbackCmd(),
+	}
+	if hostHistoryRequested {
+		cmds = append(cmds, waitForHostSyncTimeout(m.hostSyncTimeout, hostSyncAttempt))
 	}
 	return *m, tea.Batch(cmds...)
 }
@@ -741,6 +785,9 @@ func (m *model) bindSession(conn sessionClient) error {
 	}
 	m.requestedHistory = make(map[string]struct{})
 	m.offeredHistory = make(map[string]struct{})
+	m.hostSyncPending = false
+	m.hostSyncCompleted = false
+	m.pendingPeerOffers = nil
 	peerName := conn.PeerName()
 	conversationKey := m.conversationKeyForPeer(peerName)
 	if err := m.ensureRoomAuthorization(conversationKey); err != nil {
@@ -836,6 +883,25 @@ func (m *model) announceHistorySyncCapability() {
 		RoomKey:       m.roomAuthorization.RoomKey,
 		Summary:       summary,
 	}))
+}
+
+func (m *model) requestHostHistory() (bool, uint64) {
+	if m.mode != "join" || m.session == nil || m.identityID == "" || m.roomAuthorization.RoomKey == "" {
+		return false, 0
+	}
+	summary := HistorySyncSummaryForRecords(m.history)
+	m.hostSyncPending = true
+	m.hostSyncCompleted = false
+	m.hostSyncAttempt++
+	attempt := m.hostSyncAttempt
+	_, _ = m.session.Send(room.HostHistoryRequestBody(room.HostHistoryRequest{
+		Version:     1,
+		RoomKey:     m.roomAuthorization.RoomKey,
+		IdentityID:  m.identityID,
+		JoinedAt:    m.roomAuthorization.JoinedAt,
+		NewestLocal: summary.Newest,
+	}))
+	return true, attempt
 }
 
 func HistorySyncSummaryForRecords(history []historyEntry) room.HistorySyncSummary {
@@ -1236,6 +1302,14 @@ func (m *model) handleControlMessage(message session.Message) (bool, tea.Cmd) {
 }
 
 func (m *model) handleHistorySyncControl(message session.Message) bool {
+	if chunk, ok := room.ParseHostHistoryChunk(message.Body); ok {
+		if m.replayHistoricalWindow(chunk.RoomKey, chunk.TargetIdentity, m.identityID, chunk.Records, chunk.Revokes) {
+			m.hostSyncPending = false
+			m.hostSyncCompleted = true
+			m.flushQueuedPeerOffers()
+		}
+		return true
+	}
 	if hello, ok := room.ParseHistorySyncHello(message.Body); ok {
 		if hello.IdentityID != "" && strings.TrimSpace(message.From) != "" {
 			m.syncCapablePeers[message.From] = true
@@ -1257,6 +1331,9 @@ func (m *model) handleHistorySyncControl(message session.Message) bool {
 	if chunk, ok := room.ParseHistorySyncChunk(message.Body); ok {
 		m.rememberPeerIdentity(message.From, chunk.SourceIdentity)
 		m.replayHistorySyncChunk(chunk)
+		return true
+	}
+	if room.IsHostHistorySyncControl(message.Body) {
 		return true
 	}
 	if room.IsHistorySyncControl(message.Body) {
@@ -1304,6 +1381,10 @@ func (m *model) maybeRequestHistorySync(offer room.HistorySyncOffer) {
 	}
 	sourceIdentity := strings.TrimSpace(offer.SourceIdentity)
 	if sourceIdentity == "" {
+		return
+	}
+	if m.hostSyncPending {
+		m.queuePeerHistoryOffer(offer)
 		return
 	}
 	if _, ok := m.requestedHistory[sourceIdentity]; ok {
@@ -1385,15 +1466,19 @@ func (m *model) maybeSendHistorySyncChunk(request room.HistorySyncRequest) {
 }
 
 func (m *model) replayHistorySyncChunk(chunk room.HistorySyncChunk) {
+	m.replayHistoricalWindow(chunk.RoomKey, chunk.TargetIdentity, chunk.SourceIdentity, chunk.Records, chunk.Revokes)
+}
+
+func (m *model) replayHistoricalWindow(roomKey, targetIdentity, fallbackAuthorIdentity string, records []transcript.Record, revokes []transcript.RevokeRecord) bool {
 	if m.identityID == "" || m.roomAuthorization.RoomKey == "" {
-		return
+		return false
 	}
-	if chunk.TargetIdentity != m.identityID || chunk.RoomKey != m.roomAuthorization.RoomKey {
-		return
+	if targetIdentity != m.identityID || roomKey != m.roomAuthorization.RoomKey {
+		return false
 	}
 
 	added := 0
-	for _, record := range chunk.Records {
+	for _, record := range records {
 		if record.MessageID == "" || record.At.Before(m.roomAuthorization.JoinedAt) {
 			continue
 		}
@@ -1403,22 +1488,48 @@ func (m *model) replayHistorySyncChunk(chunk room.HistorySyncChunk) {
 		if _, ok := m.entryIndex[record.MessageID]; ok {
 			continue
 		}
+		if record.AuthorIdentity == "" && record.Direction == transcript.DirectionOutgoing {
+			record.AuthorIdentity = strings.TrimSpace(fallbackAuthorIdentity)
+		}
 		if m.hasEquivalentHistoryMessage(record) {
 			m.seenMessages[record.MessageID] = struct{}{}
 			continue
-		}
-		if record.AuthorIdentity == "" && record.Direction == transcript.DirectionOutgoing {
-			record.AuthorIdentity = chunk.SourceIdentity
 		}
 		m.addHistoricalRecordEntry(record, true)
 		m.seenMessages[record.MessageID] = struct{}{}
 		added++
 	}
-	for _, revoke := range chunk.Revokes {
+	for _, revoke := range revokes {
 		m.handleRevokeRecord(revoke, true)
 	}
 	if added > 0 {
 		m.addSystemEntry(fmt.Sprintf("history synced: %d messages", added))
+	}
+	return true
+}
+
+func (m *model) queuePeerHistoryOffer(offer room.HistorySyncOffer) {
+	sourceIdentity := strings.TrimSpace(offer.SourceIdentity)
+	if sourceIdentity == "" {
+		return
+	}
+	for i := range m.pendingPeerOffers {
+		if strings.TrimSpace(m.pendingPeerOffers[i].SourceIdentity) == sourceIdentity {
+			m.pendingPeerOffers[i] = offer
+			return
+		}
+	}
+	m.pendingPeerOffers = append(m.pendingPeerOffers, offer)
+}
+
+func (m *model) flushQueuedPeerOffers() {
+	if len(m.pendingPeerOffers) == 0 {
+		return
+	}
+	offers := append([]room.HistorySyncOffer(nil), m.pendingPeerOffers...)
+	m.pendingPeerOffers = nil
+	for _, offer := range offers {
+		m.maybeRequestHistorySync(offer)
 	}
 }
 
@@ -2676,6 +2787,9 @@ func (m *model) resetConversation() {
 	m.currentPeer = ""
 	m.requestedHistory = make(map[string]struct{})
 	m.offeredHistory = make(map[string]struct{})
+	m.hostSyncPending = false
+	m.hostSyncCompleted = false
+	m.pendingPeerOffers = nil
 	m.executedRoomUpdates = make(map[string]struct{})
 	m.updateStatuses = make(map[string]map[string]string)
 	m.copySelection = nil
@@ -2809,6 +2923,15 @@ func retryConnectAfter(delay time.Duration, connect connectFunc) tea.Cmd {
 	return tea.Tick(delay, func(time.Time) tea.Msg {
 		conn, err := connect(context.Background())
 		return sessionReadyMsg{session: conn, err: err}
+	})
+}
+
+func waitForHostSyncTimeout(delay time.Duration, attempt uint64) tea.Cmd {
+	if delay <= 0 {
+		delay = hostSyncTimeout
+	}
+	return tea.Tick(delay, func(time.Time) tea.Msg {
+		return hostSyncTimeoutMsg{attempt: attempt}
 	})
 }
 
@@ -3074,7 +3197,7 @@ func renderDateSeparator(date string) string {
 func (m model) renderStatusBar() string {
 	headerText := "chatbox " + m.mode
 	if roomName := m.displayRoomName(); roomName != "" {
-		headerText += " | room: " + roomName
+		headerText += " | chat: " + roomName
 	}
 	status := m.status
 	style := statusStyle

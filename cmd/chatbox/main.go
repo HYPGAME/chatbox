@@ -18,6 +18,7 @@ import (
 	"chatbox/internal/identity"
 	"chatbox/internal/keys"
 	"chatbox/internal/session"
+	"chatbox/internal/transcript"
 	"chatbox/internal/tui"
 	"chatbox/internal/update"
 	"chatbox/internal/version"
@@ -31,10 +32,10 @@ type hostAttachmentStore interface {
 var (
 	runHostUI       = tui.RunHost
 	runHostUIWithUpdates = tui.RunHostWithUpdateNotices
-	runHostHeadless = func(ctx context.Context, host *session.Host, localName string, _ []byte, store hostAttachmentStore) error {
+	runHostHeadless = func(ctx context.Context, host *session.Host, localName string, psk []byte, roomKey string, store hostAttachmentStore) error {
 		signalCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		return headless.RunHost(signalCtx, host, localName, stderr, store)
+		return headless.RunHost(signalCtx, host, localName, psk, roomKey, stderr, store, nil)
 	}
 	runJoinUI                   = tui.RunJoin
 	runJoinUIWithUpdates        = tui.RunJoinWithUpdateNotices
@@ -269,7 +270,7 @@ func runHost(ctx context.Context, args []string) error {
 	defer attachmentServer.Close()
 
 	if *headless {
-		return runHostHeadless(ctx, host, *name, psk, attachmentStore)
+		return runHostHeadless(ctx, host, *name, psk, sharedHistoryRoomKey(host.Addr(), transcriptKey), attachmentStore)
 	}
 	if uiMode == "tui" {
 		return runHostUIWithUpdates(host, *name, psk, transcriptKey, uiMode, alertMode, backgroundUpdateNoticeChannel(ctx))
@@ -337,6 +338,13 @@ func defaultName() string {
 		return "chatbox"
 	}
 	return name
+}
+
+func sharedHistoryRoomKey(listenAddr, transcriptKey string) string {
+	if strings.TrimSpace(transcriptKey) != "" {
+		return transcriptKey
+	}
+	return transcript.JoinRoomKey(listenAddr)
 }
 
 func usageError() error {

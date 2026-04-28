@@ -8,7 +8,10 @@ import (
 	"time"
 
 	"chatbox/internal/admins"
+	"chatbox/internal/historymeta"
+	"chatbox/internal/hosthistory"
 	"chatbox/internal/session"
+	"chatbox/internal/transcript"
 	"chatbox/internal/version"
 )
 
@@ -291,6 +294,154 @@ func TestHostRoomForwardsHistorySyncMessagesToMembersWhoAnnouncedHello(t *testin
 		t.Fatalf("expected sync-capable member to receive sync control, got %#v", got)
 	}
 	assertNoRoomMessage(t, room.Messages())
+}
+
+func TestHostRoomStoresAuthoritativeJoinWhenSyncHelloArrives(t *testing.T) {
+	t.Parallel()
+
+	room := NewHostRoom("host")
+	defer room.Close()
+
+	joins := &fakeJoinStore{}
+	room.ConfigureHistoryRetention(&fakeRetainedHistoryStore{}, "join:127.0.0.1:7331", joins.open)
+
+	member := newFakeMember("alice")
+	room.AddMember(member)
+	drainJoinEvents(t, room, 1)
+
+	member.messages <- session.Message{
+		ID:   "sync-hello-authoritative",
+		From: "alice",
+		Body: HistorySyncHelloBody(HistorySyncHello{
+			Version:    1,
+			IdentityID: "identity-a",
+			RoomKey:    "join:127.0.0.1:7331",
+		}),
+		At: time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC),
+	}
+
+	waitForJoinRecord(t, joins, "join:127.0.0.1:7331", "identity-a")
+}
+
+func TestHostRoomAnswersAuthorizedHostHistoryRequest(t *testing.T) {
+	t.Parallel()
+
+	room := NewHostRoom("host")
+	defer room.Close()
+
+	store := &fakeRetainedHistoryStore{
+		window: hosthistory.Window{
+			Records: []transcript.Record{
+				{
+					MessageID:      "msg-1",
+					Direction:      transcript.DirectionIncoming,
+					From:           "bob",
+					AuthorIdentity: "identity-b",
+					Body:           "late message",
+					At:             time.Date(2026, 4, 27, 11, 59, 0, 0, time.UTC),
+					Status:         transcript.StatusSent,
+				},
+			},
+		},
+	}
+	joinedAt := time.Date(2026, 4, 27, 11, 0, 0, 0, time.UTC)
+	joins := &fakeJoinStore{
+		record: historymeta.Record{
+			RoomKey:    "join:127.0.0.1:7331",
+			IdentityID: "identity-a",
+			JoinedAt:   joinedAt,
+		},
+	}
+	room.ConfigureHistoryRetention(store, "join:127.0.0.1:7331", joins.open)
+
+	member := newFakeMember("alice")
+	room.AddMember(member)
+	drainJoinEvents(t, room, 1)
+
+	newestLocal := time.Date(2026, 4, 27, 11, 58, 0, 0, time.UTC)
+	member.messages <- session.Message{
+		ID:   "hostsync-request-1",
+		From: "alice",
+		Body: HostHistoryRequestBody(HostHistoryRequest{
+			Version:     1,
+			RoomKey:     "join:127.0.0.1:7331",
+			IdentityID:  "identity-a",
+			JoinedAt:    time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC),
+			NewestLocal: newestLocal,
+		}),
+		At: time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC),
+	}
+
+	response := waitForResentMessage(t, member.resent)
+	chunk, ok := ParseHostHistoryChunk(response.Body)
+	if !ok {
+		t.Fatalf("expected host history chunk, got %#v", response)
+	}
+	if len(chunk.Records) != 1 || chunk.TargetIdentity != "identity-a" {
+		t.Fatalf("expected authorized retained chunk, got %#v", chunk)
+	}
+	expectedSince := newestLocal.Add(-2 * time.Minute)
+	if !store.lastSince.Equal(expectedSince) {
+		t.Fatalf("expected hostsync lower bound %v, got %v", expectedSince, store.lastSince)
+	}
+	assertNoRoomMessage(t, room.Messages())
+}
+
+func TestHostRoomRetainsVisibleChatMessagesAndRevokes(t *testing.T) {
+	t.Parallel()
+
+	room := NewHostRoom("host")
+	defer room.Close()
+
+	store := &fakeRetainedHistoryStore{}
+	room.ConfigureHistoryRetention(store, "join:127.0.0.1:7331", nil)
+
+	member := newFakeMember("alice")
+	room.AddMember(member)
+	drainJoinEvents(t, room, 1)
+
+	member.messages <- session.Message{
+		ID:   "sync-hello-retain",
+		From: "alice",
+		Body: HistorySyncHelloBody(HistorySyncHello{
+			Version:    1,
+			IdentityID: "identity-a",
+			RoomKey:    "join:127.0.0.1:7331",
+		}),
+		At: time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC),
+	}
+
+	member.messages <- session.Message{
+		ID:   "msg-retained-1",
+		From: "alice",
+		Body: "hello retained world",
+		At:   time.Date(2026, 4, 27, 12, 0, 30, 0, time.UTC),
+	}
+	waitForRoomMessage(t, room.Messages())
+
+	member.messages <- session.Message{
+		ID:   "revoke-retained-1",
+		From: "alice",
+		Body: RevokeBody(Revoke{
+			Version:          1,
+			RoomKey:          "join:127.0.0.1:7331",
+			TargetMessageID:  "msg-retained-1",
+			OperatorIdentity: "identity-a",
+			At:               time.Date(2026, 4, 27, 12, 1, 0, 0, time.UTC),
+		}),
+		At: time.Date(2026, 4, 27, 12, 1, 0, 0, time.UTC),
+	}
+	waitForRoomMessage(t, room.Messages())
+
+	if len(store.appendedMessages) != 1 {
+		t.Fatalf("expected one retained message, got %#v", store.appendedMessages)
+	}
+	if store.appendedMessages[0].MessageID != "msg-retained-1" || store.appendedMessages[0].AuthorIdentity != "identity-a" {
+		t.Fatalf("expected retained message metadata, got %#v", store.appendedMessages[0])
+	}
+	if len(store.appendedRevokes) != 1 || store.appendedRevokes[0].TargetMessageID != "msg-retained-1" {
+		t.Fatalf("expected one retained revoke, got %#v", store.appendedRevokes)
+	}
 }
 
 func TestHostRoomAcceptsAuthorizedUpdateRequestAndBroadcastsExecute(t *testing.T) {
@@ -580,6 +731,19 @@ type fakeAttachmentCleaner struct {
 	deleted string
 }
 
+type fakeRetainedHistoryStore struct {
+	window           hosthistory.Window
+	lastSince        time.Time
+	appendedMessages []transcript.Record
+	appendedRevokes  []transcript.RevokeRecord
+}
+
+type fakeJoinStore struct {
+	record  historymeta.Record
+	calls   []historymeta.Record
+	callsMu sync.Mutex
+}
+
 func newFakeMember(peerName string) *fakeMember {
 	return &fakeMember{
 		peerName: peerName,
@@ -601,6 +765,36 @@ func (f *fakeAttachmentCleaner) lastDeleted() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.deleted
+}
+
+func (f *fakeRetainedHistoryStore) AppendMessage(_ string, record transcript.Record, _ time.Time) error {
+	f.appendedMessages = append(f.appendedMessages, record)
+	return nil
+}
+
+func (f *fakeRetainedHistoryStore) AppendRevoke(_ string, revoke transcript.RevokeRecord, _ time.Time) error {
+	f.appendedRevokes = append(f.appendedRevokes, revoke)
+	return nil
+}
+
+func (f *fakeRetainedHistoryStore) LoadWindow(_ string, since, _ time.Time) (hosthistory.Window, error) {
+	f.lastSince = since
+	return f.window, nil
+}
+
+func (f *fakeJoinStore) open(roomKey, identityID string) (historymeta.Record, error) {
+	f.callsMu.Lock()
+	defer f.callsMu.Unlock()
+
+	if f.record.RoomKey == "" {
+		f.record = historymeta.Record{
+			RoomKey:    roomKey,
+			IdentityID: identityID,
+			JoinedAt:   time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC),
+		}
+	}
+	f.calls = append(f.calls, historymeta.Record{RoomKey: roomKey, IdentityID: identityID})
+	return f.record, nil
 }
 
 func (f *fakeMember) Messages() <-chan session.Message { return f.messages }
@@ -699,4 +893,19 @@ func waitForCondition(t *testing.T, fn func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("timed out waiting for condition")
+}
+
+func waitForJoinRecord(t *testing.T, store *fakeJoinStore, roomKey, identityID string) {
+	t.Helper()
+
+	waitForCondition(t, func() bool {
+		store.callsMu.Lock()
+		defer store.callsMu.Unlock()
+		for _, call := range store.calls {
+			if call.RoomKey == roomKey && call.IdentityID == identityID {
+				return true
+			}
+		}
+		return false
+	})
 }

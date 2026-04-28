@@ -78,3 +78,44 @@ func TestOpenOrCreateRoomAuthorizationSeparatesIdentities(t *testing.T) {
 		t.Fatalf("expected identity-b joined_at %v, got %v", second, recordB.JoinedAt)
 	}
 }
+
+func TestOpenOrCreateFirstSeenRecordPreservesExistingTimestamp(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	first := time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC)
+	second := first.Add(24 * time.Hour)
+
+	created, err := OpenOrCreateFirstSeenRecord(baseDir, "room:abc", "identity-1", func() time.Time {
+		return first
+	})
+	if err != nil {
+		t.Fatalf("OpenOrCreateFirstSeenRecord returned error: %v", err)
+	}
+	reopened, err := OpenOrCreateFirstSeenRecord(baseDir, "room:abc", "identity-1", func() time.Time {
+		return second
+	})
+	if err != nil {
+		t.Fatalf("OpenOrCreateFirstSeenRecord returned error: %v", err)
+	}
+	if !reopened.JoinedAt.Equal(created.JoinedAt) {
+		t.Fatalf("expected first-seen timestamp to persist, got %v vs %v", created.JoinedAt, reopened.JoinedAt)
+	}
+}
+
+func TestOpenOrCreateRoomAuthorizationAliasesFirstSeenRecord(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	now := time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC)
+
+	record, err := OpenOrCreateRoomAuthorization(baseDir, "room:abc", "identity-1", func() time.Time {
+		return now
+	})
+	if err != nil {
+		t.Fatalf("OpenOrCreateRoomAuthorization returned error: %v", err)
+	}
+	if !record.JoinedAt.Equal(now) {
+		t.Fatalf("expected alias to keep joined_at %v, got %v", now, record.JoinedAt)
+	}
+}
