@@ -1307,7 +1307,7 @@ func (m *model) handleControlMessage(message session.Message) (bool, tea.Cmd) {
 
 func (m *model) handleHistorySyncControl(message session.Message) bool {
 	if chunk, ok := room.ParseHostHistoryChunk(message.Body); ok {
-		if m.replayHistoricalWindow(chunk.RoomKey, chunk.TargetIdentity, m.identityID, chunk.Records, chunk.Revokes) {
+		if m.replayHistoricalWindow(chunk.RoomKey, chunk.TargetIdentity, m.identityID, chunk.Records, chunk.Revokes, false) {
 			m.hostSyncPending = false
 			m.hostSyncCompleted = true
 			m.flushQueuedPeerOffers()
@@ -1470,10 +1470,10 @@ func (m *model) maybeSendHistorySyncChunk(request room.HistorySyncRequest) {
 }
 
 func (m *model) replayHistorySyncChunk(chunk room.HistorySyncChunk) {
-	m.replayHistoricalWindow(chunk.RoomKey, chunk.TargetIdentity, chunk.SourceIdentity, chunk.Records, chunk.Revokes)
+	m.replayHistoricalWindow(chunk.RoomKey, chunk.TargetIdentity, chunk.SourceIdentity, chunk.Records, chunk.Revokes, true)
 }
 
-func (m *model) replayHistoricalWindow(roomKey, targetIdentity, fallbackAuthorIdentity string, records []transcript.Record, revokes []transcript.RevokeRecord) bool {
+func (m *model) replayHistoricalWindow(roomKey, targetIdentity, fallbackAuthorIdentity string, records []transcript.Record, revokes []transcript.RevokeRecord, enforceJoinedAt bool) bool {
 	if m.identityID == "" || m.roomAuthorization.RoomKey == "" {
 		return false
 	}
@@ -1483,7 +1483,10 @@ func (m *model) replayHistoricalWindow(roomKey, targetIdentity, fallbackAuthorId
 
 	added := 0
 	for _, record := range records {
-		if record.MessageID == "" || record.At.Before(m.roomAuthorization.JoinedAt) {
+		if record.MessageID == "" {
+			continue
+		}
+		if enforceJoinedAt && record.At.Before(m.roomAuthorization.JoinedAt) {
 			continue
 		}
 		if _, ok := m.seenMessages[record.MessageID]; ok {

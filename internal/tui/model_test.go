@@ -2903,6 +2903,63 @@ func TestModelReplaysHostHistoryChunkThroughUnifiedMergePath(t *testing.T) {
 	}
 }
 
+func TestModelReplaysAuthoritativeHostHistoryChunkEarlierThanLocalJoinedAt(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeTranscriptStore{}
+	localJoinedAt := time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC)
+	hostAuthoritativeMessageAt := localJoinedAt.Add(-30 * time.Minute)
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		session:       &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return store, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-local", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{RoomKey: roomKey, IdentityID: identityID, JoinedAt: localJoinedAt}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: &fakeSession{peerName: "host"}})
+	uiModel = updated.(model)
+
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "hostsync-authoritative-earlier",
+			From: "host",
+			Body: room.HostHistoryChunkBody(room.HostHistoryChunk{
+				Version:        1,
+				RoomKey:        transcript.JoinRoomKey("203.0.113.10:7331"),
+				TargetIdentity: "identity-local",
+				Records: []transcript.Record{
+					{
+						MessageID:      "offline-before-local-joinedat",
+						Direction:      transcript.DirectionIncoming,
+						From:           "bob",
+						AuthorIdentity: "identity-bob",
+						Body:           "host authoritative replay",
+						At:             hostAuthoritativeMessageAt,
+						Status:         transcript.StatusSent,
+					},
+				},
+			}),
+			At: localJoinedAt.Add(time.Minute),
+		},
+	})
+	uiModel = updated.(model)
+
+	if len(store.appends) != 1 || store.appends[0].MessageID != "offline-before-local-joinedat" {
+		t.Fatalf("expected authoritative host history replay to persist despite newer local joinedAt, got %#v", store.appends)
+	}
+	if !strings.Contains(stripANSI(uiModel.View()), "host authoritative replay") {
+		t.Fatalf("expected authoritative host history in view, got %q", stripANSI(uiModel.View()))
+	}
+}
+
 func TestModelSendsVersionAnnouncementAfterSessionReadyWithoutHistorySyncPrereqs(t *testing.T) {
 	t.Parallel()
 
