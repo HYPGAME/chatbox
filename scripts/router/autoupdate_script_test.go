@@ -120,8 +120,8 @@ printf '%s\n' "${1:-}" >> "${CHATBOX_STATE_DIR:?}/chatbox-init.log"
 	}
 
 	initLog := mustReadFile(t, filepath.Join(stateDir, "chatbox-init.log"))
-	if strings.TrimSpace(initLog) != "restart" {
-		t.Fatalf("expected chatbox service restart, got %q", initLog)
+	if strings.TrimSpace(initLog) != "restart\nstatus" {
+		t.Fatalf("expected chatbox service restart/status, got %q", initLog)
 	}
 
 	version := strings.TrimSpace(mustReadFile(t, filepath.Join(stateDir, "version")))
@@ -681,6 +681,302 @@ exit 0
 	curlLog := mustReadFile(t, filepath.Join(stateDir, "curl.log"))
 	if !strings.Contains(curlLog, "https://github.com/HYPGAME/chatbox/releases/latest/download/checksums.txt") {
 		t.Fatalf("expected bypass probe to warm release download path, got %q", curlLog)
+	}
+}
+
+func TestOpenWrtAutoUpdateRestartsMultipleServicesAfterVersionChange(t *testing.T) {
+	t.Parallel()
+
+	scriptPath, err := filepath.Abs("chatbox-openwrt-autoupdate.sh")
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+
+	tempDir := t.TempDir()
+	binDir := filepath.Join(tempDir, "bin")
+	initdDir := filepath.Join(tempDir, "init.d")
+	stateDir := filepath.Join(tempDir, "state")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("create bin dir: %v", err)
+	}
+	if err := os.MkdirAll(initdDir, 0o755); err != nil {
+		t.Fatalf("create initd dir: %v", err)
+	}
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+
+	mustWriteExecutable(t, filepath.Join(binDir, "chatbox"), `#!/bin/sh
+set -eu
+case "${1:-}" in
+version)
+	printf '%s\n' 'v0.1.9'
+	;;
+self-update)
+	cat > "$0" <<'EOF'
+#!/bin/sh
+set -eu
+case "${1:-}" in
+version)
+	printf '%s\n' 'v0.1.10'
+	;;
+self-update)
+	printf '%s\n' 'already updated'
+	;;
+*)
+	echo "unexpected command: $*" >&2
+	exit 99
+	;;
+esac
+EOF
+	chmod +x "$0"
+	printf '%s\n' 'updated to v0.1.10'
+	;;
+*)
+	echo "unexpected command: $*" >&2
+	exit 99
+	;;
+esac
+`)
+	mustWriteExecutable(t, filepath.Join(binDir, "logger"), `#!/bin/sh
+exit 0
+`)
+	mustWriteExecutable(t, filepath.Join(initdDir, "chatbox"), `#!/bin/sh
+set -eu
+printf 'chatbox %s\n' "${1:-}" >> "${CHATBOX_STATE_DIR:?}/init.log"
+exit 0
+`)
+	mustWriteExecutable(t, filepath.Join(initdDir, "chatbox-group"), `#!/bin/sh
+set -eu
+printf 'chatbox-group %s\n' "${1:-}" >> "${CHATBOX_STATE_DIR:?}/init.log"
+exit 0
+`)
+
+	mustWriteFile(t, filepath.Join(stateDir, "version"), []byte("v0.1.9\n"), 0o644)
+
+	cmd := exec.Command("/bin/sh", scriptPath)
+	cmd.Env = append(os.Environ(),
+		"PATH="+binDir+":"+os.Getenv("PATH"),
+		"CHATBOX_BIN="+filepath.Join(binDir, "chatbox"),
+		"CHATBOX_INITD_DIR="+initdDir,
+		"CHATBOX_STATE_DIR="+stateDir,
+		"CHATBOX_SERVICES=chatbox chatbox-group",
+		"LOCKDIR="+filepath.Join(tempDir, "lock"),
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run script: %v\n%s", err, output)
+	}
+
+	initLog := mustReadFile(t, filepath.Join(stateDir, "init.log"))
+	if strings.TrimSpace(initLog) != "chatbox restart\nchatbox status\nchatbox-group restart\nchatbox-group status" {
+		t.Fatalf("expected both services restart/status, got %q", initLog)
+	}
+}
+
+func TestOpenWrtAutoUpdateRollsBackWhenHealthCheckFails(t *testing.T) {
+	t.Parallel()
+
+	scriptPath, err := filepath.Abs("chatbox-openwrt-autoupdate.sh")
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+
+	tempDir := t.TempDir()
+	binDir := filepath.Join(tempDir, "bin")
+	initdDir := filepath.Join(tempDir, "init.d")
+	stateDir := filepath.Join(tempDir, "state")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("create bin dir: %v", err)
+	}
+	if err := os.MkdirAll(initdDir, 0o755); err != nil {
+		t.Fatalf("create initd dir: %v", err)
+	}
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+
+	mustWriteExecutable(t, filepath.Join(binDir, "chatbox"), `#!/bin/sh
+set -eu
+case "${1:-}" in
+version)
+	printf '%s\n' 'v0.1.9'
+	;;
+self-update)
+	cat > "$0" <<'EOF'
+#!/bin/sh
+set -eu
+case "${1:-}" in
+version)
+	printf '%s\n' 'v0.1.10'
+	;;
+self-update)
+	printf '%s\n' 'already updated'
+	;;
+*)
+	echo "unexpected command: $*" >&2
+	exit 99
+	;;
+esac
+EOF
+	chmod +x "$0"
+	printf '%s\n' 'updated to v0.1.10'
+	;;
+*)
+	echo "unexpected command: $*" >&2
+	exit 99
+	;;
+esac
+`)
+	mustWriteExecutable(t, filepath.Join(binDir, "logger"), `#!/bin/sh
+exit 0
+`)
+	mustWriteExecutable(t, filepath.Join(binDir, "sleep"), `#!/bin/sh
+exit 0
+`)
+	mustWriteExecutable(t, filepath.Join(initdDir, "chatbox"), `#!/bin/sh
+set -eu
+state="${CHATBOX_STATE_DIR:?}"
+action="${1:-}"
+printf '%s\n' "$action" >> "$state/init.log"
+case "$action" in
+restart)
+	version="$("${CHATBOX_BIN:?}" version)"
+	printf '%s\n' "$version" > "$state/current-service-version"
+	exit 0
+	;;
+status)
+	if [ "$(cat "$state/current-service-version")" = "v0.1.9" ]; then
+		exit 0
+	fi
+	exit 1
+	;;
+*)
+	exit 0
+	;;
+esac
+`)
+
+	mustWriteFile(t, filepath.Join(stateDir, "current-service-version"), []byte("v0.1.9\n"), 0o644)
+
+	cmd := exec.Command("/bin/sh", scriptPath)
+	cmd.Env = append(os.Environ(),
+		"PATH="+binDir+":"+os.Getenv("PATH"),
+		"CHATBOX_BIN="+filepath.Join(binDir, "chatbox"),
+		"CHATBOX_INITD_DIR="+initdDir,
+		"CHATBOX_STATE_DIR="+stateDir,
+		"CHATBOX_HEALTHCHECK_RETRIES=2",
+		"LOCKDIR="+filepath.Join(tempDir, "lock"),
+	)
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected health-check failure rollback path, got success\n%s", output)
+	}
+
+	versionCmd := exec.Command(filepath.Join(binDir, "chatbox"), "version")
+	versionCmd.Env = append(os.Environ(), "CHATBOX_STATE_DIR="+stateDir)
+	if versionOutput, err := versionCmd.CombinedOutput(); err != nil || strings.TrimSpace(string(versionOutput)) != "v0.1.9" {
+		t.Fatalf("expected binary rollback to v0.1.9, got err=%v output=%q", err, versionOutput)
+	}
+	if currentServiceVersion := strings.TrimSpace(mustReadFile(t, filepath.Join(stateDir, "current-service-version"))); currentServiceVersion != "v0.1.9" {
+		t.Fatalf("expected rolled back service version v0.1.9, got %q", currentServiceVersion)
+	}
+	if initLog := strings.TrimSpace(mustReadFile(t, filepath.Join(stateDir, "init.log"))); initLog != "restart\nstatus\nstatus\nrestart\nstatus" {
+		t.Fatalf("expected restart/status/status/rollback restart/status, got %q", initLog)
+	}
+}
+
+func TestOpenWrtAutoUpdateWaitsForHealthyServiceBeforeSuccess(t *testing.T) {
+	t.Parallel()
+
+	scriptPath, err := filepath.Abs("chatbox-openwrt-autoupdate.sh")
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+
+	tempDir := t.TempDir()
+	binDir := filepath.Join(tempDir, "bin")
+	initdDir := filepath.Join(tempDir, "init.d")
+	stateDir := filepath.Join(tempDir, "state")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("create bin dir: %v", err)
+	}
+	if err := os.MkdirAll(initdDir, 0o755); err != nil {
+		t.Fatalf("create initd dir: %v", err)
+	}
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+
+	mustWriteExecutable(t, filepath.Join(binDir, "chatbox"), `#!/bin/sh
+set -eu
+state="${CHATBOX_STATE_DIR:?}"
+case "${1:-}" in
+version)
+	cat "$state/version"
+	;;
+self-update)
+	printf '%s\n' 'v0.1.10' > "$state/version"
+	printf '%s\n' 'updated to v0.1.10'
+	;;
+*)
+	echo "unexpected command: $*" >&2
+	exit 99
+	;;
+esac
+`)
+	mustWriteExecutable(t, filepath.Join(binDir, "logger"), `#!/bin/sh
+exit 0
+`)
+	mustWriteExecutable(t, filepath.Join(binDir, "sleep"), `#!/bin/sh
+exit 0
+`)
+	mustWriteExecutable(t, filepath.Join(initdDir, "chatbox"), `#!/bin/sh
+set -eu
+state="${CHATBOX_STATE_DIR:?}"
+action="${1:-}"
+printf '%s\n' "$action" >> "$state/init.log"
+case "$action" in
+restart)
+	: > "$state/status-count"
+	exit 0
+	;;
+status)
+	count=0
+	if [ -f "$state/status-count" ]; then
+		count="$(wc -l < "$state/status-count")"
+	fi
+	count=$((count + 1))
+	printf '%s\n' x >> "$state/status-count"
+	if [ "$count" -lt 3 ]; then
+		exit 1
+	fi
+	exit 0
+	;;
+*)
+	exit 0
+	;;
+esac
+`)
+
+	mustWriteFile(t, filepath.Join(stateDir, "version"), []byte("v0.1.9\n"), 0o644)
+
+	cmd := exec.Command("/bin/sh", scriptPath)
+	cmd.Env = append(os.Environ(),
+		"PATH="+binDir+":"+os.Getenv("PATH"),
+		"CHATBOX_BIN="+filepath.Join(binDir, "chatbox"),
+		"CHATBOX_INITD_DIR="+initdDir,
+		"CHATBOX_STATE_DIR="+stateDir,
+		"CHATBOX_HEALTHCHECK_RETRIES=3",
+		"LOCKDIR="+filepath.Join(tempDir, "lock"),
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run script: %v\n%s", err, output)
+	}
+
+	if initLog := strings.TrimSpace(mustReadFile(t, filepath.Join(stateDir, "init.log"))); initLog != "restart\nstatus\nstatus\nstatus" {
+		t.Fatalf("expected restart plus three status probes, got %q", initLog)
 	}
 }
 

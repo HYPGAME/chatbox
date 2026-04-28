@@ -3,6 +3,7 @@ set -eu
 
 CHATBOX_BIN="${CHATBOX_BIN:-/usr/bin/chatbox}"
 CHATBOX_SERVICE="${CHATBOX_SERVICE:-chatbox}"
+CHATBOX_SERVICES="${CHATBOX_SERVICES:-}"
 CHATBOX_INITD_DIR="${CHATBOX_INITD_DIR:-/etc/init.d}"
 OPENCLASH_SERVICE="${OPENCLASH_SERVICE:-openclash}"
 DNSMASQ_SERVICE="${DNSMASQ_SERVICE:-dnsmasq}"
@@ -14,6 +15,8 @@ CHATBOX_OPENCLASH_PROBE_MAX_ATTEMPTS="${CHATBOX_OPENCLASH_PROBE_MAX_ATTEMPTS:-20
 CHATBOX_OPENCLASH_PROBE_TIMEOUT="${CHATBOX_OPENCLASH_PROBE_TIMEOUT:-5}"
 CHATBOX_SELF_UPDATE_RETRIES="${CHATBOX_SELF_UPDATE_RETRIES:-3}"
 CHATBOX_SELF_UPDATE_RETRY_SLEEP="${CHATBOX_SELF_UPDATE_RETRY_SLEEP:-2}"
+CHATBOX_HEALTHCHECK_RETRIES="${CHATBOX_HEALTHCHECK_RETRIES:-5}"
+CHATBOX_HEALTHCHECK_SLEEP="${CHATBOX_HEALTHCHECK_SLEEP:-2}"
 LOCKDIR="${LOCKDIR:-/tmp/chatbox-update.lock}"
 OPENCLASH_WAS_STOPPED=0
 
@@ -135,6 +138,81 @@ lock_pid_path() {
 	printf '%s/pid' "$LOCKDIR"
 }
 
+backup_bin_path() {
+	printf '%s.previous' "$CHATBOX_BIN"
+}
+
+service_names() {
+	if [ -n "$CHATBOX_SERVICES" ]; then
+		printf '%s\n' "$CHATBOX_SERVICES"
+		return 0
+	fi
+	printf '%s\n' "$CHATBOX_SERVICE"
+}
+
+service_script_path() {
+	service_name="$1"
+	printf '%s/%s' "$CHATBOX_INITD_DIR" "$service_name"
+}
+
+restart_service() {
+	service_name="$1"
+	service_script="$(service_script_path "$service_name")"
+	if [ ! -x "$service_script" ]; then
+		log "chatbox auto-update failed: missing init script for $service_name at $service_script"
+		return 1
+	fi
+	"$service_script" restart
+}
+
+service_is_healthy() {
+	service_name="$1"
+	service_script="$(service_script_path "$service_name")"
+	if [ ! -x "$service_script" ]; then
+		return 1
+	fi
+
+	attempt=1
+	while [ "$attempt" -le "$CHATBOX_HEALTHCHECK_RETRIES" ]; do
+		if "$service_script" status >/dev/null 2>&1; then
+			return 0
+		fi
+		if [ "$attempt" -lt "$CHATBOX_HEALTHCHECK_RETRIES" ]; then
+			sleep "$CHATBOX_HEALTHCHECK_SLEEP"
+		fi
+		attempt=$((attempt + 1))
+	done
+	return 1
+}
+
+restart_and_check_services() {
+	for service_name in $(service_names); do
+		if ! restart_service "$service_name"; then
+			return 1
+		fi
+		if ! service_is_healthy "$service_name"; then
+			log "chatbox auto-update failed: service health check did not pass for $service_name"
+			return 1
+		fi
+	done
+	return 0
+}
+
+backup_current_binary() {
+	cp "$CHATBOX_BIN" "$(backup_bin_path)"
+}
+
+restore_backup_binary() {
+	backup_path="$(backup_bin_path)"
+	[ -f "$backup_path" ] || return 1
+	cp "$backup_path" "$CHATBOX_BIN"
+	chmod +x "$CHATBOX_BIN"
+}
+
+remove_backup_binary() {
+	rm -f "$(backup_bin_path)" 2>/dev/null || true
+}
+
 lock_is_stale() {
 	[ -d "$LOCKDIR" ] || return 1
 
@@ -188,8 +266,10 @@ if [ ! -x "$CHATBOX_BIN" ]; then
 fi
 
 before="$("$CHATBOX_BIN" version 2>/dev/null || printf 'unknown')"
+backup_current_binary
 
 if ! output="$(run_self_update_with_retry)"; then
+	remove_backup_binary
 	if ! openclash_retry_allowed; then
 		log "chatbox auto-update failed: $output"
 		exit 1
@@ -217,15 +297,35 @@ after="$("$CHATBOX_BIN" version 2>/dev/null || printf 'unknown')"
 
 case "$output" in
 	*"replace the current binary manually"*)
+		remove_backup_binary
 		log "chatbox auto-update requires manual replacement: $output"
 		exit 0
 		;;
 esac
 
 if [ "$before" = "$after" ]; then
+	remove_backup_binary
 	log "chatbox auto-update: $output"
 	exit 0
 fi
 
 log "chatbox auto-update: updated $before -> $after; restarting service"
-"$CHATBOX_INITD_DIR/$CHATBOX_SERVICE" restart
+if restart_and_check_services; then
+	remove_backup_binary
+	exit 0
+fi
+
+if ! restore_backup_binary; then
+	log "chatbox auto-update failed: service restart/health-check failed and rollback binary is unavailable"
+	exit 1
+fi
+
+rollback_version="$("$CHATBOX_BIN" version 2>/dev/null || printf 'unknown')"
+log "chatbox auto-update: rolled back to $rollback_version after failed restart/health-check"
+if restart_and_check_services; then
+	remove_backup_binary
+	exit 1
+fi
+
+log "chatbox auto-update failed: rollback restart/health-check also failed"
+exit 1

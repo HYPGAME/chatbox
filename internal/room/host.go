@@ -265,6 +265,7 @@ func (r *HostRoom) Send(text string) (session.Message, error) {
 	if err := r.broadcast(message, 0); err != nil {
 		return session.Message{}, err
 	}
+	r.retainVisibleMessage(message, "")
 	r.publishMessage(message)
 	r.publishReceipt(session.Receipt{
 		MessageID: message.ID,

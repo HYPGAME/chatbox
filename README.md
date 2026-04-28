@@ -179,14 +179,23 @@ For OpenWrt/iStoreOS style deployment, the recommended layout is:
 
 - install the Linux ARM64 binary as `/usr/bin/chatbox`
 - keep the PSK in `/etc/chatbox/chatbox.psk`
-- run the service as `chatbox host --headless ...`
+- run the service through a wrapper that pins `HOME=/root` and `XDG_CONFIG_HOME=/root/.config`
 - use the router's init system to keep it running
 
-Example service command:
+Files in this repo:
+
+- `scripts/router/chatbox-hostd.sh`
+- `scripts/router/chatbox-hostd-group.sh`
+
+Example service wrapper:
 
 ```bash
-/usr/bin/chatbox host --headless --listen 0.0.0.0:7331 --psk-file /etc/chatbox/chatbox.psk --name iStoreOS
+cp scripts/router/chatbox-hostd.sh /usr/bin/chatbox-hostd.sh
+chmod +x /usr/bin/chatbox-hostd.sh
+/usr/bin/chatbox-hostd.sh
 ```
+
+If you also run a named room on the same router, use `scripts/router/chatbox-hostd-group.sh` as a second init target with its own password file and port.
 
 ## Router Auto-Update
 
@@ -210,12 +219,21 @@ Behavior:
 
 - runs `chatbox self-update`
 - verifies the binary using release checksums
-- restarts `/etc/init.d/chatbox` only when the local version actually changed
+- restarts the configured init services only when the local version actually changed
+- supports both `CHATBOX_SERVICE=chatbox` and `CHATBOX_SERVICES="chatbox chatbox-group"`; the plural form is recommended when one router hosts multiple rooms
+- after each restart, probes `<init-script> status` until healthy before declaring success
+- if a new binary restarts badly or never becomes healthy, the script restores the previous binary and restarts services again on the rolled-back version
 - does not restart when already current, when the update fails, or when the updater falls back to a manual `.new` file
 - if the first update attempt fails and OpenClash is enabled with `router_self_proxy=1`, the script temporarily stops OpenClash and retries once over the router's direct WAN path
 - during that OpenClash bypass retry, the script also restarts `dnsmasq` once so router-local DNS stops pointing at OpenClash's `127.0.0.1:7874`
 - before the retry, the script probes `https://github.com/` until direct HTTPS really comes back, instead of assuming a fixed wait is enough
 - set `CHATBOX_OPENCLASH_RETRY_MODE=off` if you want to disable that OpenClash bypass retry
+
+Optional env vars:
+
+- `CHATBOX_SERVICES="chatbox chatbox-group"`: restart and health-check multiple init services after a version change
+- `CHATBOX_HEALTHCHECK_RETRIES=5`: number of `status` probes after each restart
+- `CHATBOX_HEALTHCHECK_SLEEP=2`: seconds between failed `status` probes
 
 ## Minimal Group Chat
 

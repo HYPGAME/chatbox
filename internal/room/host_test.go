@@ -605,6 +605,42 @@ func TestHostRoomRetainsVisibleChatMessagesAndRevokes(t *testing.T) {
 	}
 }
 
+func TestHostRoomRetainsHostAuthoredVisibleMessages(t *testing.T) {
+	t.Parallel()
+
+	room := NewHostRoom("host")
+	defer room.Close()
+
+	store := &fakeRetainedHistoryStore{}
+	room.ConfigureHistoryRetention(store, "join:127.0.0.1:7331", nil)
+
+	member := newFakeMember("alice")
+	room.AddMember(member)
+	drainJoinEvents(t, room, 1)
+
+	sent, err := room.Send("host offline note")
+	if err != nil {
+		t.Fatalf("send host message: %v", err)
+	}
+
+	waitForRoomMessage(t, room.Messages())
+	waitForResentMessage(t, member.resent)
+
+	if len(store.appendedMessages) != 1 {
+		t.Fatalf("expected one retained host-authored message, got %#v", store.appendedMessages)
+	}
+	got := store.appendedMessages[0]
+	if got.MessageID != sent.ID {
+		t.Fatalf("expected retained message id %q, got %#v", sent.ID, got)
+	}
+	if got.AuthorIdentity != "" {
+		t.Fatalf("expected host-authored message author identity to stay empty, got %#v", got)
+	}
+	if got.Body != "host offline note" {
+		t.Fatalf("expected retained host-authored body, got %#v", got)
+	}
+}
+
 func TestHostRoomAcceptsAuthorizedUpdateRequestAndBroadcastsExecute(t *testing.T) {
 	t.Parallel()
 
