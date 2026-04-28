@@ -3,7 +3,6 @@ package hosthistory
 import (
 	"bytes"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -35,7 +34,7 @@ func TestStoreAppendsEncryptedMessageAndLoadsWindow(t *testing.T) {
 		t.Fatalf("AppendMessage returned error: %v", err)
 	}
 
-	raw, err := os.ReadFile(filepath.Join(baseDir, "host-history.cbh"))
+	raw, err := os.ReadFile(store.path)
 	if err != nil {
 		t.Fatalf("ReadFile returned error: %v", err)
 	}
@@ -154,5 +153,65 @@ func TestStoreCleanupExpiredDropsOldFrames(t *testing.T) {
 	}
 	if len(window.Records) != 1 || window.Records[0].MessageID != "fresh-msg" {
 		t.Fatalf("expected only fresh message after cleanup, got %#v", window.Records)
+	}
+}
+
+func TestStoreSupportsDifferentPSKsInSameBaseDir(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	pskA := bytes.Repeat([]byte{0x51}, 32)
+	pskB := bytes.Repeat([]byte{0x52}, 32)
+
+	storeA, err := OpenStore(baseDir, pskA)
+	if err != nil {
+		t.Fatalf("OpenStore A returned error: %v", err)
+	}
+	storeB, err := OpenStore(baseDir, pskB)
+	if err != nil {
+		t.Fatalf("OpenStore B returned error: %v", err)
+	}
+	if storeA.path == storeB.path {
+		t.Fatalf("expected distinct host history files per PSK, got %q", storeA.path)
+	}
+
+	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
+	if err := storeA.AppendMessage("room-a", transcript.Record{
+		MessageID:      "msg-a",
+		Direction:      transcript.DirectionIncoming,
+		From:           "alice",
+		AuthorIdentity: "identity-a",
+		Body:           "from psk a",
+		At:             now.Add(-2 * time.Minute),
+		Status:         transcript.StatusSent,
+	}, now); err != nil {
+		t.Fatalf("AppendMessage A returned error: %v", err)
+	}
+	if err := storeB.AppendMessage("room-b", transcript.Record{
+		MessageID:      "msg-b",
+		Direction:      transcript.DirectionIncoming,
+		From:           "bob",
+		AuthorIdentity: "identity-b",
+		Body:           "from psk b",
+		At:             now.Add(-time.Minute),
+		Status:         transcript.StatusSent,
+	}, now); err != nil {
+		t.Fatalf("AppendMessage B returned error: %v", err)
+	}
+
+	windowA, err := storeA.LoadWindow("room-a", now.Add(-10*time.Minute), now)
+	if err != nil {
+		t.Fatalf("LoadWindow A returned error: %v", err)
+	}
+	if len(windowA.Records) != 1 || windowA.Records[0].MessageID != "msg-a" {
+		t.Fatalf("expected room-a record after mixed PSKs, got %#v", windowA.Records)
+	}
+
+	windowB, err := storeB.LoadWindow("room-b", now.Add(-10*time.Minute), now)
+	if err != nil {
+		t.Fatalf("LoadWindow B returned error: %v", err)
+	}
+	if len(windowB.Records) != 1 || windowB.Records[0].MessageID != "msg-b" {
+		t.Fatalf("expected room-b record after mixed PSKs, got %#v", windowB.Records)
 	}
 }

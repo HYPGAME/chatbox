@@ -21,7 +21,8 @@ import (
 
 const (
 	fileMagic      = "CBR1"
-	fileName       = "host-history.cbh"
+	fileNamePrefix = "host-history-"
+	fileNameSuffix = ".cbh"
 	retentionLimit = 30 * 24 * time.Hour
 )
 
@@ -68,7 +69,7 @@ func OpenStore(baseDir string, psk []byte) (*Store, error) {
 	}
 
 	store := &Store{
-		path: filepath.Join(baseDir, fileName),
+		path: filepath.Join(baseDir, fileNameForPSK(psk)),
 		aead: aead,
 	}
 	if err := store.ensureInitialized(); err != nil {
@@ -83,6 +84,11 @@ func DefaultBaseDir() (string, error) {
 		return "", fmt.Errorf("resolve user config dir: %w", err)
 	}
 	return filepath.Join(root, "chatbox", "hosthistory"), nil
+}
+
+func fileNameForPSK(psk []byte) string {
+	fingerprint := sha256.Sum256(psk)
+	return fileNamePrefix + fmt.Sprintf("%x", fingerprint[:8]) + fileNameSuffix
 }
 
 func (s *Store) AppendMessage(roomKey string, record transcript.Record, now time.Time) error {
