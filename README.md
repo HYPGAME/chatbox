@@ -7,7 +7,7 @@ It is intentionally small:
 - one side hosts, others join
 - authenticated and encrypted with a pre-shared key
 - encrypted attachments relayed through the host
-- no server, no offline messages
+- no central server; the host only relays traffic and keeps encrypted short-term retention
 - encrypted local transcript history
 
 ## Build
@@ -274,11 +274,16 @@ In `--ui tui` copy mode, select an attachment message and press `O` to open it o
 - Current-process history is kept in memory for the whole session.
 - In the default `scrollback` UI, messages stay in the terminal's native scrollback, so you can use the terminal scrollbar or mouse wheel to review history.
 - In optional `--ui tui` mode, use `PgUp`, `PgDn`, `Home`, and `End` to move through the current conversation.
+- The host keeps encrypted text messages and revoke tombstones for 30 days.
+- Host-side attachment blobs are retained for 7 days.
+- On join, chatbox first asks the host for retained history authorized by the host's persisted first-seen timestamp for that `(room, identity)` pair.
+- If the host has no retained text history yet, is still on an older build, or does not answer in time, chatbox falls back to the existing peer-sync path automatically.
 - Encrypted transcript files are stored under `~/Library/Application Support/chatbox/history/`.
 - Transcript encryption reuses the chat PSK.
 - Transcript history is keyed by room: host mode uses the listen address, join mode uses the target host address.
 - When you reconnect to the same room with the same PSK, previous messages are loaded automatically.
-- If the host IP or port changes, chatbox treats that as a different room for transcript loading, even if the PSK stays the same.
+- In plain PSK mode, changing the host IP or port changes the local transcript key for joiners.
+- In `--group-name` mode, room history and authorization stay stable across host IP changes because the derived room key stays the same.
 
 ## Delivery Behavior
 

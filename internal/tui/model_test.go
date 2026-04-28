@@ -2477,6 +2477,7 @@ func TestModelSendsHistorySyncHelloAfterSessionReady(t *testing.T) {
 	t.Parallel()
 
 	fake := &fakeSession{peerName: "host", localName: "alice"}
+	joinedAt := time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC)
 	uiModel := newModel(modelOptions{
 		mode:          "join",
 		listeningAddr: "203.0.113.10:7331",
@@ -2491,7 +2492,7 @@ func TestModelSendsHistorySyncHelloAfterSessionReady(t *testing.T) {
 			return historymeta.Record{
 				RoomKey:    roomKey,
 				IdentityID: identityID,
-				JoinedAt:   time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC),
+				JoinedAt:   joinedAt,
 			}, nil
 		},
 	})
@@ -2499,8 +2500,8 @@ func TestModelSendsHistorySyncHelloAfterSessionReady(t *testing.T) {
 	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
 	uiModel = updated.(model)
 
-	if len(fake.sent) != 2 {
-		t.Fatalf("expected version announce and sync hello after session ready, got %#v", fake.sent)
+	if len(fake.sent) != 3 {
+		t.Fatalf("expected version announce, host history request, and sync hello after session ready, got %#v", fake.sent)
 	}
 	announce, ok := room.ParseVersionAnnounce(fake.sent[0].Body)
 	if !ok {
@@ -2509,9 +2510,22 @@ func TestModelSendsHistorySyncHelloAfterSessionReady(t *testing.T) {
 	if announce.ClientVersion != version.Version {
 		t.Fatalf("expected version announce %q, got %#v", version.Version, announce)
 	}
-	hello, ok := room.ParseHistorySyncHello(fake.sent[1].Body)
+	request, ok := room.ParseHostHistoryRequest(fake.sent[1].Body)
 	if !ok {
-		t.Fatalf("expected second payload to be sync hello, got %#v", fake.sent[1])
+		t.Fatalf("expected second payload to be host history request, got %#v", fake.sent[1])
+	}
+	if request.IdentityID != "identity-local" {
+		t.Fatalf("expected host history request identity %q, got %#v", "identity-local", request)
+	}
+	if request.RoomKey != transcript.JoinRoomKey("203.0.113.10:7331") {
+		t.Fatalf("expected host history request room key %q, got %#v", transcript.JoinRoomKey("203.0.113.10:7331"), request)
+	}
+	if !request.JoinedAt.Equal(joinedAt) {
+		t.Fatalf("expected host history request joinedAt %v, got %#v", joinedAt, request)
+	}
+	hello, ok := room.ParseHistorySyncHello(fake.sent[2].Body)
+	if !ok {
+		t.Fatalf("expected third payload to be sync hello, got %#v", fake.sent[2])
 	}
 	if hello.IdentityID != "identity-local" {
 		t.Fatalf("expected sync hello identity %q, got %#v", "identity-local", hello)
@@ -2521,6 +2535,275 @@ func TestModelSendsHistorySyncHelloAfterSessionReady(t *testing.T) {
 	}
 	if hello.RoomKey != transcript.JoinRoomKey("203.0.113.10:7331") {
 		t.Fatalf("expected sync hello room key %q, got %#v", transcript.JoinRoomKey("203.0.113.10:7331"), hello)
+	}
+}
+
+func TestModelQueuesPeerHistoryOfferUntilHostSyncTimeout(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeSession{peerName: "host", localName: "alice"}
+	joinedAt := time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC)
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		session:       fake,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-local", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{
+				RoomKey:    roomKey,
+				IdentityID: identityID,
+				JoinedAt:   joinedAt,
+			}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
+	uiModel = updated.(model)
+	initialSent := len(fake.sent)
+
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "sync-offer-queued",
+			From: "host",
+			Body: room.HistorySyncOfferBody(room.HistorySyncOffer{
+				Version:        1,
+				SourceIdentity: "identity-peer-a",
+				TargetIdentity: "identity-local",
+				RoomKey:        transcript.JoinRoomKey("203.0.113.10:7331"),
+				Summary:        room.HistorySyncSummary{Count: 3},
+			}),
+			At: joinedAt.Add(time.Hour),
+		},
+	})
+	uiModel = updated.(model)
+
+	if len(fake.sent) != initialSent {
+		t.Fatalf("expected peer sync offer to stay queued while host sync is pending, got %#v", fake.sent[initialSent:])
+	}
+
+	updated, _ = uiModel.Update(hostSyncTimeoutMsg{attempt: uiModel.hostSyncAttempt})
+	uiModel = updated.(model)
+
+	if len(fake.sent) != initialSent+1 {
+		t.Fatalf("expected queued peer sync offer to flush after host sync timeout, got %#v", fake.sent)
+	}
+	request, ok := room.ParseHistorySyncRequest(fake.sent[len(fake.sent)-1].Body)
+	if !ok {
+		t.Fatalf("expected last sent payload to be peer sync request after timeout, got %#v", fake.sent[len(fake.sent)-1])
+	}
+	if request.SourceIdentity != "identity-peer-a" || request.TargetIdentity != "identity-local" {
+		t.Fatalf("expected flushed peer sync request identities, got %#v", request)
+	}
+	if !request.Since.Equal(joinedAt) {
+		t.Fatalf("expected flushed peer sync request since %v, got %v", joinedAt, request.Since)
+	}
+}
+
+func TestModelIgnoresStaleHostSyncTimeoutAfterReconnect(t *testing.T) {
+	t.Parallel()
+
+	first := &fakeSession{peerName: "host", localName: "alice"}
+	second := &fakeSession{peerName: "host", localName: "alice"}
+	joinedAt := time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC)
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		session:       first,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-local", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{
+				RoomKey:    roomKey,
+				IdentityID: identityID,
+				JoinedAt:   joinedAt,
+			}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: first})
+	uiModel = updated.(model)
+	firstAttempt := uiModel.hostSyncAttempt
+
+	updated, _ = uiModel.Update(sessionReadyMsg{session: second})
+	uiModel = updated.(model)
+	secondAttempt := uiModel.hostSyncAttempt
+
+	if secondAttempt == firstAttempt {
+		t.Fatalf("expected reconnect to start a new host sync attempt, got %d", secondAttempt)
+	}
+
+	initialSent := len(second.sent)
+	updated, _ = uiModel.Update(hostSyncTimeoutMsg{attempt: firstAttempt})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "sync-offer-after-stale-timeout",
+			From: "host",
+			Body: room.HistorySyncOfferBody(room.HistorySyncOffer{
+				Version:        1,
+				SourceIdentity: "identity-peer-stale",
+				TargetIdentity: "identity-local",
+				RoomKey:        transcript.JoinRoomKey("203.0.113.10:7331"),
+				Summary:        room.HistorySyncSummary{Count: 1},
+			}),
+			At: joinedAt.Add(time.Hour),
+		},
+	})
+	uiModel = updated.(model)
+
+	if len(second.sent) != initialSent {
+		t.Fatalf("expected stale timeout from previous session not to unlock peer sync, got %#v", second.sent[initialSent:])
+	}
+}
+
+func TestModelFlushesQueuedPeerHistoryOfferAfterEmptyHostSyncChunk(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeSession{peerName: "host", localName: "alice"}
+	joinedAt := time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC)
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		session:       fake,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-local", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{
+				RoomKey:    roomKey,
+				IdentityID: identityID,
+				JoinedAt:   joinedAt,
+			}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
+	uiModel = updated.(model)
+	initialSent := len(fake.sent)
+
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "sync-offer-after-empty-hostsync",
+			From: "host",
+			Body: room.HistorySyncOfferBody(room.HistorySyncOffer{
+				Version:        1,
+				SourceIdentity: "identity-peer-b",
+				TargetIdentity: "identity-local",
+				RoomKey:        transcript.JoinRoomKey("203.0.113.10:7331"),
+				Summary:        room.HistorySyncSummary{Count: 2},
+			}),
+			At: joinedAt.Add(time.Hour),
+		},
+	})
+	uiModel = updated.(model)
+
+	if len(fake.sent) != initialSent {
+		t.Fatalf("expected peer sync offer to stay queued until host sync completes, got %#v", fake.sent[initialSent:])
+	}
+
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "hostsync-empty",
+			From: "host",
+			Body: room.HostHistoryChunkBody(room.HostHistoryChunk{
+				Version:        1,
+				RoomKey:        transcript.JoinRoomKey("203.0.113.10:7331"),
+				TargetIdentity: "identity-local",
+			}),
+			At: joinedAt.Add(61 * time.Minute),
+		},
+	})
+	uiModel = updated.(model)
+
+	if len(fake.sent) != initialSent+1 {
+		t.Fatalf("expected queued peer sync offer to flush after empty host sync chunk, got %#v", fake.sent)
+	}
+	request, ok := room.ParseHistorySyncRequest(fake.sent[len(fake.sent)-1].Body)
+	if !ok {
+		t.Fatalf("expected last sent payload to be peer sync request after empty host sync chunk, got %#v", fake.sent[len(fake.sent)-1])
+	}
+	if request.SourceIdentity != "identity-peer-b" {
+		t.Fatalf("expected flushed request to target peer-b, got %#v", request)
+	}
+}
+
+func TestModelReplaysHostHistoryChunkThroughUnifiedMergePath(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeTranscriptStore{}
+	joinedAt := time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC)
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		session:       &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return store, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-local", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{RoomKey: roomKey, IdentityID: identityID, JoinedAt: joinedAt}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: &fakeSession{peerName: "host"}})
+	uiModel = updated.(model)
+	uiModel.addMessageEntry(session.Message{
+		ID:   "live-newer",
+		From: "carol",
+		Body: "newer live message",
+		At:   joinedAt.Add(20 * time.Minute),
+	}, false, transcript.StatusSent, true)
+
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "hostsync-chunk-1",
+			From: "host",
+			Body: room.HostHistoryChunkBody(room.HostHistoryChunk{
+				Version:        1,
+				RoomKey:        transcript.JoinRoomKey("203.0.113.10:7331"),
+				TargetIdentity: "identity-local",
+				Records: []transcript.Record{
+					{
+						MessageID:      "replayed-1",
+						Direction:      transcript.DirectionIncoming,
+						From:           "bob",
+						AuthorIdentity: "identity-bob",
+						Body:           "replayed history",
+						At:             joinedAt.Add(time.Minute),
+						Status:         transcript.StatusSent,
+					},
+				},
+			}),
+			At: joinedAt.Add(21 * time.Minute),
+		},
+	})
+	uiModel = updated.(model)
+
+	if len(store.appends) != 2 || store.appends[len(store.appends)-1].MessageID != "replayed-1" {
+		t.Fatalf("expected host-sync replay to persist through transcript path, got %#v", store.appends)
+	}
+	view := stripANSI(uiModel.View())
+	replayedIndex := strings.Index(view, "replayed history")
+	liveIndex := strings.Index(view, "newer live message")
+	if replayedIndex == -1 || liveIndex == -1 {
+		t.Fatalf("expected replayed and live messages in view, got %q", view)
+	}
+	if replayedIndex > liveIndex {
+		t.Fatalf("expected host-synced message to be inserted chronologically before newer live message, got %q", view)
 	}
 }
 
@@ -2762,6 +3045,8 @@ func TestModelRequestsHistoryFromMatchingOffer(t *testing.T) {
 
 	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
 	uiModel = updated.(model)
+	updated, _ = uiModel.Update(hostSyncTimeoutMsg{attempt: uiModel.hostSyncAttempt})
+	uiModel = updated.(model)
 	initialSent := len(fake.sent)
 	updated, _ = uiModel.Update(incomingMessageMsg{
 		message: session.Message{
@@ -2819,6 +3104,8 @@ func TestModelRequestsHistoryWhenOfferHasNewerHistoryDespiteSameCount(t *testing
 	})
 
 	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(hostSyncTimeoutMsg{attempt: uiModel.hostSyncAttempt})
 	uiModel = updated.(model)
 	uiModel.addHistoryEntry(historyEntry{
 		kind:      historyKindMessage,
@@ -2884,6 +3171,8 @@ func TestModelRequestsHistoryFromEachPeerOncePerConnectionEvenWithoutNewerSummar
 	})
 
 	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(hostSyncTimeoutMsg{attempt: uiModel.hostSyncAttempt})
 	uiModel = updated.(model)
 	uiModel.addHistoryEntry(historyEntry{
 		kind:      historyKindMessage,
@@ -3008,6 +3297,8 @@ func TestModelResetsRequestedHistoryOnNewSessionReady(t *testing.T) {
 
 	updated, _ := uiModel.Update(sessionReadyMsg{session: first})
 	uiModel = updated.(model)
+	updated, _ = uiModel.Update(hostSyncTimeoutMsg{attempt: uiModel.hostSyncAttempt})
+	uiModel = updated.(model)
 	uiModel.addHistoryEntry(historyEntry{
 		kind:      historyKindMessage,
 		messageID: "local-1",
@@ -3036,6 +3327,8 @@ func TestModelResetsRequestedHistoryOnNewSessionReady(t *testing.T) {
 	uiModel = updated.(model)
 
 	updated, _ = uiModel.Update(sessionReadyMsg{session: second})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(hostSyncTimeoutMsg{attempt: uiModel.hostSyncAttempt})
 	uiModel = updated.(model)
 	sentAfterReconnect := len(second.sent)
 	updated, _ = uiModel.Update(incomingMessageMsg{
