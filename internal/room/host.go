@@ -409,7 +409,7 @@ func (r *HostRoom) handleHistorySyncControl(member trackedMember, message sessio
 		r.rememberMemberIdentity(member.id, member.session.PeerName(), hello.IdentityID)
 		r.rememberMemberVersion(member.id, hello.ClientVersion)
 		if loader := r.firstSeenRecordLoader(); loader != nil && strings.TrimSpace(hello.RoomKey) != "" {
-			_, _ = loader(hello.RoomKey, hello.IdentityID)
+			_, _ = loader(r.canonicalRetainedRoomKey(hello.RoomKey), hello.IdentityID)
 		}
 		_ = r.broadcastHistorySync(message, member.id)
 		return true
@@ -623,7 +623,8 @@ func (r *HostRoom) respondHostHistory(member trackedMember, request HostHistoryR
 		return
 	}
 
-	record, err := loader(request.RoomKey, request.IdentityID)
+	retainedRoomKey := r.canonicalRetainedRoomKey(request.RoomKey)
+	record, err := loader(retainedRoomKey, request.IdentityID)
 	if err != nil {
 		return
 	}
@@ -634,7 +635,7 @@ func (r *HostRoom) respondHostHistory(member trackedMember, request HostHistoryR
 		}
 	}
 
-	window, err := store.LoadWindow(request.RoomKey, since, now())
+	window, err := store.LoadWindow(retainedRoomKey, since, now())
 	if err != nil {
 		return
 	}
@@ -660,6 +661,15 @@ func (r *HostRoom) respondHostHistory(member trackedMember, request HostHistoryR
 		}),
 		At: now(),
 	})
+}
+
+func (r *HostRoom) canonicalRetainedRoomKey(requestRoomKey string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if strings.TrimSpace(r.retainedRoomKey) != "" {
+		return r.retainedRoomKey
+	}
+	return strings.TrimSpace(requestRoomKey)
 }
 
 func (r *HostRoom) memberSnapshot() []trackedMember {

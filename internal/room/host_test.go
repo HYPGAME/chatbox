@@ -323,6 +323,33 @@ func TestHostRoomStoresAuthoritativeJoinWhenSyncHelloArrives(t *testing.T) {
 	waitForJoinRecord(t, joins, "join:127.0.0.1:7331", "identity-a")
 }
 
+func TestHostRoomCanonicalizesJoinRecordWhenSyncHelloUsesAliasRoomKey(t *testing.T) {
+	t.Parallel()
+
+	room := NewHostRoom("host")
+	defer room.Close()
+
+	joins := &fakeJoinStore{}
+	room.ConfigureHistoryRetention(&fakeRetainedHistoryStore{}, "join:0.0.0.0:7331", joins.open)
+
+	member := newFakeMember("alice")
+	room.AddMember(member)
+	drainJoinEvents(t, room, 1)
+
+	member.messages <- session.Message{
+		ID:   "sync-hello-authoritative-alias",
+		From: "alice",
+		Body: HistorySyncHelloBody(HistorySyncHello{
+			Version:    1,
+			IdentityID: "identity-a",
+			RoomKey:    "join:10.77.1.4:7331",
+		}),
+		At: time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC),
+	}
+
+	waitForJoinRecord(t, joins, "join:0.0.0.0:7331", "identity-a")
+}
+
 func TestHostRoomAnswersAuthorizedHostHistoryRequest(t *testing.T) {
 	t.Parallel()
 
@@ -385,6 +412,71 @@ func TestHostRoomAnswersAuthorizedHostHistoryRequest(t *testing.T) {
 		t.Fatalf("expected hostsync lower bound %v, got %v", expectedSince, store.lastSince)
 	}
 	assertNoRoomMessage(t, room.Messages())
+}
+
+func TestHostRoomAnswersHostHistoryRequestAcrossRoomKeyAlias(t *testing.T) {
+	t.Parallel()
+
+	room := NewHostRoom("host")
+	defer room.Close()
+
+	store := &fakeRetainedHistoryStore{
+		window: hosthistory.Window{
+			Records: []transcript.Record{
+				{
+					MessageID:      "msg-1",
+					Direction:      transcript.DirectionIncoming,
+					From:           "bob",
+					AuthorIdentity: "identity-b",
+					Body:           "retained across alias",
+					At:             time.Date(2026, 4, 27, 11, 59, 0, 0, time.UTC),
+					Status:         transcript.StatusSent,
+				},
+			},
+		},
+	}
+	joinedAt := time.Date(2026, 4, 27, 11, 0, 0, 0, time.UTC)
+	joins := &fakeJoinStore{
+		record: historymeta.Record{
+			RoomKey:    "join:0.0.0.0:7331",
+			IdentityID: "identity-a",
+			JoinedAt:   joinedAt,
+		},
+	}
+	room.ConfigureHistoryRetention(store, "join:0.0.0.0:7331", joins.open)
+
+	member := newFakeMember("alice")
+	room.AddMember(member)
+	drainJoinEvents(t, room, 1)
+
+	member.messages <- session.Message{
+		ID:   "hostsync-request-alias",
+		From: "alice",
+		Body: HostHistoryRequestBody(HostHistoryRequest{
+			Version:     1,
+			RoomKey:     "join:10.77.1.4:7331",
+			IdentityID:  "identity-a",
+			JoinedAt:    time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC),
+			NewestLocal: time.Date(2026, 4, 27, 11, 58, 0, 0, time.UTC),
+		}),
+		At: time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC),
+	}
+
+	response := waitForResentMessage(t, member.resent)
+	chunk, ok := ParseHostHistoryChunk(response.Body)
+	if !ok {
+		t.Fatalf("expected host history chunk, got %#v", response)
+	}
+	if chunk.RoomKey != "join:10.77.1.4:7331" {
+		t.Fatalf("expected response to preserve requester room key, got %#v", chunk)
+	}
+	if len(chunk.Records) != 1 || chunk.Records[0].MessageID != "msg-1" {
+		t.Fatalf("expected retained history across alias, got %#v", chunk)
+	}
+	if store.lastRoomKey != "join:0.0.0.0:7331" {
+		t.Fatalf("expected retained history lookup to use canonical room key, got %q", store.lastRoomKey)
+	}
+	waitForJoinRecord(t, joins, "join:0.0.0.0:7331", "identity-a")
 }
 
 func TestHostRoomRetainsVisibleChatMessagesAndRevokes(t *testing.T) {
@@ -733,6 +825,7 @@ type fakeAttachmentCleaner struct {
 
 type fakeRetainedHistoryStore struct {
 	window           hosthistory.Window
+	lastRoomKey      string
 	lastSince        time.Time
 	appendedMessages []transcript.Record
 	appendedRevokes  []transcript.RevokeRecord
@@ -777,7 +870,8 @@ func (f *fakeRetainedHistoryStore) AppendRevoke(_ string, revoke transcript.Revo
 	return nil
 }
 
-func (f *fakeRetainedHistoryStore) LoadWindow(_ string, since, _ time.Time) (hosthistory.Window, error) {
+func (f *fakeRetainedHistoryStore) LoadWindow(roomKey string, since, _ time.Time) (hosthistory.Window, error) {
+	f.lastRoomKey = roomKey
 	f.lastSince = since
 	return f.window, nil
 }
