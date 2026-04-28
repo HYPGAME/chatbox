@@ -633,11 +633,6 @@ func (r *HostRoom) respondHostHistory(member trackedMember, request HostHistoryR
 	if !request.JoinedAt.IsZero() && (since.IsZero() || request.JoinedAt.Before(since)) {
 		since = request.JoinedAt
 	}
-	if !request.NewestLocal.IsZero() {
-		if candidate := request.NewestLocal.Add(-2 * time.Minute); candidate.After(since) {
-			since = candidate
-		}
-	}
 
 	window, err := store.LoadWindow(retainedRoomKey, since, now())
 	if err != nil {

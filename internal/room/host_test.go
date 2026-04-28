@@ -407,7 +407,7 @@ func TestHostRoomAnswersAuthorizedHostHistoryRequest(t *testing.T) {
 	if len(chunk.Records) != 1 || chunk.TargetIdentity != "identity-a" {
 		t.Fatalf("expected authorized retained chunk, got %#v", chunk)
 	}
-	expectedSince := newestLocal.Add(-2 * time.Minute)
+	expectedSince := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
 	if !store.lastSince.Equal(expectedSince) {
 		t.Fatalf("expected hostsync lower bound %v, got %v", expectedSince, store.lastSince)
 	}
@@ -542,7 +542,7 @@ func TestHostRoomAnswersHostHistoryRequestUsingLegacyAliasJoinRecordWhenCanonica
 	if len(chunk.Records) != 1 || chunk.Records[0].MessageID != "msg-legacy-alias" {
 		t.Fatalf("expected host history lookup to fall back to legacy alias join record, got %#v", chunk)
 	}
-	expectedSince := time.Date(2026, 4, 27, 11, 56, 0, 0, time.UTC)
+	expectedSince := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
 	if !store.lastSince.Equal(expectedSince) {
 		t.Fatalf("expected host history lower bound %v, got %v", expectedSince, store.lastSince)
 	}
@@ -607,6 +607,80 @@ func TestHostRoomAnswersHostHistoryRequestUsingEarlierRequesterJoinedAtForLegacy
 	}
 	if !store.lastSince.Equal(requestJoinedAt) {
 		t.Fatalf("expected host history lower bound %v, got %v", requestJoinedAt, store.lastSince)
+	}
+}
+
+func TestHostRoomAnswersHostHistoryRequestWithFullWindowDespiteNewerLocalTranscript(t *testing.T) {
+	t.Parallel()
+
+	room := NewHostRoom("host")
+	defer room.Close()
+
+	joinedAt := time.Date(2026, 4, 27, 11, 0, 0, 0, time.UTC)
+	store := &fakeRetainedHistoryStore{
+		filterBySince: true,
+		window: hosthistory.Window{
+			Records: []transcript.Record{
+				{
+					MessageID:      "msg-earlier-gap",
+					Direction:      transcript.DirectionIncoming,
+					From:           "bob",
+					AuthorIdentity: "identity-b",
+					Body:           "older retained gap",
+					At:             joinedAt.Add(10 * time.Minute),
+					Status:         transcript.StatusSent,
+				},
+				{
+					MessageID:      "msg-late",
+					Direction:      transcript.DirectionIncoming,
+					From:           "bob",
+					AuthorIdentity: "identity-b",
+					Body:           "late retained message",
+					At:             joinedAt.Add(59 * time.Minute),
+					Status:         transcript.StatusSent,
+				},
+			},
+		},
+	}
+	joins := &fakeJoinStore{
+		record: historymeta.Record{
+			RoomKey:    "join:127.0.0.1:7331",
+			IdentityID: "identity-a",
+			JoinedAt:   joinedAt,
+		},
+	}
+	room.ConfigureHistoryRetention(store, "join:127.0.0.1:7331", joins.open)
+
+	member := newFakeMember("alice")
+	room.AddMember(member)
+	drainJoinEvents(t, room, 1)
+
+	member.messages <- session.Message{
+		ID:   "hostsync-request-full-window",
+		From: "alice",
+		Body: HostHistoryRequestBody(HostHistoryRequest{
+			Version:     1,
+			RoomKey:     "join:127.0.0.1:7331",
+			IdentityID:  "identity-a",
+			JoinedAt:    joinedAt,
+			NewestLocal: joinedAt.Add(58 * time.Minute),
+		}),
+		At: joinedAt.Add(time.Hour),
+	}
+
+	response := waitForResentMessage(t, member.resent)
+	chunk, ok := ParseHostHistoryChunk(response.Body)
+	if !ok {
+		t.Fatalf("expected host history chunk, got %#v", response)
+	}
+	if len(chunk.Records) != 2 {
+		t.Fatalf("expected full retained history window despite newer local transcript, got %#v", chunk)
+	}
+	if chunk.Records[0].MessageID != "msg-earlier-gap" || chunk.Records[1].MessageID != "msg-late" {
+		t.Fatalf("expected both earlier and late retained messages, got %#v", chunk.Records)
+	}
+	if !store.lastSince.Equal(joinedAt) {
+		t.Fatalf("expected host history lower bound to stay at joinedAt %v, got %v", joinedAt, store.lastSince)
 	}
 }
 
