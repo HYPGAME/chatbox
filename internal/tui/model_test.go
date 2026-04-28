@@ -2257,6 +2257,54 @@ func TestModelHostUpdateAllUsesRoomSubmitter(t *testing.T) {
 	if hostRoom.submittedUpdates[0].RequesterName != "host" {
 		t.Fatalf("expected host requester name, got %#v", hostRoom.submittedUpdates[0])
 	}
+	if hostRoom.submittedUpdates[0].RoomKey != transcript.JoinRoomKey("0.0.0.0:7331") {
+		t.Fatalf("expected host update request room key %q, got %#v", transcript.JoinRoomKey("0.0.0.0:7331"), hostRoom.submittedUpdates[0])
+	}
+}
+
+func TestModelHostAcceptsJoinScopedUpdateExecute(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:          "host",
+		uiMode:        uiModeTUI,
+		localName:     "host",
+		listeningAddr: "0.0.0.0:7331",
+		session:       &fakeHostRoom{fakeSession: fakeSession{peerName: "room"}},
+		roomEvents:    make(chan room.Event, 1),
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-host", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{RoomKey: roomKey, IdentityID: identityID}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: &fakeHostRoom{fakeSession: fakeSession{peerName: "room"}}})
+	uiModel = updated.(model)
+
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "update-execute-join-room",
+			From: "host",
+			Body: room.UpdateExecuteBody(room.UpdateExecute{
+				Version:       1,
+				RequestID:     "update-join-room",
+				RoomKey:       transcript.JoinRoomKey("0.0.0.0:7331"),
+				TargetVersion: "v0.1.99",
+				At:            time.Date(2026, 4, 28, 15, 30, 0, 0, time.UTC),
+			}),
+			At: time.Date(2026, 4, 28, 15, 30, 0, 0, time.UTC),
+		},
+	})
+	uiModel = updated.(model)
+
+	if !strings.Contains(stripANSI(uiModel.View()), "update request accepted: v0.1.99") {
+		t.Fatalf("expected host ui to accept join-scoped update execute, got %q", stripANSI(uiModel.View()))
+	}
 }
 
 func TestModelRendersPermissionDeniedUpdateResult(t *testing.T) {

@@ -1617,7 +1617,7 @@ func (m *model) handleUpdateAllCommand(args []string) (tea.Model, tea.Cmd) {
 	request := room.UpdateRequest{
 		Version:           1,
 		RequestID:         fmt.Sprintf("update-%d", time.Now().UnixNano()),
-		RoomKey:           m.roomAuthorization.RoomKey,
+		RoomKey:           m.sharedRoomKey(),
 		RequesterIdentity: m.identityID,
 		RequesterName:     m.localRequesterName(),
 		TargetVersion:     targetVersion,
@@ -1692,7 +1692,7 @@ func (m *model) handleUpdateControl(message session.Message) (bool, tea.Cmd) {
 }
 
 func (m *model) handleUpdateExecute(sender string, execute room.UpdateExecute) tea.Cmd {
-	if m.roomAuthorization.RoomKey == "" || execute.RoomKey != m.roomAuthorization.RoomKey {
+	if roomKey := m.sharedRoomKey(); roomKey == "" || execute.RoomKey != roomKey {
 		return nil
 	}
 	targetLabel := strings.TrimSpace(execute.TargetVersion)
@@ -1715,7 +1715,7 @@ func (m *model) handleUpdateExecute(sender string, execute room.UpdateExecute) t
 }
 
 func (m *model) handleUpdateResultControl(result room.UpdateResult) {
-	if m.roomAuthorization.RoomKey != "" && result.RoomKey != "" && result.RoomKey != m.roomAuthorization.RoomKey {
+	if roomKey := m.sharedRoomKey(); roomKey != "" && result.RoomKey != "" && result.RoomKey != roomKey {
 		return
 	}
 	reporterName := strings.TrimSpace(result.ReporterName)
@@ -2829,6 +2829,27 @@ func (m model) conversationKeyForPeer(peerName string) string {
 
 func (m model) displayRoomName() string {
 	return groupRoomNameFromKey(firstNonEmpty(m.currentConversationKey, m.transcriptKey))
+}
+
+func (m model) sharedRoomKey() string {
+	if key := strings.TrimSpace(m.transcriptKey); key != "" {
+		return key
+	}
+	if strings.TrimSpace(m.roomAuthorization.RoomKey) != "" {
+		if strings.HasPrefix(m.roomAuthorization.RoomKey, "join:") || strings.HasPrefix(m.roomAuthorization.RoomKey, "group:") {
+			return m.roomAuthorization.RoomKey
+		}
+	}
+	if strings.TrimSpace(m.listeningAddr) == "" {
+		return strings.TrimSpace(m.roomAuthorization.RoomKey)
+	}
+	if m.mode == "host" && m.roomEvents != nil {
+		return transcript.JoinRoomKey(m.listeningAddr)
+	}
+	if m.mode == "join" {
+		return transcript.JoinRoomKey(m.listeningAddr)
+	}
+	return strings.TrimSpace(m.roomAuthorization.RoomKey)
 }
 
 func (m *model) resendPendingMessages() {
