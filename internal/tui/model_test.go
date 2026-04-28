@@ -2538,6 +2538,54 @@ func TestModelSendsHistorySyncHelloAfterSessionReady(t *testing.T) {
 	}
 }
 
+func TestModelUsesEarliestTranscriptTimestampForLegacyRoomAuthorization(t *testing.T) {
+	t.Parallel()
+
+	joinedAtLegacy := time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC)
+	store := &fakeTranscriptStore{
+		loaded: []transcript.Record{
+			{
+				MessageID: "legacy-1",
+				Direction: transcript.DirectionIncoming,
+				From:      "bob",
+				Body:      "legacy history",
+				At:        joinedAtLegacy,
+				Status:    transcript.StatusSent,
+			},
+		},
+	}
+	fake := &fakeSession{peerName: "host", localName: "alice"}
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		session:       fake,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return store, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-local", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{
+				RoomKey:    roomKey,
+				IdentityID: identityID,
+				JoinedAt:   time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC),
+			}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
+	uiModel = updated.(model)
+
+	request, ok := room.ParseHostHistoryRequest(fake.sent[1].Body)
+	if !ok {
+		t.Fatalf("expected second payload to be host history request, got %#v", fake.sent[1])
+	}
+	if !request.JoinedAt.Equal(joinedAtLegacy) {
+		t.Fatalf("expected host history request joinedAt %v from earliest legacy transcript, got %#v", joinedAtLegacy, request)
+	}
+}
+
 func TestModelQueuesPeerHistoryOfferUntilHostSyncTimeout(t *testing.T) {
 	t.Parallel()
 

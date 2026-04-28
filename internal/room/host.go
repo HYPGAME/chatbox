@@ -630,6 +630,9 @@ func (r *HostRoom) respondHostHistory(member trackedMember, request HostHistoryR
 		return
 	}
 	since := record.JoinedAt
+	if !request.JoinedAt.IsZero() && (since.IsZero() || request.JoinedAt.Before(since)) {
+		since = request.JoinedAt
+	}
 	if !request.NewestLocal.IsZero() {
 		if candidate := request.NewestLocal.Add(-2 * time.Minute); candidate.After(since) {
 			since = candidate

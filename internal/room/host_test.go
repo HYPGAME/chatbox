@@ -548,6 +548,68 @@ func TestHostRoomAnswersHostHistoryRequestUsingLegacyAliasJoinRecordWhenCanonica
 	}
 }
 
+func TestHostRoomAnswersHostHistoryRequestUsingEarlierRequesterJoinedAtForLegacyClient(t *testing.T) {
+	t.Parallel()
+
+	room := NewHostRoom("host")
+	defer room.Close()
+
+	store := &fakeRetainedHistoryStore{
+		filterBySince: true,
+		window: hosthistory.Window{
+			Records: []transcript.Record{
+				{
+					MessageID:      "msg-legacy-client",
+					Direction:      transcript.DirectionIncoming,
+					From:           "bob",
+					AuthorIdentity: "identity-b",
+					Body:           "offline before historymeta existed",
+					At:             time.Date(2026, 4, 27, 11, 59, 0, 0, time.UTC),
+					Status:         transcript.StatusSent,
+				},
+			},
+		},
+	}
+	joins := &fakeJoinStore{
+		record: historymeta.Record{
+			RoomKey:    "join:127.0.0.1:7331",
+			IdentityID: "identity-a",
+			JoinedAt:   time.Date(2026, 4, 27, 12, 30, 0, 0, time.UTC),
+		},
+	}
+	room.ConfigureHistoryRetention(store, "join:127.0.0.1:7331", joins.open)
+
+	member := newFakeMember("alice")
+	room.AddMember(member)
+	drainJoinEvents(t, room, 1)
+
+	requestJoinedAt := time.Date(2026, 4, 27, 11, 0, 0, 0, time.UTC)
+	member.messages <- session.Message{
+		ID:   "hostsync-request-legacy-client",
+		From: "alice",
+		Body: HostHistoryRequestBody(HostHistoryRequest{
+			Version:     1,
+			RoomKey:     "join:127.0.0.1:7331",
+			IdentityID:  "identity-a",
+			JoinedAt:    requestJoinedAt,
+			NewestLocal: time.Time{},
+		}),
+		At: time.Date(2026, 4, 27, 12, 31, 0, 0, time.UTC),
+	}
+
+	response := waitForResentMessage(t, member.resent)
+	chunk, ok := ParseHostHistoryChunk(response.Body)
+	if !ok {
+		t.Fatalf("expected host history chunk, got %#v", response)
+	}
+	if len(chunk.Records) != 1 || chunk.Records[0].MessageID != "msg-legacy-client" {
+		t.Fatalf("expected legacy requester window to be honored, got %#v", chunk)
+	}
+	if !store.lastSince.Equal(requestJoinedAt) {
+		t.Fatalf("expected host history lower bound %v, got %v", requestJoinedAt, store.lastSince)
+	}
+}
+
 func TestHostRoomRetainsVisibleChatMessagesAndRevokes(t *testing.T) {
 	t.Parallel()
 

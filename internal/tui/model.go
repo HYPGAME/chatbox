@@ -890,6 +890,10 @@ func (m *model) requestHostHistory() (bool, uint64) {
 		return false, 0
 	}
 	summary := HistorySyncSummaryForRecords(m.history)
+	joinedAt := m.roomAuthorization.JoinedAt
+	if !summary.Oldest.IsZero() && (joinedAt.IsZero() || summary.Oldest.Before(joinedAt)) {
+		joinedAt = summary.Oldest
+	}
 	m.hostSyncPending = true
 	m.hostSyncCompleted = false
 	m.hostSyncAttempt++
@@ -898,7 +902,7 @@ func (m *model) requestHostHistory() (bool, uint64) {
 		Version:     1,
 		RoomKey:     m.roomAuthorization.RoomKey,
 		IdentityID:  m.identityID,
-		JoinedAt:    m.roomAuthorization.JoinedAt,
+		JoinedAt:    joinedAt,
 		NewestLocal: summary.Newest,
 	}))
 	return true, attempt
