@@ -479,6 +479,75 @@ func TestHostRoomAnswersHostHistoryRequestAcrossRoomKeyAlias(t *testing.T) {
 	waitForJoinRecord(t, joins, "join:0.0.0.0:7331", "identity-a")
 }
 
+func TestHostRoomAnswersHostHistoryRequestUsingLegacyAliasJoinRecordWhenCanonicalRecordIsNewer(t *testing.T) {
+	t.Parallel()
+
+	room := NewHostRoom("host")
+	defer room.Close()
+
+	store := &fakeRetainedHistoryStore{
+		filterBySince: true,
+		window: hosthistory.Window{
+			Records: []transcript.Record{
+				{
+					MessageID:      "msg-legacy-alias",
+					Direction:      transcript.DirectionIncoming,
+					From:           "bob",
+					AuthorIdentity: "identity-b",
+					Body:           "offline while a was away",
+					At:             time.Date(2026, 4, 27, 11, 59, 0, 0, time.UTC),
+					Status:         transcript.StatusSent,
+				},
+			},
+		},
+	}
+	joins := &fakeJoinStore{
+		records: map[string]historymeta.Record{
+			"join:0.0.0.0:7331": {
+				RoomKey:    "join:0.0.0.0:7331",
+				IdentityID: "identity-a",
+				JoinedAt:   time.Date(2026, 4, 27, 12, 30, 0, 0, time.UTC),
+			},
+			"join:10.77.1.4:7331": {
+				RoomKey:    "join:10.77.1.4:7331",
+				IdentityID: "identity-a",
+				JoinedAt:   time.Date(2026, 4, 27, 11, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+	room.ConfigureHistoryRetention(store, "join:0.0.0.0:7331", joins.open)
+
+	member := newFakeMember("alice")
+	room.AddMember(member)
+	drainJoinEvents(t, room, 1)
+
+	member.messages <- session.Message{
+		ID:   "hostsync-request-legacy-alias",
+		From: "alice",
+		Body: HostHistoryRequestBody(HostHistoryRequest{
+			Version:     1,
+			RoomKey:     "join:10.77.1.4:7331",
+			IdentityID:  "identity-a",
+			JoinedAt:    time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC),
+			NewestLocal: time.Date(2026, 4, 27, 11, 58, 0, 0, time.UTC),
+		}),
+		At: time.Date(2026, 4, 27, 12, 31, 0, 0, time.UTC),
+	}
+
+	response := waitForResentMessage(t, member.resent)
+	chunk, ok := ParseHostHistoryChunk(response.Body)
+	if !ok {
+		t.Fatalf("expected host history chunk, got %#v", response)
+	}
+	if len(chunk.Records) != 1 || chunk.Records[0].MessageID != "msg-legacy-alias" {
+		t.Fatalf("expected host history lookup to fall back to legacy alias join record, got %#v", chunk)
+	}
+	expectedSince := time.Date(2026, 4, 27, 11, 56, 0, 0, time.UTC)
+	if !store.lastSince.Equal(expectedSince) {
+		t.Fatalf("expected host history lower bound %v, got %v", expectedSince, store.lastSince)
+	}
+}
+
 func TestHostRoomRetainsVisibleChatMessagesAndRevokes(t *testing.T) {
 	t.Parallel()
 
@@ -827,12 +896,14 @@ type fakeRetainedHistoryStore struct {
 	window           hosthistory.Window
 	lastRoomKey      string
 	lastSince        time.Time
+	filterBySince    bool
 	appendedMessages []transcript.Record
 	appendedRevokes  []transcript.RevokeRecord
 }
 
 type fakeJoinStore struct {
 	record  historymeta.Record
+	records map[string]historymeta.Record
 	calls   []historymeta.Record
 	callsMu sync.Mutex
 }
@@ -873,13 +944,36 @@ func (f *fakeRetainedHistoryStore) AppendRevoke(_ string, revoke transcript.Revo
 func (f *fakeRetainedHistoryStore) LoadWindow(roomKey string, since, _ time.Time) (hosthistory.Window, error) {
 	f.lastRoomKey = roomKey
 	f.lastSince = since
-	return f.window, nil
+	if !f.filterBySince {
+		return f.window, nil
+	}
+	filtered := hosthistory.Window{
+		Records: make([]transcript.Record, 0, len(f.window.Records)),
+		Revokes: make([]transcript.RevokeRecord, 0, len(f.window.Revokes)),
+	}
+	for _, record := range f.window.Records {
+		if !record.At.Before(since) {
+			filtered.Records = append(filtered.Records, record)
+		}
+	}
+	for _, revoke := range f.window.Revokes {
+		if !revoke.At.Before(since) {
+			filtered.Revokes = append(filtered.Revokes, revoke)
+		}
+	}
+	return filtered, nil
 }
 
 func (f *fakeJoinStore) open(roomKey, identityID string) (historymeta.Record, error) {
 	f.callsMu.Lock()
 	defer f.callsMu.Unlock()
 
+	if f.records != nil {
+		if record, ok := f.records[roomKey]; ok {
+			f.calls = append(f.calls, historymeta.Record{RoomKey: roomKey, IdentityID: identityID})
+			return record, nil
+		}
+	}
 	if f.record.RoomKey == "" {
 		f.record = historymeta.Record{
 			RoomKey:    roomKey,

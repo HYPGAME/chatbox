@@ -624,7 +624,7 @@ func (r *HostRoom) respondHostHistory(member trackedMember, request HostHistoryR
 	}
 
 	retainedRoomKey := r.canonicalRetainedRoomKey(request.RoomKey)
-	record, err := loader(retainedRoomKey, request.IdentityID)
+	record, err := r.loadEarliestFirstSeenRecord(loader, retainedRoomKey, request.RoomKey, request.IdentityID)
 	if err != nil {
 		return
 	}
@@ -661,6 +661,27 @@ func (r *HostRoom) respondHostHistory(member trackedMember, request HostHistoryR
 		}),
 		At: now(),
 	})
+}
+
+func (r *HostRoom) loadEarliestFirstSeenRecord(loader firstSeenLoader, retainedRoomKey, requestRoomKey, identityID string) (historymeta.Record, error) {
+	record, err := loader(retainedRoomKey, identityID)
+	if err != nil {
+		return historymeta.Record{}, err
+	}
+
+	legacyRoomKey := strings.TrimSpace(requestRoomKey)
+	if legacyRoomKey == "" || legacyRoomKey == retainedRoomKey {
+		return record, nil
+	}
+
+	legacyRecord, err := loader(legacyRoomKey, identityID)
+	if err != nil {
+		return record, nil
+	}
+	if !legacyRecord.JoinedAt.IsZero() && (record.JoinedAt.IsZero() || legacyRecord.JoinedAt.Before(record.JoinedAt)) {
+		return legacyRecord, nil
+	}
+	return record, nil
 }
 
 func (r *HostRoom) canonicalRetainedRoomKey(requestRoomKey string) string {
