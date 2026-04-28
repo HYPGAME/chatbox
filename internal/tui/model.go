@@ -890,10 +890,7 @@ func (m *model) requestHostHistory() (bool, uint64) {
 		return false, 0
 	}
 	summary := HistorySyncSummaryForRecords(m.history)
-	joinedAt := m.roomAuthorization.JoinedAt
-	if !summary.Oldest.IsZero() && (joinedAt.IsZero() || summary.Oldest.Before(joinedAt)) {
-		joinedAt = summary.Oldest
-	}
+	joinedAt := m.effectiveHistorySyncJoinedAt()
 	m.hostSyncPending = true
 	m.hostSyncCompleted = false
 	m.hostSyncAttempt++
@@ -1401,7 +1398,7 @@ func (m *model) maybeRequestHistorySync(offer room.HistorySyncOffer) {
 		SourceIdentity: sourceIdentity,
 		TargetIdentity: m.identityID,
 		RoomKey:        m.roomAuthorization.RoomKey,
-		Since:          m.roomAuthorization.JoinedAt,
+		Since:          m.effectiveHistorySyncJoinedAt(),
 	}))
 	m.requestedHistory[sourceIdentity] = struct{}{}
 }
@@ -1473,6 +1470,15 @@ func (m *model) replayHistorySyncChunk(chunk room.HistorySyncChunk) {
 	m.replayHistoricalWindow(chunk.RoomKey, chunk.TargetIdentity, chunk.SourceIdentity, chunk.Records, chunk.Revokes, true)
 }
 
+func (m *model) effectiveHistorySyncJoinedAt() time.Time {
+	joinedAt := m.roomAuthorization.JoinedAt
+	summary := HistorySyncSummaryForRecords(m.history)
+	if !summary.Oldest.IsZero() && (joinedAt.IsZero() || summary.Oldest.Before(joinedAt)) {
+		joinedAt = summary.Oldest
+	}
+	return joinedAt
+}
+
 func (m *model) replayHistoricalWindow(roomKey, targetIdentity, fallbackAuthorIdentity string, records []transcript.Record, revokes []transcript.RevokeRecord, enforceJoinedAt bool) bool {
 	if m.identityID == "" || m.roomAuthorization.RoomKey == "" {
 		return false
@@ -1482,11 +1488,12 @@ func (m *model) replayHistoricalWindow(roomKey, targetIdentity, fallbackAuthorId
 	}
 
 	added := 0
+	effectiveJoinedAt := m.effectiveHistorySyncJoinedAt()
 	for _, record := range records {
 		if record.MessageID == "" {
 			continue
 		}
-		if enforceJoinedAt && record.At.Before(m.roomAuthorization.JoinedAt) {
+		if enforceJoinedAt && record.At.Before(effectiveJoinedAt) {
 			continue
 		}
 		if _, ok := m.seenMessages[record.MessageID]; ok {

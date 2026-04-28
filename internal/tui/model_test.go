@@ -2960,6 +2960,72 @@ func TestModelReplaysAuthoritativeHostHistoryChunkEarlierThanLocalJoinedAt(t *te
 	}
 }
 
+func TestModelReplaysPeerHistoryChunkEarlierThanLocalJoinedAtWhenLocalTranscriptIsOlder(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeTranscriptStore{}
+	localJoinedAt := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
+	legacyAt := localJoinedAt.Add(-30 * time.Minute)
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		session:       &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return store, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-local", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{RoomKey: roomKey, IdentityID: identityID, JoinedAt: localJoinedAt}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: &fakeSession{peerName: "host"}})
+	uiModel = updated.(model)
+	uiModel.addHistoryEntry(historyEntry{
+		kind:      historyKindMessage,
+		messageID: "legacy-local-anchor",
+		from:      "bob",
+		body:      "legacy local anchor",
+		at:        legacyAt,
+		status:    transcript.StatusSent,
+	})
+
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "peersync-legacy-earlier",
+			From: "host",
+			Body: room.HistorySyncChunkBody(room.HistorySyncChunk{
+				Version:        1,
+				SourceIdentity: "identity-peer-legacy",
+				TargetIdentity: "identity-local",
+				RoomKey:        transcript.JoinRoomKey("203.0.113.10:7331"),
+				Records: []transcript.Record{
+					{
+						MessageID:      "offline-before-local-joinedat-peer",
+						Direction:      transcript.DirectionIncoming,
+						From:           "carol",
+						AuthorIdentity: "identity-carol",
+						Body:           "peer legacy replay",
+						At:             legacyAt.Add(5 * time.Minute),
+						Status:         transcript.StatusSent,
+					},
+				},
+			}),
+			At: localJoinedAt.Add(time.Minute),
+		},
+	})
+	uiModel = updated.(model)
+
+	if len(store.appends) != 1 || store.appends[0].MessageID != "offline-before-local-joinedat-peer" {
+		t.Fatalf("expected peer history replay to persist despite newer local joinedAt when transcript proves older participation, got %#v", store.appends)
+	}
+	if !strings.Contains(stripANSI(uiModel.View()), "peer legacy replay") {
+		t.Fatalf("expected peer history replay in view, got %q", stripANSI(uiModel.View()))
+	}
+}
+
 func TestModelSendsVersionAnnouncementAfterSessionReadyWithoutHistorySyncPrereqs(t *testing.T) {
 	t.Parallel()
 
@@ -3296,6 +3362,76 @@ func TestModelRequestsHistoryWhenOfferHasNewerHistoryDespiteSameCount(t *testing
 	}
 	if !request.Since.Equal(joinedAt) {
 		t.Fatalf("expected request since %v, got %v", joinedAt, request.Since)
+	}
+}
+
+func TestModelRequestsPeerHistoryUsingEarliestLegacyTranscriptTimestamp(t *testing.T) {
+	t.Parallel()
+
+	legacyAt := time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC)
+	fake := &fakeSession{peerName: "host", localName: "alice"}
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		session:       fake,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-local", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{
+				RoomKey:    roomKey,
+				IdentityID: identityID,
+				JoinedAt:   time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC),
+			}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
+	uiModel = updated.(model)
+	updated, _ = uiModel.Update(hostSyncTimeoutMsg{attempt: uiModel.hostSyncAttempt})
+	uiModel = updated.(model)
+	uiModel.addHistoryEntry(historyEntry{
+		kind:      historyKindMessage,
+		messageID: "legacy-local",
+		from:      "bob",
+		body:      "legacy local history",
+		at:        legacyAt,
+		status:    transcript.StatusSent,
+	})
+
+	initialSent := len(fake.sent)
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "sync-offer-legacy-window",
+			From: "host",
+			Body: room.HistorySyncOfferBody(room.HistorySyncOffer{
+				Version:        1,
+				SourceIdentity: "identity-peer-legacy",
+				TargetIdentity: "identity-local",
+				RoomKey:        transcript.JoinRoomKey("203.0.113.10:7331"),
+				Summary: room.HistorySyncSummary{
+					Count:  3,
+					Oldest: legacyAt,
+					Newest: legacyAt.Add(2 * time.Hour),
+				},
+			}),
+			At: legacyAt.Add(2*time.Hour + time.Minute),
+		},
+	})
+	uiModel = updated.(model)
+
+	if len(fake.sent) <= initialSent {
+		t.Fatal("expected sync request to be sent for legacy peer offer")
+	}
+	request, ok := room.ParseHistorySyncRequest(fake.sent[len(fake.sent)-1].Body)
+	if !ok {
+		t.Fatalf("expected last sent payload to be sync request, got %#v", fake.sent[len(fake.sent)-1])
+	}
+	if !request.Since.Equal(legacyAt) {
+		t.Fatalf("expected peer sync request since %v from earliest local transcript, got %v", legacyAt, request.Since)
 	}
 }
 
