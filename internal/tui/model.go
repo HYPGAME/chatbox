@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1347,7 +1348,7 @@ func (m *model) maybeOfferHistorySync(hello room.HistorySyncHello) {
 	if m.session == nil || m.identityID == "" || m.roomAuthorization.RoomKey == "" {
 		return
 	}
-	if hello.IdentityID == "" || hello.RoomKey != m.roomAuthorization.RoomKey {
+	if hello.IdentityID == "" || !peerHistoryRoomKeysMatch(hello.RoomKey, m.roomAuthorization.RoomKey) {
 		return
 	}
 	summary := HistorySyncSummaryForRecords(m.history)
@@ -1377,7 +1378,7 @@ func (m *model) maybeRequestHistorySync(offer room.HistorySyncOffer) {
 	if m.session == nil || m.identityID == "" || m.roomAuthorization.RoomKey == "" {
 		return
 	}
-	if offer.TargetIdentity != m.identityID || offer.RoomKey != m.roomAuthorization.RoomKey {
+	if offer.TargetIdentity != m.identityID || !peerHistoryRoomKeysMatch(offer.RoomKey, m.roomAuthorization.RoomKey) {
 		return
 	}
 	sourceIdentity := strings.TrimSpace(offer.SourceIdentity)
@@ -1420,7 +1421,7 @@ func (m *model) maybeSendHistorySyncChunk(request room.HistorySyncRequest) {
 	if m.session == nil || m.identityID == "" || m.roomAuthorization.RoomKey == "" {
 		return
 	}
-	if request.SourceIdentity != m.identityID || request.RoomKey != m.roomAuthorization.RoomKey {
+	if request.SourceIdentity != m.identityID || !peerHistoryRoomKeysMatch(request.RoomKey, m.roomAuthorization.RoomKey) {
 		return
 	}
 
@@ -1479,11 +1480,35 @@ func (m *model) effectiveHistorySyncJoinedAt() time.Time {
 	return joinedAt
 }
 
+func peerHistoryRoomKeysMatch(left, right string) bool {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if left == "" || right == "" {
+		return left == right
+	}
+	if left == right {
+		return true
+	}
+	return canonicalPeerHistoryRoomKey(left) == canonicalPeerHistoryRoomKey(right)
+}
+
+func canonicalPeerHistoryRoomKey(roomKey string) string {
+	roomKey = strings.TrimSpace(roomKey)
+	if !strings.HasPrefix(roomKey, "join:") {
+		return roomKey
+	}
+	_, port, err := net.SplitHostPort(strings.TrimPrefix(roomKey, "join:"))
+	if err != nil {
+		return roomKey
+	}
+	return "join:*:" + port
+}
+
 func (m *model) replayHistoricalWindow(roomKey, targetIdentity, fallbackAuthorIdentity string, records []transcript.Record, revokes []transcript.RevokeRecord, enforceJoinedAt bool) bool {
 	if m.identityID == "" || m.roomAuthorization.RoomKey == "" {
 		return false
 	}
-	if targetIdentity != m.identityID || roomKey != m.roomAuthorization.RoomKey {
+	if targetIdentity != m.identityID || !peerHistoryRoomKeysMatch(roomKey, m.roomAuthorization.RoomKey) {
 		return false
 	}
 
