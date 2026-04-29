@@ -761,12 +761,10 @@ func (m *model) handleSessionReady(msg sessionReadyMsg) (tea.Model, tea.Cmd) {
 		return m.handleReconnectError(msg.err)
 	}
 
-	if err := m.bindSession(msg.session); err != nil {
+	hostHistoryRequested, hostSyncAttempt, err := m.activateSession(msg.session)
+	if err != nil {
 		m.addErrorEntry(err.Error())
 	}
-	m.announceClientVersion()
-	hostHistoryRequested, hostSyncAttempt := m.requestHostHistory()
-	m.announceHistorySyncCapability()
 
 	cmds := []tea.Cmd{
 		waitForIncomingMessage(m.session),
@@ -778,6 +776,16 @@ func (m *model) handleSessionReady(msg sessionReadyMsg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, waitForHostSyncTimeout(m.hostSyncTimeout, hostSyncAttempt))
 	}
 	return *m, tea.Batch(cmds...)
+}
+
+func (m *model) activateSession(conn sessionClient) (bool, uint64, error) {
+	if err := m.bindSession(conn); err != nil {
+		return false, 0, err
+	}
+	m.announceClientVersion()
+	hostHistoryRequested, hostSyncAttempt := m.requestHostHistory()
+	m.announceHistorySyncCapability()
+	return hostHistoryRequested, hostSyncAttempt, nil
 }
 
 func (m *model) bindSession(conn sessionClient) error {
@@ -2244,6 +2252,10 @@ func (m *model) insertHistoryEntryChronologically(entry historyEntry) {
 	m.history = append(m.history, historyEntry{})
 	copy(m.history[index+1:], m.history[index:])
 	m.history[index] = entry
+	if m.uiMode == uiModeScrollback && index < m.printedCount {
+		m.printedCount++
+		m.pendingScrollbackLines = append(m.pendingScrollbackLines, renderScrollbackEntry(entry))
+	}
 	m.rebuildCopySelection()
 	m.syncRevokeCandidates()
 	m.refreshViewport(stickToBottom)
@@ -3385,10 +3397,10 @@ func (m *model) flushScrollbackCmd() tea.Cmd {
 	}
 
 	lines := make([]string, 0, len(m.history)-m.printedCount+len(m.pendingScrollbackLines))
+	lines = append(lines, m.pendingScrollbackLines...)
 	for _, entry := range m.history[m.printedCount:] {
 		lines = append(lines, renderScrollbackEntry(entry))
 	}
-	lines = append(lines, m.pendingScrollbackLines...)
 	m.printedCount = len(m.history)
 	m.pendingScrollbackLines = nil
 	return m.printLines(lines)

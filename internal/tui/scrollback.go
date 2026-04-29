@@ -292,6 +292,7 @@ func runScrollbackLoop(m *model, console *promptConsole, input io.Reader) error 
 
 	connectResults := make(chan sessionResult, 1)
 	var retry <-chan time.Time
+	var hostSyncTimeout <-chan time.Time
 	connecting := false
 
 	startConnect := func() {
@@ -312,6 +313,7 @@ func runScrollbackLoop(m *model, console *promptConsole, input io.Reader) error 
 	}
 
 	handleConnectError := func(err error) {
+		hostSyncTimeout = nil
 		if err != nil {
 			m.addErrorEntry(err.Error())
 			m.flushScrollbackCmd()
@@ -329,6 +331,7 @@ func runScrollbackLoop(m *model, console *promptConsole, input io.Reader) error 
 	}
 
 	handleSessionClosed := func(err error) {
+		hostSyncTimeout = nil
 		m.session = nil
 		switch {
 		case m.mode == "host" && m.connect != nil:
@@ -356,8 +359,11 @@ func runScrollbackLoop(m *model, console *promptConsole, input io.Reader) error 
 
 	m.flushScrollbackCmd()
 	if m.session != nil {
-		if err := m.bindSession(m.session); err != nil {
+		hostHistoryRequested, _, err := m.activateSession(m.session)
+		if err != nil {
 			m.addErrorEntry(err.Error())
+		} else if hostHistoryRequested {
+			hostSyncTimeout = time.After(m.hostSyncTimeout)
 		}
 		m.flushScrollbackCmd()
 	} else {
@@ -411,13 +417,23 @@ func runScrollbackLoop(m *model, console *promptConsole, input io.Reader) error 
 				handleConnectError(result.err)
 				continue
 			}
-			if err := m.bindSession(result.session); err != nil {
+			hostHistoryRequested, _, err := m.activateSession(result.session)
+			if err != nil {
 				m.addErrorEntry(err.Error())
+			} else if hostHistoryRequested {
+				hostSyncTimeout = time.After(m.hostSyncTimeout)
 			}
 			m.flushScrollbackCmd()
 		case <-retry:
 			retry = nil
 			startConnect()
+		case <-hostSyncTimeout:
+			hostSyncTimeout = nil
+			if m.hostSyncPending {
+				m.hostSyncPending = false
+				m.flushQueuedPeerOffers()
+				m.flushScrollbackCmd()
+			}
 		case message, ok := <-messages:
 			if !ok {
 				continue

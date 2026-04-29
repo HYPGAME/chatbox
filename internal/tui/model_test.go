@@ -2586,6 +2586,62 @@ func TestModelSendsHistorySyncHelloAfterSessionReady(t *testing.T) {
 	}
 }
 
+func TestModelActivateSessionRequestsHistorySyncForScrollback(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeSession{peerName: "host", localName: "alice"}
+	joinedAt := time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC)
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		uiMode:        uiModeScrollback,
+		listeningAddr: "203.0.113.10:7331",
+		session:       fake,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-local", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{
+				RoomKey:    roomKey,
+				IdentityID: identityID,
+				JoinedAt:   joinedAt,
+			}, nil
+		},
+	})
+
+	requested, attempt, err := uiModel.activateSession(fake)
+	if err != nil {
+		t.Fatalf("activateSession returned error: %v", err)
+	}
+	if !requested {
+		t.Fatal("expected scrollback session activation to request host history")
+	}
+	if attempt == 0 {
+		t.Fatal("expected scrollback session activation to start a host sync attempt")
+	}
+	if len(fake.sent) != 3 {
+		t.Fatalf("expected activation to send version, host history request, and sync hello, got %#v", fake.sent)
+	}
+
+	request, ok := room.ParseHostHistoryRequest(fake.sent[1].Body)
+	if !ok {
+		t.Fatalf("expected second payload to be host history request, got %#v", fake.sent[1])
+	}
+	if request.IdentityID != "identity-local" {
+		t.Fatalf("expected host history request identity %q, got %#v", "identity-local", request)
+	}
+
+	hello, ok := room.ParseHistorySyncHello(fake.sent[2].Body)
+	if !ok {
+		t.Fatalf("expected third payload to be sync hello, got %#v", fake.sent[2])
+	}
+	if hello.IdentityID != "identity-local" {
+		t.Fatalf("expected sync hello identity %q, got %#v", "identity-local", hello)
+	}
+}
+
 func TestModelUsesEarliestTranscriptTimestampForLegacyRoomAuthorization(t *testing.T) {
 	t.Parallel()
 
@@ -6436,6 +6492,85 @@ func TestScrollbackSessionReadyPrintsTranscriptAndNewMessages(t *testing.T) {
 	}
 	if strings.Contains(uiModel.View(), "from disk") {
 		t.Fatalf("expected scrollback view to avoid re-rendering history, got %q", uiModel.View())
+	}
+}
+
+func TestScrollbackPrintsHistoricalSyncInsertedBeforePrintedBoundary(t *testing.T) {
+	t.Parallel()
+
+	joinedAt := time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC)
+	store := &fakeTranscriptStore{
+		loaded: []transcript.Record{
+			{
+				MessageID: "recent-1",
+				Direction: transcript.DirectionIncoming,
+				From:      "bob",
+				Body:      "recent from disk",
+				At:        joinedAt.Add(20 * time.Minute),
+				Status:    transcript.StatusSent,
+			},
+		},
+	}
+
+	var printed []string
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		uiMode:        uiModeScrollback,
+		listeningAddr: "203.0.113.10:7331",
+		session:       &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return store, nil
+		},
+		historyPrinter: func(lines []string) tea.Cmd {
+			printed = append(printed, lines...)
+			return nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-local", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{
+				RoomKey:    roomKey,
+				IdentityID: identityID,
+				JoinedAt:   joinedAt,
+			}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: &fakeSession{peerName: "host"}})
+	uiModel = updated.(model)
+
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "sync-chunk-older-scrollback",
+			From: "host",
+			Body: room.HistorySyncChunkBody(room.HistorySyncChunk{
+				Version:        1,
+				SourceIdentity: "identity-peer",
+				TargetIdentity: "identity-local",
+				RoomKey:        transcript.JoinRoomKey("203.0.113.10:7331"),
+				Records: []transcript.Record{
+					{
+						MessageID: "older-1",
+						Direction: transcript.DirectionIncoming,
+						From:      "carol",
+						Body:      "older from sync",
+						At:        joinedAt.Add(10 * time.Minute),
+						Status:    transcript.StatusSent,
+					},
+				},
+			}),
+			At: joinedAt.Add(21 * time.Minute),
+		},
+	})
+	uiModel = updated.(model)
+
+	joined := stripANSI(strings.Join(printed, "\n"))
+	if !strings.Contains(joined, "older from sync") {
+		t.Fatalf("expected historical sync line to be printed in scrollback, got %q", joined)
+	}
+	if strings.Count(joined, "recent from disk") != 1 {
+		t.Fatalf("expected existing recent line not to be duplicated, got %q", joined)
 	}
 }
 
