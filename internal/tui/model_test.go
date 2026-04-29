@@ -3940,6 +3940,91 @@ func TestModelSendsHistorySyncChunkWithRevokes(t *testing.T) {
 	}
 }
 
+func TestModelSplitsOversizedHistorySyncChunk(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeSession{peerName: "host", localName: "alice", maxBytes: 700}
+	joinedAt := time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC)
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		session:       fake,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-local", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{RoomKey: roomKey, IdentityID: identityID, JoinedAt: joinedAt}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
+	uiModel = updated.(model)
+	uiModel.addHistoryEntry(historyEntry{
+		kind:      historyKindMessage,
+		messageID: "split-1",
+		from:      "alice",
+		body:      strings.Repeat("a", 220),
+		at:        joinedAt.Add(time.Minute),
+		status:    transcript.StatusSent,
+	})
+	uiModel.addHistoryEntry(historyEntry{
+		kind:      historyKindMessage,
+		messageID: "split-2",
+		from:      "alice",
+		body:      strings.Repeat("b", 220),
+		at:        joinedAt.Add(2 * time.Minute),
+		status:    transcript.StatusSent,
+	})
+	uiModel.addHistoryEntry(historyEntry{
+		kind:      historyKindMessage,
+		messageID: "split-3",
+		from:      "alice",
+		body:      strings.Repeat("c", 220),
+		at:        joinedAt.Add(3 * time.Minute),
+		status:    transcript.StatusSent,
+	})
+	initialSent := len(fake.sent)
+
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "sync-request-split",
+			From: "host",
+			Body: room.HistorySyncRequestBody(room.HistorySyncRequest{
+				Version:        1,
+				SourceIdentity: "identity-local",
+				TargetIdentity: "identity-host",
+				RoomKey:        transcript.JoinRoomKey("203.0.113.10:7331"),
+				Since:          joinedAt,
+			}),
+			At: joinedAt.Add(4 * time.Minute),
+		},
+	})
+	uiModel = updated.(model)
+
+	sent := fake.sent[initialSent:]
+	if len(sent) < 2 {
+		t.Fatalf("expected oversized history sync to split into multiple chunks, got %#v", sent)
+	}
+
+	totalRecords := 0
+	for _, message := range sent {
+		if len(message.Body) > fake.maxBytes {
+			t.Fatalf("expected split history sync chunk to stay under %d bytes, got %d", fake.maxBytes, len(message.Body))
+		}
+		chunk, ok := room.ParseHistorySyncChunk(message.Body)
+		if !ok {
+			t.Fatalf("expected history sync chunk, got %#v", message)
+		}
+		totalRecords += len(chunk.Records)
+	}
+	if totalRecords != 3 {
+		t.Fatalf("expected all history records to be delivered across split chunks, got %d", totalRecords)
+	}
+}
+
 func TestModelReplaysHistorySyncChunkIntoTranscript(t *testing.T) {
 	t.Parallel()
 
@@ -6826,6 +6911,7 @@ func TestRunUITUIInitializesBellAlertNotifier(t *testing.T) {
 type fakeSession struct {
 	peerName  string
 	localName string
+	maxBytes  int
 	sent      []session.Message
 	resent    []session.Message
 }
@@ -6876,8 +6962,17 @@ func (f *fakeSession) Done() <-chan struct{}            { return nil }
 func (f *fakeSession) Err() error                       { return nil }
 func (f *fakeSession) Close() error                     { return nil }
 func (f *fakeSession) PeerName() string                 { return f.peerName }
+func (f *fakeSession) MaxMessageSize() int {
+	if f.maxBytes > 0 {
+		return f.maxBytes
+	}
+	return session.DefaultMaxMessageSize()
+}
 
 func (f *fakeSession) Send(text string) (session.Message, error) {
+	if f.maxBytes > 0 && len(text) > f.maxBytes {
+		return session.Message{}, fmt.Errorf("message exceeds %d bytes", f.maxBytes)
+	}
 	from := f.localName
 	if from == "" {
 		from = f.peerName

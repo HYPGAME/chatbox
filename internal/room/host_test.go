@@ -2,6 +2,7 @@ package room
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -684,6 +685,107 @@ func TestHostRoomAnswersHostHistoryRequestWithFullWindowDespiteNewerLocalTranscr
 	}
 }
 
+func TestHostRoomSplitsOversizedHostHistoryWindow(t *testing.T) {
+	t.Parallel()
+
+	room := NewHostRoom("host")
+	defer room.Close()
+
+	joinedAt := time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC)
+	store := &fakeRetainedHistoryStore{
+		window: hosthistory.Window{
+			Records: []transcript.Record{
+				{
+					MessageID:      "msg-1",
+					Direction:      transcript.DirectionIncoming,
+					From:           "bob",
+					AuthorIdentity: "identity-b",
+					Body:           strings.Repeat("a", 220),
+					At:             joinedAt.Add(time.Minute),
+					Status:         transcript.StatusSent,
+				},
+				{
+					MessageID:      "msg-2",
+					Direction:      transcript.DirectionIncoming,
+					From:           "bob",
+					AuthorIdentity: "identity-b",
+					Body:           strings.Repeat("b", 220),
+					At:             joinedAt.Add(2 * time.Minute),
+					Status:         transcript.StatusSent,
+				},
+				{
+					MessageID:      "msg-3",
+					Direction:      transcript.DirectionIncoming,
+					From:           "bob",
+					AuthorIdentity: "identity-b",
+					Body:           strings.Repeat("c", 220),
+					At:             joinedAt.Add(3 * time.Minute),
+					Status:         transcript.StatusSent,
+				},
+			},
+		},
+	}
+	joins := &fakeJoinStore{
+		record: historymeta.Record{
+			RoomKey:    "join:127.0.0.1:7331",
+			IdentityID: "identity-a",
+			JoinedAt:   joinedAt,
+		},
+	}
+	room.ConfigureHistoryRetention(store, "join:127.0.0.1:7331", joins.open)
+
+	member := newFakeMember("alice")
+	member.maxBytes = 700
+	room.AddMember(member)
+	drainJoinEvents(t, room, 1)
+
+	member.messages <- session.Message{
+		ID:   "hostsync-request-split",
+		From: "alice",
+		Body: HostHistoryRequestBody(HostHistoryRequest{
+			Version:     1,
+			RoomKey:     "join:127.0.0.1:7331",
+			IdentityID:  "identity-a",
+			JoinedAt:    joinedAt,
+			NewestLocal: joinedAt,
+		}),
+		At: joinedAt.Add(4 * time.Minute),
+	}
+
+	responses := []session.Message{waitForResentMessage(t, member.resent)}
+	for {
+		select {
+		case message := <-member.resent:
+			responses = append(responses, message)
+		case <-time.After(100 * time.Millisecond):
+			goto collected
+		}
+	}
+
+collected:
+	if len(responses) < 2 {
+		t.Fatalf("expected oversized host history to split into multiple chunks, got %#v", responses)
+	}
+	if responses[0].ID == responses[1].ID {
+		t.Fatalf("expected split host history responses to use unique message ids, got %q", responses[0].ID)
+	}
+
+	totalRecords := 0
+	for _, response := range responses {
+		if len(response.Body) > member.maxBytes {
+			t.Fatalf("expected split host history chunk to stay under %d bytes, got %d", member.maxBytes, len(response.Body))
+		}
+		chunk, ok := ParseHostHistoryChunk(response.Body)
+		if !ok {
+			t.Fatalf("expected host history chunk, got %#v", response)
+		}
+		totalRecords += len(chunk.Records)
+	}
+	if totalRecords != 3 {
+		t.Fatalf("expected all retained records to be delivered across split chunks, got %d", totalRecords)
+	}
+}
+
 func TestHostRoomRetainsVisibleChatMessagesAndRevokes(t *testing.T) {
 	t.Parallel()
 
@@ -1053,6 +1155,7 @@ func TestHostRoomDeletesAttachmentOnRevoke(t *testing.T) {
 
 type fakeMember struct {
 	peerName string
+	maxBytes int
 	messages chan session.Message
 	resent   chan session.Message
 	receipts chan session.Receipt
@@ -1170,7 +1273,16 @@ func (f *fakeMember) Close() error {
 	return nil
 }
 func (f *fakeMember) PeerName() string { return f.peerName }
+func (f *fakeMember) MaxMessageSize() int {
+	if f.maxBytes > 0 {
+		return f.maxBytes
+	}
+	return session.DefaultMaxMessageSize()
+}
 func (f *fakeMember) Resend(message session.Message) error {
+	if f.maxBytes > 0 && len(message.Body) > f.maxBytes {
+		return fmt.Errorf("message exceeds %d bytes", f.maxBytes)
+	}
 	f.resent <- message
 	return nil
 }

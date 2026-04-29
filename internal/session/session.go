@@ -1,10 +1,10 @@
 package session
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"context"
+	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -157,6 +157,10 @@ func (s *Session) Err() error {
 
 func (s *Session) PeerName() string {
 	return s.peerName
+}
+
+func (s *Session) MaxMessageSize() int {
+	return s.cfg.MaxMessageSize
 }
 
 func (s *Session) Send(text string) (Message, error) {
@@ -391,6 +395,14 @@ func encodeMessagePayload(message Message) ([]byte, error) {
 	binary.BigEndian.PutUint64(payload[timestampStart:timestampStart+8], uint64(message.At.UnixNano()))
 	copy(payload[timestampStart+8:], body)
 	return payload, nil
+}
+
+func PayloadSize(message Message) (int, error) {
+	payload, err := encodeMessagePayload(message)
+	if err != nil {
+		return 0, err
+	}
+	return len(payload), nil
 }
 
 func decodeMessagePayload(fallbackFrom string, payload []byte) (Message, error) {

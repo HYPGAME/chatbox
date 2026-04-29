@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -647,19 +648,28 @@ func (r *HostRoom) respondHostHistory(member trackedMember, request HostHistoryR
 		}
 		records = append(records, record)
 	}
-
-	_ = member.session.Resend(session.Message{
-		ID:   controlMessageID("hostsync-" + request.IdentityID),
-		From: r.localName,
-		Body: HostHistoryChunkBody(HostHistoryChunk{
-			Version:        1,
-			RoomKey:        request.RoomKey,
-			TargetIdentity: request.IdentityID,
-			Records:        records,
-			Revokes:        window.Revokes,
-		}),
-		At: now(),
-	})
+	chunks, err := SplitHostHistoryChunks(
+		request.IdentityID,
+		request.RoomKey,
+		r.localName,
+		now(),
+		records,
+		window.Revokes,
+		memberSessionMaxMessageSize(member.session),
+	)
+	if err != nil {
+		return
+	}
+	for i, chunk := range chunks {
+		if err := member.session.Resend(session.Message{
+			ID:   controlMessageID(fmt.Sprintf("hostsync-%s-%d", request.IdentityID, i+1)),
+			From: r.localName,
+			Body: HostHistoryChunkBody(chunk),
+			At:   now(),
+		}); err != nil {
+			return
+		}
+	}
 }
 
 func (r *HostRoom) loadEarliestFirstSeenRecord(loader firstSeenLoader, retainedRoomKey, requestRoomKey, identityID string) (historymeta.Record, error) {
@@ -690,6 +700,18 @@ func (r *HostRoom) canonicalRetainedRoomKey(requestRoomKey string) string {
 		return r.retainedRoomKey
 	}
 	return strings.TrimSpace(requestRoomKey)
+}
+
+func memberSessionMaxMessageSize(member memberSession) int {
+	type maxMessageSizer interface {
+		MaxMessageSize() int
+	}
+	if sized, ok := member.(maxMessageSizer); ok {
+		if limit := sized.MaxMessageSize(); limit > 0 {
+			return limit
+		}
+	}
+	return session.DefaultMaxMessageSize()
 }
 
 func (r *HostRoom) memberSnapshot() []trackedMember {

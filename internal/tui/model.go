@@ -1457,14 +1457,26 @@ func (m *model) maybeSendHistorySyncChunk(request room.HistorySyncRequest) {
 	if len(records) == 0 && len(revokes) == 0 {
 		return
 	}
-	_, _ = m.session.Send(room.HistorySyncChunkBody(room.HistorySyncChunk{
-		Version:        1,
-		SourceIdentity: m.identityID,
-		TargetIdentity: request.TargetIdentity,
-		RoomKey:        m.roomAuthorization.RoomKey,
-		Records:        records,
-		Revokes:        revokes,
-	}))
+	chunks, err := room.SplitHistorySyncChunks(
+		m.identityID,
+		request.TargetIdentity,
+		m.roomAuthorization.RoomKey,
+		m.localRequesterName(),
+		time.Now(),
+		records,
+		revokes,
+		sessionMaxMessageSize(m.session),
+	)
+	if err != nil {
+		m.addErrorEntry(err.Error())
+		return
+	}
+	for _, chunk := range chunks {
+		if _, err := m.session.Send(room.HistorySyncChunkBody(chunk)); err != nil {
+			m.addErrorEntry(err.Error())
+			return
+		}
+	}
 }
 
 func (m *model) replayHistorySyncChunk(chunk room.HistorySyncChunk) {
@@ -1502,6 +1514,18 @@ func canonicalPeerHistoryRoomKey(roomKey string) string {
 		return roomKey
 	}
 	return "join:*:" + port
+}
+
+func sessionMaxMessageSize(conn sessionClient) int {
+	type maxMessageSizer interface {
+		MaxMessageSize() int
+	}
+	if sized, ok := conn.(maxMessageSizer); ok {
+		if limit := sized.MaxMessageSize(); limit > 0 {
+			return limit
+		}
+	}
+	return session.DefaultMaxMessageSize()
 }
 
 func (m *model) replayHistoricalWindow(roomKey, targetIdentity, fallbackAuthorIdentity string, records []transcript.Record, revokes []transcript.RevokeRecord, enforceJoinedAt bool) bool {

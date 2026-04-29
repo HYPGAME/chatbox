@@ -32,3 +32,7 @@ func (c Config) withDefaults() Config {
 	}
 	return c
 }
+
+func DefaultMaxMessageSize() int {
+	return Config{}.withDefaults().MaxMessageSize
+}
