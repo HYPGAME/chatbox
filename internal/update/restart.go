@@ -61,8 +61,22 @@ func drainRestartInput() error {
 	if !term.IsTerminal(uintptr(fd)) {
 		return nil
 	}
-	if err := unix.IoctlSetInt(fd, unix.TIOCFLUSH, unix.TCIFLUSH); err == nil {
+	if err := unix.SetNonblock(fd, true); err != nil {
 		return nil
+	}
+	defer func() {
+		_ = unix.SetNonblock(fd, false)
+	}()
+	buf := make([]byte, 256)
+	for {
+		_, err := unix.Read(fd, buf)
+		if err == nil {
+			continue
+		}
+		if err == unix.EAGAIN || err == unix.EWOULDBLOCK {
+			return nil
+		}
+		break
 	}
 	return nil
 }
