@@ -1,8 +1,11 @@
 package update
 
 import (
+	"errors"
 	"testing"
 )
+
+var errTestRestartDrain = errors.New("drain failed")
 
 func TestBuildRestartSpecPreservesJoinArguments(t *testing.T) {
 	t.Parallel()
@@ -37,12 +40,22 @@ func TestLaunchRestartUsesBuiltSpec(t *testing.T) {
 	t.Parallel()
 
 	previous := restartStarter
-	defer func() { restartStarter = previous }()
+	previousDrainer := restartInputDrainer
+	defer func() {
+		restartStarter = previous
+		restartInputDrainer = previousDrainer
+	}()
 
 	var gotPath string
 	var gotArgs []string
 	var gotEnv []string
+	var callOrder []string
+	restartInputDrainer = func() error {
+		callOrder = append(callOrder, "drain")
+		return nil
+	}
 	restartStarter = func(path string, args []string, env []string) error {
+		callOrder = append(callOrder, "exec")
 		gotPath = path
 		gotArgs = append([]string(nil), args...)
 		gotEnv = append([]string(nil), env...)
@@ -64,6 +77,46 @@ func TestLaunchRestartUsesBuiltSpec(t *testing.T) {
 	}
 	if len(gotEnv) == 0 {
 		t.Fatal("expected restart to inherit environment")
+	}
+	if len(callOrder) != 2 || callOrder[0] != "drain" || callOrder[1] != "exec" {
+		t.Fatalf("expected restart to drain input before exec, got %v", callOrder)
+	}
+}
+
+func TestLaunchRestartContinuesWhenInputDrainFails(t *testing.T) {
+	t.Parallel()
+
+	previous := restartStarter
+	previousDrainer := restartInputDrainer
+	defer func() {
+		restartStarter = previous
+		restartInputDrainer = previousDrainer
+	}()
+
+	var restarted bool
+	var callOrder []string
+	restartInputDrainer = func() error {
+		callOrder = append(callOrder, "drain")
+		return errTestRestartDrain
+	}
+	restartStarter = func(path string, args []string, env []string) error {
+		callOrder = append(callOrder, "exec")
+		restarted = true
+		return nil
+	}
+
+	spec := RestartSpec{
+		Path: "/tmp/chatbox",
+		Args: []string{"join", "--peer", "127.0.0.1:7331"},
+	}
+	if err := LaunchRestart(spec); err != nil {
+		t.Fatalf("expected drain failure to be ignored, got %v", err)
+	}
+	if !restarted {
+		t.Fatal("expected exec to continue even when drain fails")
+	}
+	if len(callOrder) != 2 || callOrder[0] != "drain" || callOrder[1] != "exec" {
+		t.Fatalf("expected drain attempt before exec, got %v", callOrder)
 	}
 }
 
