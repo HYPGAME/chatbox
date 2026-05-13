@@ -35,6 +35,8 @@ type Event struct {
 	At        time.Time
 }
 
+const hostHistoryNewestLocalDriftBuffer = 2 * time.Minute
+
 type memberSession interface {
 	Messages() <-chan session.Message
 	Receipts() <-chan session.Receipt
@@ -633,6 +635,12 @@ func (r *HostRoom) respondHostHistory(member trackedMember, request HostHistoryR
 	since := record.JoinedAt
 	if !request.JoinedAt.IsZero() && (since.IsZero() || request.JoinedAt.Before(since)) {
 		since = request.JoinedAt
+	}
+	if !request.NewestLocal.IsZero() {
+		newestLocalSince := request.NewestLocal.Add(-hostHistoryNewestLocalDriftBuffer)
+		if since.IsZero() || newestLocalSince.After(since) {
+			since = newestLocalSince
+		}
 	}
 
 	window, err := store.LoadWindow(retainedRoomKey, since, now())

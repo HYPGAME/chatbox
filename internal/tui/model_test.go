@@ -2891,6 +2891,87 @@ func TestModelFlushesQueuedPeerHistoryOfferAfterEmptyHostSyncChunk(t *testing.T)
 	}
 }
 
+func TestModelSkipsQueuedPeerHistoryOfferWhenHostSyncAlreadyCoversOffer(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeSession{peerName: "host", localName: "alice"}
+	joinedAt := time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC)
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		listeningAddr: "203.0.113.10:7331",
+		session:       fake,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+		identityLoader: func() (identity.Store, error) {
+			return identity.Store{IdentityID: "identity-local", Path: "/tmp/identity.json"}, nil
+		},
+		roomAuthLoader: func(roomKey, identityID string) (historymeta.Record, error) {
+			return historymeta.Record{
+				RoomKey:    roomKey,
+				IdentityID: identityID,
+				JoinedAt:   joinedAt,
+			}, nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: fake})
+	uiModel = updated.(model)
+	initialSent := len(fake.sent)
+
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "sync-offer-covered-by-host",
+			From: "host",
+			Body: room.HistorySyncOfferBody(room.HistorySyncOffer{
+				Version:        1,
+				SourceIdentity: "identity-peer-covered",
+				TargetIdentity: "identity-local",
+				RoomKey:        transcript.JoinRoomKey("203.0.113.10:7331"),
+				Summary: room.HistorySyncSummary{
+					Count:  1,
+					Newest: joinedAt.Add(30 * time.Minute),
+				},
+			}),
+			At: joinedAt.Add(31 * time.Minute),
+		},
+	})
+	uiModel = updated.(model)
+
+	if len(fake.sent) != initialSent {
+		t.Fatalf("expected peer sync offer to stay queued until host sync completes, got %#v", fake.sent[initialSent:])
+	}
+
+	updated, _ = uiModel.Update(incomingMessageMsg{
+		message: session.Message{
+			ID:   "hostsync-covered",
+			From: "host",
+			Body: room.HostHistoryChunkBody(room.HostHistoryChunk{
+				Version:        1,
+				RoomKey:        transcript.JoinRoomKey("203.0.113.10:7331"),
+				TargetIdentity: "identity-local",
+				Records: []transcript.Record{
+					{
+						MessageID:      "hostsync-covered-1",
+						Direction:      transcript.DirectionIncoming,
+						From:           "bob",
+						AuthorIdentity: "identity-bob",
+						Body:           "covered by host sync",
+						At:             joinedAt.Add(35 * time.Minute),
+						Status:         transcript.StatusSent,
+					},
+				},
+			}),
+			At: joinedAt.Add(36 * time.Minute),
+		},
+	})
+	uiModel = updated.(model)
+
+	if len(fake.sent) != initialSent {
+		t.Fatalf("expected queued peer offer covered by host sync not to trigger request, got %#v", fake.sent[initialSent:])
+	}
+}
+
 func TestModelReplaysHostHistoryChunkThroughUnifiedMergePath(t *testing.T) {
 	t.Parallel()
 

@@ -408,7 +408,7 @@ func TestHostRoomAnswersAuthorizedHostHistoryRequest(t *testing.T) {
 	if len(chunk.Records) != 1 || chunk.TargetIdentity != "identity-a" {
 		t.Fatalf("expected authorized retained chunk, got %#v", chunk)
 	}
-	expectedSince := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
+	expectedSince := newestLocal.Add(-2 * time.Minute)
 	if !store.lastSince.Equal(expectedSince) {
 		t.Fatalf("expected hostsync lower bound %v, got %v", expectedSince, store.lastSince)
 	}
@@ -543,7 +543,7 @@ func TestHostRoomAnswersHostHistoryRequestUsingLegacyAliasJoinRecordWhenCanonica
 	if len(chunk.Records) != 1 || chunk.Records[0].MessageID != "msg-legacy-alias" {
 		t.Fatalf("expected host history lookup to fall back to legacy alias join record, got %#v", chunk)
 	}
-	expectedSince := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
+	expectedSince := time.Date(2026, 4, 27, 11, 56, 0, 0, time.UTC)
 	if !store.lastSince.Equal(expectedSince) {
 		t.Fatalf("expected host history lower bound %v, got %v", expectedSince, store.lastSince)
 	}
@@ -674,14 +674,15 @@ func TestHostRoomAnswersHostHistoryRequestWithFullWindowDespiteNewerLocalTranscr
 	if !ok {
 		t.Fatalf("expected host history chunk, got %#v", response)
 	}
-	if len(chunk.Records) != 2 {
-		t.Fatalf("expected full retained history window despite newer local transcript, got %#v", chunk)
+	if len(chunk.Records) != 1 {
+		t.Fatalf("expected retained history to start near newest local transcript, got %#v", chunk)
 	}
-	if chunk.Records[0].MessageID != "msg-earlier-gap" || chunk.Records[1].MessageID != "msg-late" {
-		t.Fatalf("expected both earlier and late retained messages, got %#v", chunk.Records)
+	if chunk.Records[0].MessageID != "msg-late" {
+		t.Fatalf("expected only late retained message after newest-local cutoff, got %#v", chunk.Records)
 	}
-	if !store.lastSince.Equal(joinedAt) {
-		t.Fatalf("expected host history lower bound to stay at joinedAt %v, got %v", joinedAt, store.lastSince)
+	expectedSince := joinedAt.Add(56 * time.Minute)
+	if !store.lastSince.Equal(expectedSince) {
+		t.Fatalf("expected host history lower bound %v from newest local drift window, got %v", expectedSince, store.lastSince)
 	}
 }
 

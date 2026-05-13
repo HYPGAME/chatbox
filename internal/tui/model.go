@@ -1600,6 +1600,9 @@ func (m *model) flushQueuedPeerOffers() {
 	offers := append([]room.HistorySyncOffer(nil), m.pendingPeerOffers...)
 	m.pendingPeerOffers = nil
 	for _, offer := range offers {
+		if !historySummaryHasMore(offer.Summary, HistorySyncSummaryForRecords(m.history)) {
+			continue
+		}
 		m.maybeRequestHistorySync(offer)
 	}
 }
