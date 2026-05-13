@@ -142,6 +142,7 @@ func TestHostHistorySyncControlChunkRoundTrips(t *testing.T) {
 		Version:        1,
 		RoomKey:        "join:127.0.0.1:7331",
 		TargetIdentity: "identity-a",
+		Final:          true,
 		Records: []transcript.Record{
 			{
 				MessageID:      "msg-1",
@@ -165,6 +166,9 @@ func TestHostHistorySyncControlChunkRoundTrips(t *testing.T) {
 	parsed, ok := ParseHostHistoryChunk(HostHistoryChunkBody(chunk))
 	if !ok {
 		t.Fatal("expected host history chunk to parse")
+	}
+	if !parsed.Final {
+		t.Fatalf("expected final flag to round-trip, got %#v", parsed)
 	}
 	if len(parsed.Records) != 1 || len(parsed.Revokes) != 1 {
 		t.Fatalf("expected chunk payloads to round-trip, got %#v", parsed)

@@ -62,6 +62,7 @@ type HostHistoryChunk struct {
 	Version        int                       `json:"version"`
 	RoomKey        string                    `json:"room_key"`
 	TargetIdentity string                    `json:"target_identity"`
+	Final          bool                      `json:"final,omitempty"`
 	Records        []transcript.Record       `json:"records"`
 	Revokes        []transcript.RevokeRecord `json:"revokes,omitempty"`
 }

@@ -1314,9 +1314,11 @@ func (m *model) handleControlMessage(message session.Message) (bool, tea.Cmd) {
 func (m *model) handleHistorySyncControl(message session.Message) bool {
 	if chunk, ok := room.ParseHostHistoryChunk(message.Body); ok {
 		if m.replayHistoricalWindow(chunk.RoomKey, chunk.TargetIdentity, m.identityID, chunk.Records, chunk.Revokes, false) {
-			m.hostSyncPending = false
-			m.hostSyncCompleted = true
-			m.flushQueuedPeerOffers()
+			if chunk.Final {
+				m.hostSyncPending = false
+				m.hostSyncCompleted = true
+				m.flushQueuedPeerOffers()
+			}
 		}
 		return true
 	}

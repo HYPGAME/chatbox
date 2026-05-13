@@ -686,6 +686,53 @@ func TestHostRoomAnswersHostHistoryRequestWithFullWindowDespiteNewerLocalTranscr
 	}
 }
 
+func TestHostRoomSendsFinalEmptyHostHistoryChunkWhenWindowIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	room := NewHostRoom("host")
+	defer room.Close()
+
+	joinedAt := time.Date(2026, 4, 27, 11, 0, 0, 0, time.UTC)
+	store := &fakeRetainedHistoryStore{}
+	joins := &fakeJoinStore{
+		record: historymeta.Record{
+			RoomKey:    "join:127.0.0.1:7331",
+			IdentityID: "identity-a",
+			JoinedAt:   joinedAt,
+		},
+	}
+	room.ConfigureHistoryRetention(store, "join:127.0.0.1:7331", joins.open)
+
+	member := newFakeMember("alice")
+	room.AddMember(member)
+	drainJoinEvents(t, room, 1)
+
+	member.messages <- session.Message{
+		ID:   "hostsync-request-empty",
+		From: "alice",
+		Body: HostHistoryRequestBody(HostHistoryRequest{
+			Version:     1,
+			RoomKey:     "join:127.0.0.1:7331",
+			IdentityID:  "identity-a",
+			JoinedAt:    joinedAt,
+			NewestLocal: joinedAt.Add(30 * time.Minute),
+		}),
+		At: joinedAt.Add(time.Hour),
+	}
+
+	response := waitForResentMessage(t, member.resent)
+	chunk, ok := ParseHostHistoryChunk(response.Body)
+	if !ok {
+		t.Fatalf("expected host history chunk, got %#v", response)
+	}
+	if !chunk.Final {
+		t.Fatalf("expected empty host history response to mark final chunk, got %#v", chunk)
+	}
+	if len(chunk.Records) != 0 || len(chunk.Revokes) != 0 {
+		t.Fatalf("expected empty host history window, got %#v", chunk)
+	}
+}
+
 func TestHostRoomSplitsOversizedHostHistoryWindow(t *testing.T) {
 	t.Parallel()
 

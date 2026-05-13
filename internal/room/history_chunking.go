@@ -56,13 +56,22 @@ func SplitHostHistoryChunks(targetIdentity, roomKey, from string, at time.Time, 
 	if err != nil {
 		return nil, err
 	}
+	if len(chunks) == 0 {
+		return []HostHistoryChunk{{
+			Version:        1,
+			RoomKey:        roomKey,
+			TargetIdentity: targetIdentity,
+			Final:          true,
+		}}, nil
+	}
 
 	result := make([]HostHistoryChunk, 0, len(chunks))
-	for _, chunk := range chunks {
+	for i, chunk := range chunks {
 		result = append(result, HostHistoryChunk{
 			Version:        1,
 			RoomKey:        roomKey,
 			TargetIdentity: targetIdentity,
+			Final:          i == len(chunks)-1,
 			Records:        chunk.Records,
 			Revokes:        chunk.Revokes,
 		})
