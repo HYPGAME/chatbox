@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -1548,6 +1549,8 @@ func (m *model) replayHistoricalWindow(roomKey, targetIdentity, fallbackAuthorId
 
 	added := 0
 	effectiveJoinedAt := m.effectiveHistorySyncJoinedAt()
+	recordsToAdd := make([]transcript.Record, 0, len(records))
+	candidateEquivalents := make(map[string]struct{}, len(records))
 	for _, record := range records {
 		if record.MessageID == "" {
 			continue
@@ -1568,10 +1571,16 @@ func (m *model) replayHistoricalWindow(roomKey, targetIdentity, fallbackAuthorId
 			m.seenMessages[record.MessageID] = struct{}{}
 			continue
 		}
-		m.addHistoricalRecordEntry(record, true)
+		if hasCandidateEquivalentHistoryMessage(candidateEquivalents, record) {
+			m.seenMessages[record.MessageID] = struct{}{}
+			continue
+		}
+		rememberCandidateEquivalentHistoryMessage(candidateEquivalents, record)
+		recordsToAdd = append(recordsToAdd, record)
 		m.seenMessages[record.MessageID] = struct{}{}
 		added++
 	}
+	m.addHistoricalRecordEntries(recordsToAdd, true)
 	for _, revoke := range revokes {
 		m.handleRevokeRecord(revoke, true)
 	}
@@ -1629,6 +1638,39 @@ func (m model) hasEquivalentHistoryMessage(record transcript.Record) bool {
 		return true
 	}
 	return false
+}
+
+func historyEntryEquivalentKey(record transcript.Record) string {
+	return strings.Join([]string{
+		record.AuthorIdentity,
+		record.From,
+		record.Body,
+		record.At.UTC().Truncate(time.Second).Format(time.RFC3339),
+	}, "\x00")
+}
+
+func hasCandidateEquivalentHistoryMessage(candidates map[string]struct{}, record transcript.Record) bool {
+	for _, key := range historyEntryEquivalentKeys(record) {
+		if _, ok := candidates[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func rememberCandidateEquivalentHistoryMessage(candidates map[string]struct{}, record transcript.Record) {
+	candidates[historyEntryEquivalentKey(record)] = struct{}{}
+}
+
+func historyEntryEquivalentKeys(record transcript.Record) []string {
+	keys := make([]string, 0, 7)
+	baseAt := record.At.UTC().Truncate(time.Second)
+	for offset := -3; offset <= 3; offset++ {
+		candidate := record
+		candidate.At = baseAt.Add(time.Duration(offset) * time.Second)
+		keys = append(keys, historyEntryEquivalentKey(candidate))
+	}
+	return keys
 }
 
 func timestampsEquivalent(left, right time.Time) bool {
@@ -2098,8 +2140,63 @@ func (m *model) addHistoricalRecordEntry(record transcript.Record, persist bool)
 	m.addRecordEntry(record, persist, true)
 }
 
-func (m *model) addRecordEntry(record transcript.Record, persist bool, chronological bool) {
-	entry := historyEntry{
+func (m *model) addHistoricalRecordEntries(records []transcript.Record, persist bool) {
+	if len(records) == 0 {
+		return
+	}
+
+	stickToBottom := m.viewport.AtBottom() || len(m.history) == 0
+	originalPrintedCount := m.printedCount
+	entries := make([]historyEntry, 0, len(records))
+	for _, record := range records {
+		entries = append(entries, historyEntryFromRecord(record))
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		return entries[i].at.Before(entries[j].at)
+	})
+
+	merged := make([]historyEntry, 0, len(m.history)+len(entries))
+	oldIndex := 0
+	newIndex := 0
+	for oldIndex < len(m.history) || newIndex < len(entries) {
+		if newIndex < len(entries) && (oldIndex >= len(m.history) || m.history[oldIndex].at.After(entries[newIndex].at)) {
+			entry := entries[newIndex]
+			if m.uiMode == uiModeScrollback && oldIndex < originalPrintedCount {
+				m.printedCount++
+				m.pendingScrollbackLines = append(m.pendingScrollbackLines, renderScrollbackEntry(entry))
+			}
+			merged = append(merged, entry)
+			newIndex++
+			continue
+		}
+		merged = append(merged, m.history[oldIndex])
+		oldIndex++
+	}
+
+	m.history = merged
+	m.reindexHistoryMessageIDs()
+	for _, record := range records {
+		if record.MessageID != "" {
+			m.applyPendingRevokes(record.MessageID)
+		}
+		if persist && m.transcript != nil {
+			_ = m.transcript.AppendMessage(record)
+			if record.Revoked {
+				_ = m.transcript.AppendRevoke(transcript.RevokeRecord{
+					TargetMessageID:  record.MessageID,
+					OperatorIdentity: record.AuthorIdentity,
+					At:               record.RevokedAt,
+				})
+			}
+		}
+	}
+	m.rebuildCopySelection()
+	m.syncRevokeCandidates()
+	m.refreshViewport(stickToBottom)
+}
+
+func historyEntryFromRecord(record transcript.Record) historyEntry {
+	return historyEntry{
 		kind:           historyKindMessage,
 		messageID:      record.MessageID,
 		from:           record.From,
@@ -2111,7 +2208,10 @@ func (m *model) addRecordEntry(record transcript.Record, persist bool, chronolog
 		revoked:        record.Revoked,
 		revokedAt:      record.RevokedAt,
 	}
+}
 
+func (m *model) addRecordEntry(record transcript.Record, persist bool, chronological bool) {
+	entry := historyEntryFromRecord(record)
 	if chronological {
 		m.insertHistoryEntryChronologically(entry)
 	} else {
