@@ -1339,6 +1339,58 @@ func TestReplyDraftRendersSingleLineBarAboveInput(t *testing.T) {
 	}
 }
 
+func TestStatusNoticeRendersAboveInputInsteadOfTopBar(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode: "join",
+		session: &fakeSession{
+			peerName: "host",
+		},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 80, Height: 18})
+	uiModel = updated.(model)
+	uiModel.setStatusNotice("copied message", false)
+	uiModel.resize()
+
+	view := stripANSI(uiModel.View())
+	lines := strings.Split(view, "\n")
+	if strings.Contains(lines[0], "copied message") {
+		t.Fatalf("expected top bar to keep connection status, got %q", lines[0])
+	}
+	if !strings.Contains(view, "copied message") {
+		t.Fatalf("expected bottom status notice, got %q", view)
+	}
+}
+
+func TestResizeAccountsForBottomStatusNotice(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode: "join",
+		session: &fakeSession{
+			peerName: "host",
+		},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 80, Height: 18})
+	uiModel = updated.(model)
+	withoutNotice := uiModel.viewport.Height
+
+	uiModel.setStatusNotice("copied message", false)
+	uiModel.resize()
+	withNotice := uiModel.viewport.Height
+
+	if withNotice != withoutNotice-1 {
+		t.Fatalf("expected status notice to reserve one row, got without=%d with=%d", withoutNotice, withNotice)
+	}
+}
+
 func TestEscapeClearsReplyDraftInNormalMode(t *testing.T) {
 	t.Parallel()
 

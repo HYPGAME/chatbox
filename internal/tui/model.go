@@ -765,6 +765,9 @@ func (m model) View() string {
 	if replyBar := m.renderReplyBar(); replyBar != "" {
 		lines = append(lines, replyBar)
 	}
+	if statusNotice := m.renderStatusNotice(); statusNotice != "" {
+		lines = append(lines, statusNotice)
+	}
 	lines = append(lines, m.renderInputBox())
 	return strings.Join(lines, "\n")
 }
@@ -1974,7 +1977,11 @@ func (m *model) resize() {
 	if strings.TrimSpace(m.buildRenderedReplyBarState().text) != "" {
 		replyBarHeight = 1
 	}
-	viewportHeight := m.height - inputHeight - 1 - suggestionHeight - actionBarHeight - replyBarHeight
+	statusNoticeHeight := 0
+	if statusNotice := strings.TrimSpace(m.renderStatusNotice()); statusNotice != "" {
+		statusNoticeHeight = lipgloss.Height(statusNotice)
+	}
+	viewportHeight := m.height - inputHeight - 1 - suggestionHeight - actionBarHeight - replyBarHeight - statusNoticeHeight
 	if viewportHeight < 5 {
 		viewportHeight = 5
 	}
@@ -3615,6 +3622,27 @@ func (m model) renderInputBox() string {
 		inputHintStyle.Render(hint),
 	}, "\n")
 	return inputStyle.Render(content)
+}
+
+func (m model) renderStatusNotice() string {
+	text := ""
+	isError := false
+	switch {
+	case strings.TrimSpace(m.operationNotice) != "":
+		text = strings.TrimSpace(m.operationNotice)
+		isError = m.operationNoticeIsError
+	case strings.TrimSpace(m.statusNotice) != "":
+		text = strings.TrimSpace(m.statusNotice)
+		isError = m.statusNoticeIsError
+	}
+	if text == "" || (m.copyMode && text == "copy mode") {
+		return ""
+	}
+	style := inputHintStyle
+	if isError {
+		style = errorStyle
+	}
+	return style.Render(text)
 }
 
 func timestampStyle() lipgloss.Style {
