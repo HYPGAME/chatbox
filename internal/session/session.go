@@ -242,16 +242,15 @@ func (s *Session) readLoop() {
 				s.shutdown(err, false)
 				return
 			}
+			if !s.markSeen(message.ID) {
+				select {
+				case s.messages <- message:
+				case <-s.done:
+					return
+				}
+			}
 			if err := s.writeAck(message.ID); err != nil {
 				s.shutdown(err, false)
-				return
-			}
-			if s.markSeen(message.ID) {
-				continue
-			}
-			select {
-			case s.messages <- message:
-			case <-s.done:
 				return
 			}
 		case frameTypePing:
@@ -312,6 +311,14 @@ func (s *Session) writeFrame(frameType byte, payload []byte) error {
 		return err
 	}
 
+	if s.cfg.WriteTimeout > 0 {
+		if err := s.conn.SetWriteDeadline(time.Now().Add(s.cfg.WriteTimeout)); err != nil {
+			return fmt.Errorf("set write deadline: %w", err)
+		}
+		defer func() {
+			_ = s.conn.SetWriteDeadline(time.Time{})
+		}()
+	}
 	return writePacket(s.conn, packet)
 }
 

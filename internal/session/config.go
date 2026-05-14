@@ -11,6 +11,7 @@ type Config struct {
 	HandshakeTimeout  time.Duration
 	HeartbeatInterval time.Duration
 	IdleTimeout       time.Duration
+	WriteTimeout      time.Duration
 	MaxMessageSize    int
 }
 
@@ -26,6 +27,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.IdleTimeout == 0 {
 		c.IdleTimeout = 45 * time.Second
+	}
+	if c.WriteTimeout == 0 {
+		c.WriteTimeout = 5 * time.Second
 	}
 	if c.MaxMessageSize == 0 {
 		c.MaxMessageSize = 4 * 1024

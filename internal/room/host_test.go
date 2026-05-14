@@ -2,6 +2,7 @@ package room
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -47,6 +48,51 @@ func TestHostRoomBroadcastsJoinerMessagesToOtherMembersAndHost(t *testing.T) {
 	}
 
 	assertNoResentMessage(t, memberA.resent)
+}
+
+func TestHostRoomContinuesBroadcastWhenMemberResendFails(t *testing.T) {
+	t.Parallel()
+
+	room := NewHostRoom("host")
+	defer room.Close()
+
+	store := &fakeRetainedHistoryStore{}
+	room.ConfigureHistoryRetention(store, "join:127.0.0.1:7331", nil)
+
+	sender := newFakeMember("sender")
+	failing := newFakeMember("failing")
+	failing.resendErr = errors.New("write failed")
+	receiver := newFakeMember("receiver")
+	room.AddMember(sender)
+	room.AddMember(failing)
+	room.AddMember(receiver)
+	drainJoinEvents(t, room, 3)
+
+	inbound := session.Message{
+		ID:   "msg-after-failed-resend",
+		From: "sender",
+		Body: "still deliver this",
+		At:   time.Date(2026, 5, 14, 18, 30, 0, 0, time.UTC),
+	}
+	sender.messages <- inbound
+
+	if got := waitForResentMessage(t, receiver.resent); got != inbound {
+		t.Fatalf("expected healthy receiver to get message, got %#v", got)
+	}
+	if got := waitForRoomMessage(t, room.Messages()); got != inbound {
+		t.Fatalf("expected host stream to receive message, got %#v", got)
+	}
+	waitForCondition(t, func() bool {
+		return len(store.appendedMessages) == 1
+	})
+	if store.appendedMessages[0].MessageID != inbound.ID {
+		t.Fatalf("expected failed broadcast message to be retained, got %#v", store.appendedMessages)
+	}
+	select {
+	case <-failing.done:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("expected failing member to be closed")
+	}
 }
 
 func TestHostRoomBroadcastsHostMessagesToAllMembers(t *testing.T) {
@@ -1202,12 +1248,13 @@ func TestHostRoomDeletesAttachmentOnRevoke(t *testing.T) {
 }
 
 type fakeMember struct {
-	peerName string
-	maxBytes int
-	messages chan session.Message
-	resent   chan session.Message
-	receipts chan session.Receipt
-	done     chan struct{}
+	peerName  string
+	maxBytes  int
+	resendErr error
+	messages  chan session.Message
+	resent    chan session.Message
+	receipts  chan session.Receipt
+	done      chan struct{}
 }
 
 type fakeAttachmentCleaner struct {
@@ -1328,6 +1375,9 @@ func (f *fakeMember) MaxMessageSize() int {
 	return session.DefaultMaxMessageSize()
 }
 func (f *fakeMember) Resend(message session.Message) error {
+	if f.resendErr != nil {
+		return f.resendErr
+	}
 	if f.maxBytes > 0 && len(message.Body) > f.maxBytes {
 		return fmt.Errorf("message exceeds %d bytes", f.maxBytes)
 	}

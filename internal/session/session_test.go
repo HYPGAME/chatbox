@@ -3,7 +3,11 @@ package session
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
+	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -107,6 +111,73 @@ func TestSessionResendDoesNotDuplicateDeliveredMessage(t *testing.T) {
 	}
 }
 
+func TestSessionDeliversDataBeforeAckWriteFailureCloses(t *testing.T) {
+	t.Parallel()
+
+	message := Message{
+		ID:   "msg-ack-failure",
+		From: "host",
+		Body: "visible before ack failure",
+		At:   time.Date(2026, 5, 14, 18, 0, 0, 0, time.UTC),
+	}
+	conn, recvCipher := newSingleInboundPacketConn(t, message, errors.New("ack write failed"))
+	sendCipher, err := newCipherState(bytesForTest(0x66))
+	if err != nil {
+		t.Fatalf("newCipherState returned error: %v", err)
+	}
+	session := newManualSession(conn, sendCipher, recvCipher)
+
+	go session.readLoop()
+
+	select {
+	case got, ok := <-session.Messages():
+		if !ok {
+			t.Fatal("expected message before session closed")
+		}
+		if got.ID != message.ID || got.Body != message.Body {
+			t.Fatalf("expected delivered message %#v, got %#v", message, got)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for message delivery")
+	}
+
+	select {
+	case <-session.Done():
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for session to close after ack failure")
+	}
+}
+
+func TestSessionWriteFrameTimesOutBlockedWriter(t *testing.T) {
+	t.Parallel()
+
+	conn := newDeadlineBlockingConn()
+	defer conn.Close()
+	sendCipher, err := newCipherState(bytesForTest(0x77))
+	if err != nil {
+		t.Fatalf("newCipherState returned error: %v", err)
+	}
+	session := &Session{
+		conn:       conn,
+		cfg:        Config{WriteTimeout: 20 * time.Millisecond}.withDefaults(),
+		sendCipher: sendCipher,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- session.writeFrame(frameTypePing, nil)
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected write timeout error")
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for blocked write to fail")
+	}
+}
+
 func TestSessionDetectsAbruptDisconnect(t *testing.T) {
 	t.Parallel()
 
@@ -127,6 +198,147 @@ func TestSessionDetectsAbruptDisconnect(t *testing.T) {
 		t.Fatal("expected client session to record disconnect error")
 	}
 }
+
+func newSingleInboundPacketConn(t *testing.T, message Message, writeErr error) (*singleInboundPacketConn, *cipherState) {
+	t.Helper()
+
+	key := bytesForTest(0x55)
+	sealer, err := newCipherState(key)
+	if err != nil {
+		t.Fatalf("newCipherState returned error: %v", err)
+	}
+	recvCipher, err := newCipherState(key)
+	if err != nil {
+		t.Fatalf("newCipherState returned error: %v", err)
+	}
+	payload, err := encodeMessagePayload(message)
+	if err != nil {
+		t.Fatalf("encodeMessagePayload returned error: %v", err)
+	}
+	packet, err := sealer.seal(frameTypeData, payload)
+	if err != nil {
+		t.Fatalf("seal returned error: %v", err)
+	}
+	var framed bytes.Buffer
+	if err := writePacket(&framed, packet); err != nil {
+		t.Fatalf("writePacket returned error: %v", err)
+	}
+	return &singleInboundPacketConn{
+		reader:   bytes.NewReader(framed.Bytes()),
+		writeErr: writeErr,
+	}, recvCipher
+}
+
+func newManualSession(conn net.Conn, sendCipher, recvCipher *cipherState) *Session {
+	session := &Session{
+		conn:       conn,
+		cfg:        Config{WriteTimeout: 20 * time.Millisecond}.withDefaults(),
+		peerName:   "host",
+		sendCipher: sendCipher,
+		recvCipher: recvCipher,
+		messages:   make(chan Message, 1),
+		receipts:   make(chan Receipt, 1),
+		done:       make(chan struct{}),
+		seenIDs:    make(map[string]struct{}),
+	}
+	session.touch()
+	return session
+}
+
+type singleInboundPacketConn struct {
+	reader   *bytes.Reader
+	writeErr error
+}
+
+func (c *singleInboundPacketConn) Read(p []byte) (int, error) {
+	return c.reader.Read(p)
+}
+
+func (c *singleInboundPacketConn) Write([]byte) (int, error) {
+	return 0, c.writeErr
+}
+
+func (c *singleInboundPacketConn) Close() error                     { return nil }
+func (c *singleInboundPacketConn) LocalAddr() net.Addr              { return testAddr("local") }
+func (c *singleInboundPacketConn) RemoteAddr() net.Addr             { return testAddr("remote") }
+func (c *singleInboundPacketConn) SetDeadline(time.Time) error      { return nil }
+func (c *singleInboundPacketConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *singleInboundPacketConn) SetWriteDeadline(time.Time) error { return nil }
+
+type deadlineBlockingConn struct {
+	mu            sync.Mutex
+	writeDeadline time.Time
+	closed        chan struct{}
+}
+
+func newDeadlineBlockingConn() *deadlineBlockingConn {
+	return &deadlineBlockingConn{closed: make(chan struct{})}
+}
+
+func (c *deadlineBlockingConn) Read([]byte) (int, error) {
+	<-c.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (c *deadlineBlockingConn) Write([]byte) (int, error) {
+	for {
+		c.mu.Lock()
+		deadline := c.writeDeadline
+		c.mu.Unlock()
+
+		if !deadline.IsZero() {
+			timer := time.NewTimer(time.Until(deadline))
+			select {
+			case <-timer.C:
+				return 0, osErrDeadlineExceeded{}
+			case <-c.closed:
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return 0, io.ErrClosedPipe
+			}
+		}
+
+		select {
+		case <-c.closed:
+			return 0, io.ErrClosedPipe
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
+func (c *deadlineBlockingConn) Close() error {
+	select {
+	case <-c.closed:
+	default:
+		close(c.closed)
+	}
+	return nil
+}
+
+func (c *deadlineBlockingConn) LocalAddr() net.Addr  { return testAddr("local") }
+func (c *deadlineBlockingConn) RemoteAddr() net.Addr { return testAddr("remote") }
+func (c *deadlineBlockingConn) SetDeadline(t time.Time) error {
+	return c.SetWriteDeadline(t)
+}
+func (c *deadlineBlockingConn) SetReadDeadline(time.Time) error { return nil }
+func (c *deadlineBlockingConn) SetWriteDeadline(t time.Time) error {
+	c.mu.Lock()
+	c.writeDeadline = t
+	c.mu.Unlock()
+	return nil
+}
+
+type testAddr string
+
+func (a testAddr) Network() string { return "test" }
+func (a testAddr) String() string  { return string(a) }
+
+type osErrDeadlineExceeded struct{}
+
+func (osErrDeadlineExceeded) Error() string   { return "i/o timeout" }
+func (osErrDeadlineExceeded) Timeout() bool   { return true }
+func (osErrDeadlineExceeded) Temporary() bool { return true }
 
 func TestHandshakeRejectsTamperedServerProof(t *testing.T) {
 	t.Parallel()

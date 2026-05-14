@@ -265,9 +265,7 @@ func (r *HostRoom) Send(text string) (session.Message, error) {
 		At:   time.Now(),
 	}
 
-	if err := r.broadcast(message, 0); err != nil {
-		return session.Message{}, err
-	}
+	_ = r.broadcast(message, 0)
 	r.retainVisibleMessage(message, "")
 	r.publishMessage(message)
 	r.publishReceipt(session.Receipt{
@@ -281,9 +279,7 @@ func (r *HostRoom) Resend(message session.Message) error {
 	if message.ID == "" {
 		return errors.New("cannot resend message without ID")
 	}
-	if err := r.broadcast(message, 0); err != nil {
-		return err
-	}
+	_ = r.broadcast(message, 0)
 	r.publishMessage(message)
 	r.publishReceipt(session.Receipt{
 		MessageID: message.ID,
@@ -348,9 +344,7 @@ func (r *HostRoom) runMember(member trackedMember) {
 			if r.handleUpdateControl(member, message) {
 				continue
 			}
-			if err := r.broadcast(message, member.id); err != nil {
-				continue
-			}
+			_ = r.broadcast(message, member.id)
 			r.retainVisibleMessage(message, r.memberIdentity(member.id))
 			r.publishMessage(message)
 		}
@@ -585,13 +579,26 @@ func (r *HostRoom) sendUpdateResult(member memberSession, result UpdateResult, p
 }
 
 func (r *HostRoom) broadcast(message session.Message, excludeMemberID uint64) error {
+	var firstErr error
+	attempted := 0
+	delivered := 0
 	for _, member := range r.memberSnapshot() {
 		if excludeMemberID != 0 && member.id == excludeMemberID {
 			continue
 		}
+		attempted++
 		if err := member.session.Resend(message); err != nil {
-			return err
+			if firstErr == nil {
+				firstErr = err
+			}
+			_ = member.session.Close()
+			r.removeMember(member)
+			continue
 		}
+		delivered++
+	}
+	if attempted > 0 && delivered == 0 {
+		return firstErr
 	}
 	return nil
 }
