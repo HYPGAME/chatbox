@@ -325,6 +325,7 @@ type model struct {
 
 var (
 	headerStyle          = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
+	topBarStyle          = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#8AB4D6"))
 	statusStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 	errorStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 	inputStyle           = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8")).Padding(0, 1)
@@ -749,7 +750,7 @@ func (m model) View() string {
 		}, "\n")
 	}
 
-	lines := []string{m.renderStatusBar()}
+	lines := []string{m.renderTopBar()}
 	lines = append(lines, m.viewport.View())
 	if actionBar := m.renderActionBar(); actionBar != "" {
 		lines = append(lines, actionBar)
@@ -3441,6 +3442,84 @@ func renderedMessageBody(entry historyEntry) string {
 
 func renderDateSeparator(date string) string {
 	return separatorStyle.Render(fmt.Sprintf("--- %s ---", date))
+}
+
+func (m model) renderTopBar() string {
+	text := compactTopBarParts(
+		"chatbox",
+		m.topBarRoomText(),
+		m.topBarStatusText(),
+		m.topBarOnlineText(),
+		m.width,
+	)
+	return topBarStyle.Render(text)
+}
+
+func (m model) topBarRoomText() string {
+	if roomName := m.displayRoomName(); roomName != "" {
+		return roomName
+	}
+	switch strings.TrimSpace(m.mode) {
+	case "host":
+		if addr := strings.TrimSpace(m.listeningAddr); addr != "" {
+			return "host " + addr
+		}
+		return "host"
+	case "join":
+		if peer := strings.TrimSpace(m.currentPeer); peer != "" {
+			return "join " + peer
+		}
+		return "join"
+	default:
+		return strings.TrimSpace(m.mode)
+	}
+}
+
+func (m model) topBarStatusText() string {
+	status := strings.TrimSpace(m.status)
+	if status == "" {
+		return "connecting"
+	}
+	return status
+}
+
+func (m model) topBarOnlineText() string {
+	if m.peerNames != nil {
+		if names := m.peerNames(); len(names) > 0 {
+			return fmt.Sprintf("%d online", len(names))
+		}
+	}
+	if m.mode == "host" && m.peerCountValue > 0 {
+		return fmt.Sprintf("%d online", m.peerCountValue+1)
+	}
+	return ""
+}
+
+func compactTopBarParts(brand, room, status, online string, width int) string {
+	candidates := [][]string{
+		{brand, room, status, online},
+		{brand, status, online},
+		{brand, status},
+		{brand},
+	}
+	for _, candidate := range candidates {
+		text := joinNonEmptyParts(candidate, " · ")
+		if width <= 0 || lipgloss.Width(text) <= width {
+			return text
+		}
+	}
+	return brand
+}
+
+func joinNonEmptyParts(parts []string, sep string) string {
+	nonEmpty := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			nonEmpty = append(nonEmpty, part)
+		}
+	}
+	return strings.Join(nonEmpty, sep)
 }
 
 func (m model) renderStatusBar() string {

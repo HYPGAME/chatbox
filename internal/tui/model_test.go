@@ -2036,6 +2036,66 @@ func TestRenderStatusBarOmitsRoomNameForNonGroupSession(t *testing.T) {
 	}
 }
 
+func TestRenderTopBarShowsRoomConnectionAndOnlineCount(t *testing.T) {
+	t.Parallel()
+
+	hostRoom := &fakeHostRoom{
+		fakeSession: fakeSession{peerName: "room"},
+		peerCount:   2,
+		peerNames:   []string{"alice", "bob", "carol"},
+	}
+	uiModel := newModel(modelOptions{
+		mode:          "host",
+		uiMode:        uiModeTUI,
+		listeningAddr: "0.0.0.0:7331",
+		session:       hostRoom,
+		roomEvents:    hostRoom.Events(),
+		peerCount:     hostRoom.PeerCount,
+		peerNames:     hostRoom.PeerNames,
+		transcriptKey: "group:帝影剑域:abcd1234",
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	uiModel.status = "connected"
+	uiModel.width = 100
+
+	got := stripANSI(uiModel.renderTopBar())
+	if got != "chatbox · 帝影剑域 · connected · 3 online" {
+		t.Fatalf("unexpected top bar: %q", got)
+	}
+}
+
+func TestRenderTopBarTruncatesLowPriorityFields(t *testing.T) {
+	t.Parallel()
+
+	hostRoom := &fakeHostRoom{
+		fakeSession: fakeSession{peerName: "room"},
+		peerCount:   2,
+		peerNames:   []string{"alice", "bob", "carol"},
+	}
+	uiModel := newModel(modelOptions{
+		mode:          "host",
+		uiMode:        uiModeTUI,
+		listeningAddr: "0.0.0.0:7331",
+		session:       hostRoom,
+		roomEvents:    hostRoom.Events(),
+		peerCount:     hostRoom.PeerCount,
+		peerNames:     hostRoom.PeerNames,
+		transcriptKey: "group:帝影剑域:abcd1234",
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	uiModel.status = "connected"
+	uiModel.width = 24
+
+	got := stripANSI(uiModel.renderTopBar())
+	if got != "chatbox · connected" {
+		t.Fatalf("expected compact top bar, got %q", got)
+	}
+}
+
 func TestJoinStatusCommandSendsHiddenRequestAndRendersRosterResponse(t *testing.T) {
 	t.Parallel()
 
