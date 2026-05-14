@@ -210,6 +210,10 @@ type renderedReplyBarState struct {
 	clearEnd   int
 }
 
+type tuiEntryRenderContext struct {
+	compactSender bool
+}
+
 type mouseViewportPress struct {
 	x          int
 	y          int
@@ -2663,6 +2667,9 @@ func (m model) buildRenderedViewportState() renderedViewportState {
 	case m.copyMode:
 		selectedIndex = m.selectedCopyHistoryIndex()
 	}
+	lastMessageSender := ""
+	lastMessageDate := ""
+	lastEntryWasMessage := false
 	for i, entry := range m.history {
 		entryDate := entry.at.Local().Format("2006-01-02")
 		if entryDate != lastDate {
@@ -2679,7 +2686,22 @@ func (m model) buildRenderedViewportState() renderedViewportState {
 		case i == m.hoveredHistoryIndex:
 			feedback = attachmentFeedbackHover
 		}
-		line := renderTUIEntryWithFeedback(entry, i == selectedIndex, feedback)
+		compactSender := entry.kind == historyKindMessage &&
+			lastEntryWasMessage &&
+			entry.from == lastMessageSender &&
+			entryDate == lastMessageDate
+		line := renderTUIEntryWithFeedbackAndContext(entry, i == selectedIndex, feedback, tuiEntryRenderContext{
+			compactSender: compactSender,
+		})
+		if entry.kind == historyKindMessage {
+			lastEntryWasMessage = true
+			lastMessageSender = entry.from
+			lastMessageDate = entryDate
+		} else {
+			lastEntryWasMessage = false
+			lastMessageSender = ""
+			lastMessageDate = ""
+		}
 		if m.viewport.Width > 0 {
 			line = ansi.Wrap(line, m.viewport.Width, "")
 		}
@@ -3365,10 +3387,14 @@ func renderTUIEntry(entry historyEntry, selected bool) string {
 }
 
 func renderTUIEntryWithFeedback(entry historyEntry, selected bool, feedback attachmentFeedbackState) string {
+	return renderTUIEntryWithFeedbackAndContext(entry, selected, feedback, tuiEntryRenderContext{})
+}
+
+func renderTUIEntryWithFeedbackAndContext(entry historyEntry, selected bool, feedback attachmentFeedbackState, ctx tuiEntryRenderContext) string {
 	timestamp := entry.at.Local().Format("15:04")
 	switch entry.kind {
 	case historyKindSystem:
-		return systemLineStyle().Render(fmt.Sprintf("system [%s]: %s", timestamp, entry.body))
+		return systemLineStyle().Render("        " + entry.body)
 	case historyKindError:
 		return historyErrorStyle().Render(fmt.Sprintf("error [%s]: %s", timestamp, entry.body))
 	default:
@@ -3380,10 +3406,18 @@ func renderTUIEntryWithFeedback(entry historyEntry, selected bool, feedback atta
 		coloredLabel := senderSegmentStyle.Render(entry.from)
 		coloredTimestamp := timestampSegmentStyle.Render(fmt.Sprintf("[%s]", timestamp))
 		header := coloredTimestamp + textSegmentStyle.Render(" ") + coloredLabel
-		line := header + textSegmentStyle.Render(": ") + textSegmentStyle.Render(renderedMessageBody(entry)+statusSuffix)
+		body := textSegmentStyle.Render(renderedMessageBody(entry) + statusSuffix)
+		line := header + textSegmentStyle.Render(": ") + body
+		if ctx.compactSender {
+			line = textSegmentStyle.Render("       " + renderedMessageBody(entry) + statusSuffix)
+		}
 		if !entry.revoked {
 			if compact, ok := renderCompactReplyBody(entry.body, senderSegmentStyle, textSegmentStyle, statusSuffix); ok {
-				line = header + textSegmentStyle.Render(":") + "\n" + compact
+				if ctx.compactSender {
+					line = compact
+				} else {
+					line = header + textSegmentStyle.Render(":") + "\n" + compact
+				}
 			}
 		}
 		if selected {
@@ -3441,7 +3475,7 @@ func renderedMessageBody(entry historyEntry) string {
 }
 
 func renderDateSeparator(date string) string {
-	return separatorStyle.Render(fmt.Sprintf("--- %s ---", date))
+	return separatorStyle.Render(fmt.Sprintf("──────── %s ────────", date))
 }
 
 func (m model) renderTopBar() string {

@@ -1800,6 +1800,88 @@ func TestLegacyMultiLineQuoteStillRendersAsPlainText(t *testing.T) {
 	}
 }
 
+func TestRefreshViewportUsesPolishedDateSeparators(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode: "join",
+		session: &fakeSession{
+			peerName: "host",
+		},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
+	uiModel = updated.(model)
+
+	uiModel.addMessageEntry(session.Message{
+		ID:   "m1",
+		From: "host",
+		Body: "first",
+		At:   time.Date(2026, 4, 17, 23, 59, 0, 0, time.Local),
+	}, false, transcript.StatusSent, false)
+
+	view := stripANSI(uiModel.View())
+	if !strings.Contains(view, "──────── 2026-04-17 ────────") {
+		t.Fatalf("expected polished date separator, got %q", view)
+	}
+}
+
+func TestRenderTUISystemEntryUsesQuietCenteredText(t *testing.T) {
+	t.Parallel()
+
+	entry := historyEntry{
+		kind: historyKindSystem,
+		body: "bob joined",
+		at:   time.Date(2026, 5, 14, 15, 4, 0, 0, time.Local),
+	}
+
+	if got := stripANSI(renderTUIEntry(entry, false)); got != "        bob joined" {
+		t.Fatalf("expected quiet system line, got %q", got)
+	}
+}
+
+func TestRefreshViewportCompactsConsecutiveMessagesFromSameSender(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode: "join",
+		session: &fakeSession{
+			peerName: "host",
+		},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
+	uiModel = updated.(model)
+
+	uiModel.addMessageEntry(session.Message{
+		ID:   "m1",
+		From: "alice",
+		Body: "first",
+		At:   time.Date(2026, 5, 14, 10, 0, 0, 0, time.Local),
+	}, false, transcript.StatusSent, false)
+	uiModel.addMessageEntry(session.Message{
+		ID:   "m2",
+		From: "alice",
+		Body: "second",
+		At:   time.Date(2026, 5, 14, 10, 1, 0, 0, time.Local),
+	}, false, transcript.StatusSent, false)
+
+	view := stripANSI(uiModel.View())
+	if !strings.Contains(view, "[10:00] alice: first") {
+		t.Fatalf("expected first message header, got %q", view)
+	}
+	if strings.Contains(view, "[10:01] alice: second") {
+		t.Fatalf("expected second message to suppress repeated sender header, got %q", view)
+	}
+	if !strings.Contains(view, "       second") {
+		t.Fatalf("expected compact continuation body, got %q", view)
+	}
+}
+
 func TestRefreshViewportAddsDateSeparators(t *testing.T) {
 	t.Parallel()
 
@@ -1829,10 +1911,10 @@ func TestRefreshViewportAddsDateSeparators(t *testing.T) {
 	}, false, transcript.StatusSent, false)
 
 	view := stripANSI(uiModel.View())
-	if !strings.Contains(view, "--- 2026-04-17 ---") {
+	if !strings.Contains(view, "──────── 2026-04-17 ────────") {
 		t.Fatalf("expected first date separator, got %q", view)
 	}
-	if !strings.Contains(view, "--- 2026-04-18 ---") {
+	if !strings.Contains(view, "──────── 2026-04-18 ────────") {
 		t.Fatalf("expected second date separator, got %q", view)
 	}
 }
