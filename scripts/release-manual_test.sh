@@ -76,6 +76,9 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" == "build" ]]; then
+  if [[ -n "${FAKE_GO_BUILD_LOG:-}" ]]; then
+    printf '%s\n' "$*" >>"${FAKE_GO_BUILD_LOG}"
+  fi
   output=""
   prev=""
   for arg in "$@"; do
@@ -272,6 +275,31 @@ test_release_uses_generated_notes() {
   fi
 }
 
+test_release_builds_with_trimpath() {
+  local temp_dir
+  temp_dir="$(mktemp -d)"
+  trap "rm -rf '${temp_dir}'" RETURN
+
+  make_fake_bin "${temp_dir}/bin"
+  : >"${temp_dir}/go-build.log"
+
+  local output
+  if ! output="$(FAKE_GO_BUILD_LOG="${temp_dir}/go-build.log" PATH="${temp_dir}/bin:${PATH}" bash "$SCRIPT" v0.1.3 2>&1)"; then
+    fail "expected command to succeed, got failure: ${output}"
+  fi
+
+  local builds
+  builds="$(cat "${temp_dir}/go-build.log")"
+  local build_count
+  build_count="$(grep -c '^build ' "${temp_dir}/go-build.log" || true)"
+  if [[ "${build_count}" != "4" ]]; then
+    fail "expected 4 release build commands, got ${build_count}: ${builds}"
+  fi
+  if grep '^build ' "${temp_dir}/go-build.log" | grep -v -- '-trimpath' >/dev/null; then
+    fail "expected every release build to use -trimpath, got: ${builds}"
+  fi
+}
+
 test_missing_version_fails
 test_dirty_worktree_fails
 test_existing_tag_fails
@@ -280,5 +308,6 @@ test_release_create_failure_reports_recovery_steps
 test_dry_run_prints_publish_plan_without_mutation
 test_release_generates_checksums_for_android_archive
 test_release_uses_generated_notes
+test_release_builds_with_trimpath
 
 echo "ok"

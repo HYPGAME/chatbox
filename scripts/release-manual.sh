@@ -74,18 +74,18 @@ mkdir -p dist
 for ARCH in arm64 amd64; do
   WORKDIR="dist/chatbox_darwin_${ARCH}"
   mkdir -p "$WORKDIR"
-  GOOS=darwin GOARCH="$ARCH" go build -ldflags "-X chatbox/internal/version.Version=${VERSION}" -o "$WORKDIR/chatbox" ./cmd/chatbox
+  GOOS=darwin GOARCH="$ARCH" go build -trimpath -ldflags "-X chatbox/internal/version.Version=${VERSION}" -o "$WORKDIR/chatbox" ./cmd/chatbox
   tar -C "$WORKDIR" -czf "dist/chatbox_darwin_${ARCH}.tar.gz" chatbox
 done
 
 ANDROID_WORKDIR="dist/chatbox_android_arm64"
 mkdir -p "$ANDROID_WORKDIR"
-GOOS=android GOARCH=arm64 go build -ldflags "-X chatbox/internal/version.Version=${VERSION}" -o "$ANDROID_WORKDIR/chatbox" ./cmd/chatbox
+GOOS=android GOARCH=arm64 go build -trimpath -ldflags "-X chatbox/internal/version.Version=${VERSION}" -o "$ANDROID_WORKDIR/chatbox" ./cmd/chatbox
 tar -C "$ANDROID_WORKDIR" -czf "dist/chatbox_android_arm64.tar.gz" chatbox
 
 LINUX_WORKDIR="dist/chatbox_linux_arm64"
 mkdir -p "$LINUX_WORKDIR"
-GOOS=linux GOARCH=arm64 go build -ldflags "-X chatbox/internal/version.Version=${VERSION}" -o "$LINUX_WORKDIR/chatbox" ./cmd/chatbox
+GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-X chatbox/internal/version.Version=${VERSION}" -o "$LINUX_WORKDIR/chatbox" ./cmd/chatbox
 tar -C "$LINUX_WORKDIR" -czf "dist/chatbox_linux_arm64.tar.gz" chatbox
 
 (
