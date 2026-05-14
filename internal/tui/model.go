@@ -288,6 +288,7 @@ type model struct {
 	hostSyncAttempt        uint64
 	executedRoomUpdates    map[string]struct{}
 	updateStatuses         map[string]map[string]string
+	lastReconnectError     string
 
 	status string
 
@@ -776,6 +777,7 @@ func (m *model) handleSessionReady(msg sessionReadyMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
 		return m.handleReconnectError(msg.err)
 	}
+	m.lastReconnectError = ""
 
 	hostHistoryRequested, hostSyncAttempt, err := m.activateSession(msg.session)
 	if err != nil {
@@ -954,7 +956,7 @@ func (m *model) handleReconnectError(err error) (tea.Model, tea.Cmd) {
 		return *m, nil
 	}
 
-	m.addErrorEntry(err.Error())
+	m.addReconnectErrorEntry(err)
 	switch {
 	case m.mode == "host":
 		m.status = m.hostStatus()
@@ -975,13 +977,13 @@ func (m *model) handleSessionClosed(err error) (tea.Model, tea.Cmd) {
 	case m.mode == "host" && m.roomEvents != nil:
 		m.status = m.hostStatus()
 		if err != nil && err.Error() != "session closed locally" {
-			m.addErrorEntry(err.Error())
+			m.addReconnectErrorEntry(err)
 		}
 		return *m, m.flushScrollbackCmd()
 	case m.mode == "host" && m.connect != nil:
 		m.status = fmt.Sprintf("listening on %s", m.listeningAddr)
 		if err != nil && err != context.Canceled && err.Error() != "session closed locally" {
-			m.addErrorEntry(err.Error())
+			m.addReconnectErrorEntry(err)
 		}
 		if m.uiMode != uiModeScrollback {
 			m.addSystemEntry("waiting for peer")
@@ -990,7 +992,7 @@ func (m *model) handleSessionClosed(err error) (tea.Model, tea.Cmd) {
 	case m.connect != nil:
 		m.status = "reconnecting"
 		if err != nil && err.Error() != "session closed locally" {
-			m.addErrorEntry(err.Error())
+			m.addReconnectErrorEntry(err)
 		}
 		return *m, tea.Batch(retryConnectAfter(m.reconnectDelay, m.connect), m.flushScrollbackCmd())
 	default:
@@ -2158,6 +2160,18 @@ func (m *model) addErrorEntry(text string) {
 		body: text,
 		at:   time.Now(),
 	})
+}
+
+func (m *model) addReconnectErrorEntry(err error) {
+	if err == nil {
+		return
+	}
+	text := strings.TrimSpace(err.Error())
+	if text == "" || text == m.lastReconnectError {
+		return
+	}
+	m.lastReconnectError = text
+	m.addErrorEntry(text)
 }
 
 func (m *model) addMessageEntry(message session.Message, outgoing bool, status string, persist bool) {

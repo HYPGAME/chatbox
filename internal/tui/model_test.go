@@ -7121,6 +7121,36 @@ func TestScrollbackReconnectErrorsPrintToTerminalHistory(t *testing.T) {
 	}
 }
 
+func TestScrollbackReconnectErrorsAreThrottled(t *testing.T) {
+	t.Parallel()
+
+	var printed []string
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeScrollback,
+		connect: func(context.Context) (sessionClient, error) {
+			return nil, errors.New("still offline")
+		},
+		historyPrinter: func(lines []string) tea.Cmd {
+			printed = append(printed, lines...)
+			return nil
+		},
+	})
+
+	for i := 0; i < 3; i++ {
+		updated, _ := uiModel.Update(sessionReadyMsg{err: errors.New("dial tcp timeout")})
+		uiModel = updated.(model)
+	}
+
+	joined := strings.Join(printed, "\n")
+	if got := strings.Count(joined, "dial tcp timeout"); got != 1 {
+		t.Fatalf("expected repeated reconnect error to print once, got %d in %q", got, joined)
+	}
+	if !strings.Contains(uiModel.View(), "reconnecting") {
+		t.Fatalf("expected reconnecting status in view, got %q", uiModel.View())
+	}
+}
+
 func TestScrollbackOutgoingReceiptDoesNotPrintDeliveryStatuses(t *testing.T) {
 	t.Parallel()
 

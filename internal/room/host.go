@@ -36,6 +36,8 @@ type Event struct {
 }
 
 const hostHistoryNewestLocalDriftBuffer = 2 * time.Minute
+const defaultBroadcastRetryDelay = time.Second
+const defaultBroadcastRetryMaxAttempts = 3
 
 type memberSession interface {
 	Messages() <-chan session.Message
@@ -65,6 +67,11 @@ type trackedMember struct {
 	syncCapable bool
 }
 
+type broadcastRetryItem struct {
+	message  session.Message
+	attempts int
+}
+
 type HostRoom struct {
 	localName string
 
@@ -78,21 +85,25 @@ type HostRoom struct {
 	memberSeq atomic.Uint64
 	memberWG  sync.WaitGroup
 
-	mu                 sync.Mutex
-	closed             bool
-	members            map[uint64]trackedMember
-	admins             admins.Store
-	releaseResolver    func(context.Context, string) (string, error)
-	attachmentCleaner  attachmentCleaner
-	identityByPeerName map[string]string
-	identityByMemberID map[uint64]string
-	versionByMemberID  map[uint64]string
-	processedUpdates   map[string]struct{}
-	activeUpdateStatus map[string]map[string]string
-	retainedHistory    retainedHistoryStore
-	retainedRoomKey    string
-	firstSeenLoader    firstSeenLoader
-	now                func() time.Time
+	mu                        sync.Mutex
+	closed                    bool
+	members                   map[uint64]trackedMember
+	admins                    admins.Store
+	releaseResolver           func(context.Context, string) (string, error)
+	attachmentCleaner         attachmentCleaner
+	identityByPeerName        map[string]string
+	identityByMemberID        map[uint64]string
+	versionByMemberID         map[uint64]string
+	processedUpdates          map[string]struct{}
+	activeUpdateStatus        map[string]map[string]string
+	broadcastRetries          map[uint64][]broadcastRetryItem
+	broadcastRetrying         map[uint64]bool
+	broadcastRetryDelay       time.Duration
+	broadcastRetryMaxAttempts int
+	retainedHistory           retainedHistoryStore
+	retainedRoomKey           string
+	firstSeenLoader           firstSeenLoader
+	now                       func() time.Time
 }
 
 func NewHostRoom(localName string) *HostRoom {
@@ -111,6 +122,8 @@ func NewHostRoom(localName string) *HostRoom {
 		versionByMemberID:  make(map[uint64]string),
 		processedUpdates:   make(map[string]struct{}),
 		activeUpdateStatus: make(map[string]map[string]string),
+		broadcastRetries:   make(map[uint64][]broadcastRetryItem),
+		broadcastRetrying:  make(map[uint64]bool),
 		now:                time.Now,
 	}
 }
@@ -587,20 +600,143 @@ func (r *HostRoom) broadcast(message session.Message, excludeMemberID uint64) er
 			continue
 		}
 		attempted++
-		if err := member.session.Resend(message); err != nil {
+		deliveredNow, err := r.sendOrQueueMemberMessage(member, message)
+		if err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
-			_ = member.session.Close()
-			r.removeMember(member)
 			continue
 		}
-		delivered++
+		if deliveredNow {
+			delivered++
+		}
 	}
 	if attempted > 0 && delivered == 0 {
 		return firstErr
 	}
 	return nil
+}
+
+func (r *HostRoom) sendOrQueueMemberMessage(member trackedMember, message session.Message) (bool, error) {
+	if r.memberHasBroadcastRetries(member.id) {
+		r.enqueueBroadcastRetry(member, message)
+		return false, nil
+	}
+	if err := member.session.Resend(message); err != nil {
+		r.enqueueBroadcastRetry(member, message)
+		return false, err
+	}
+	return true, nil
+}
+
+func (r *HostRoom) memberHasBroadcastRetries(memberID uint64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.broadcastRetries[memberID]) > 0
+}
+
+func (r *HostRoom) enqueueBroadcastRetry(member trackedMember, message session.Message) {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return
+	}
+	if _, ok := r.members[member.id]; !ok {
+		r.mu.Unlock()
+		return
+	}
+	if r.broadcastRetries == nil {
+		r.broadcastRetries = make(map[uint64][]broadcastRetryItem)
+	}
+	if r.broadcastRetrying == nil {
+		r.broadcastRetrying = make(map[uint64]bool)
+	}
+	r.broadcastRetries[member.id] = append(r.broadcastRetries[member.id], broadcastRetryItem{message: message})
+	if r.broadcastRetrying[member.id] {
+		r.mu.Unlock()
+		return
+	}
+	r.broadcastRetrying[member.id] = true
+	delay, maxAttempts := r.broadcastRetryConfigLocked()
+	r.mu.Unlock()
+
+	go r.runBroadcastRetry(member, delay, maxAttempts)
+}
+
+func (r *HostRoom) broadcastRetryConfigLocked() (time.Duration, int) {
+	delay := r.broadcastRetryDelay
+	if delay <= 0 {
+		delay = defaultBroadcastRetryDelay
+	}
+	maxAttempts := r.broadcastRetryMaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = defaultBroadcastRetryMaxAttempts
+	}
+	return delay, maxAttempts
+}
+
+func (r *HostRoom) runBroadcastRetry(member trackedMember, delay time.Duration, maxAttempts int) {
+	for {
+		select {
+		case <-r.done:
+			return
+		case <-time.After(delay):
+		}
+
+		item, ok := r.peekBroadcastRetry(member.id)
+		if !ok {
+			return
+		}
+		if err := member.session.Resend(item.message); err == nil {
+			r.dropBroadcastRetry(member.id)
+			continue
+		}
+		item.attempts++
+		if item.attempts >= maxAttempts {
+			r.dropBroadcastRetry(member.id)
+			continue
+		}
+		r.updateBroadcastRetry(member.id, item)
+	}
+}
+
+func (r *HostRoom) peekBroadcastRetry(memberID uint64) (broadcastRetryItem, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.members[memberID]; !ok {
+		delete(r.broadcastRetries, memberID)
+		delete(r.broadcastRetrying, memberID)
+		return broadcastRetryItem{}, false
+	}
+	queue := r.broadcastRetries[memberID]
+	if len(queue) == 0 {
+		delete(r.broadcastRetries, memberID)
+		delete(r.broadcastRetrying, memberID)
+		return broadcastRetryItem{}, false
+	}
+	return queue[0], true
+}
+
+func (r *HostRoom) updateBroadcastRetry(memberID uint64, item broadcastRetryItem) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	queue := r.broadcastRetries[memberID]
+	if len(queue) == 0 {
+		return
+	}
+	queue[0] = item
+	r.broadcastRetries[memberID] = queue
+}
+
+func (r *HostRoom) dropBroadcastRetry(memberID uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	queue := r.broadcastRetries[memberID]
+	if len(queue) <= 1 {
+		delete(r.broadcastRetries, memberID)
+		return
+	}
+	r.broadcastRetries[memberID] = queue[1:]
 }
 
 func (r *HostRoom) broadcastHistorySync(message session.Message, excludeMemberID uint64) error {
@@ -611,7 +747,7 @@ func (r *HostRoom) broadcastHistorySync(message session.Message, excludeMemberID
 		if !member.syncCapable {
 			continue
 		}
-		if err := member.session.Resend(message); err != nil {
+		if _, err := r.sendOrQueueMemberMessage(member, message); err != nil {
 			return err
 		}
 	}
@@ -676,14 +812,13 @@ func (r *HostRoom) respondHostHistory(member trackedMember, request HostHistoryR
 		return
 	}
 	for i, chunk := range chunks {
-		if err := member.session.Resend(session.Message{
+		message := session.Message{
 			ID:   controlMessageID(fmt.Sprintf("hostsync-%s-%d", request.IdentityID, i+1)),
 			From: r.localName,
 			Body: HostHistoryChunkBody(chunk),
 			At:   now(),
-		}); err != nil {
-			return
 		}
+		_, _ = r.sendOrQueueMemberMessage(member, message)
 	}
 }
 
@@ -778,6 +913,8 @@ func (r *HostRoom) removeMember(member trackedMember) {
 	delete(r.members, member.id)
 	delete(r.identityByMemberID, member.id)
 	delete(r.versionByMemberID, member.id)
+	delete(r.broadcastRetries, member.id)
+	delete(r.broadcastRetrying, member.id)
 	peerCount := len(r.members)
 	r.mu.Unlock()
 

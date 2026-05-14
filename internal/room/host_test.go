@@ -90,8 +90,107 @@ func TestHostRoomContinuesBroadcastWhenMemberResendFails(t *testing.T) {
 	}
 	select {
 	case <-failing.done:
-	case <-time.After(250 * time.Millisecond):
-		t.Fatal("expected failing member to be closed")
+		t.Fatal("expected transient resend failure not to close member")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestHostRoomRetriesTransientBroadcastFailures(t *testing.T) {
+	t.Parallel()
+
+	room := NewHostRoom("host")
+	defer room.Close()
+	room.broadcastRetryDelay = 5 * time.Millisecond
+	room.broadcastRetryMaxAttempts = 3
+
+	sender := newFakeMember("sender")
+	flaky := newFakeMember("flaky")
+	flaky.setResendErr(errors.New("temporary write failed"))
+	room.AddMember(sender)
+	room.AddMember(flaky)
+	drainJoinEvents(t, room, 2)
+
+	inbound := session.Message{
+		ID:   "msg-retry-flaky",
+		From: "sender",
+		Body: "retry this",
+		At:   time.Date(2026, 5, 14, 19, 0, 0, 0, time.UTC),
+	}
+	sender.messages <- inbound
+	if got := waitForRoomMessage(t, room.Messages()); got != inbound {
+		t.Fatalf("expected host stream to receive message, got %#v", got)
+	}
+
+	flaky.setResendErr(nil)
+	if got := waitForResentMessage(t, flaky.resent); got != inbound {
+		t.Fatalf("expected retry to deliver failed message, got %#v", got)
+	}
+}
+
+func TestHostRoomRetriesTransientHostHistorySendFailures(t *testing.T) {
+	t.Parallel()
+
+	room := NewHostRoom("host")
+	defer room.Close()
+	room.broadcastRetryDelay = 20 * time.Millisecond
+	room.broadcastRetryMaxAttempts = 5
+
+	store := &fakeRetainedHistoryStore{
+		window: hosthistory.Window{
+			Records: []transcript.Record{
+				{
+					MessageID:      "msg-history-retry",
+					Direction:      transcript.DirectionIncoming,
+					From:           "bob",
+					AuthorIdentity: "identity-b",
+					Body:           "sync me after retry",
+					At:             time.Date(2026, 5, 14, 19, 30, 0, 0, time.UTC),
+					Status:         transcript.StatusSent,
+				},
+			},
+		},
+	}
+	joins := &fakeJoinStore{
+		record: historymeta.Record{
+			RoomKey:    "join:127.0.0.1:7331",
+			IdentityID: "identity-a",
+			JoinedAt:   time.Date(2026, 5, 14, 18, 0, 0, 0, time.UTC),
+		},
+	}
+	room.ConfigureHistoryRetention(store, "join:127.0.0.1:7331", joins.open)
+
+	member := newFakeMember("alice")
+	member.setResendErr(errors.New("temporary hostsync write failed"))
+	room.AddMember(member)
+	drainJoinEvents(t, room, 1)
+
+	member.messages <- session.Message{
+		ID:   "hostsync-request-retry",
+		From: "alice",
+		Body: HostHistoryRequestBody(HostHistoryRequest{
+			Version:    1,
+			RoomKey:    "join:127.0.0.1:7331",
+			IdentityID: "identity-a",
+			JoinedAt:   time.Date(2026, 5, 14, 18, 0, 0, 0, time.UTC),
+		}),
+		At: time.Date(2026, 5, 14, 19, 31, 0, 0, time.UTC),
+	}
+
+	waitForBroadcastRetry(t, room)
+	member.setResendErr(nil)
+
+	response := waitForResentMessage(t, member.resent)
+	chunk, ok := ParseHostHistoryChunk(response.Body)
+	if !ok {
+		t.Fatalf("expected retried host history chunk, got %#v", response)
+	}
+	if len(chunk.Records) != 1 || chunk.Records[0].MessageID != "msg-history-retry" {
+		t.Fatalf("expected retained record after retry, got %#v", chunk)
+	}
+	select {
+	case <-member.done:
+		t.Fatal("expected transient hostsync send failure not to close member")
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 
@@ -1248,6 +1347,7 @@ func TestHostRoomDeletesAttachmentOnRevoke(t *testing.T) {
 }
 
 type fakeMember struct {
+	mu        sync.Mutex
 	peerName  string
 	maxBytes  int
 	resendErr error
@@ -1369,17 +1469,28 @@ func (f *fakeMember) Close() error {
 }
 func (f *fakeMember) PeerName() string { return f.peerName }
 func (f *fakeMember) MaxMessageSize() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.maxBytes > 0 {
 		return f.maxBytes
 	}
 	return session.DefaultMaxMessageSize()
 }
+func (f *fakeMember) setResendErr(err error) {
+	f.mu.Lock()
+	f.resendErr = err
+	f.mu.Unlock()
+}
 func (f *fakeMember) Resend(message session.Message) error {
-	if f.resendErr != nil {
-		return f.resendErr
+	f.mu.Lock()
+	resendErr := f.resendErr
+	maxBytes := f.maxBytes
+	f.mu.Unlock()
+	if resendErr != nil {
+		return resendErr
 	}
-	if f.maxBytes > 0 && len(message.Body) > f.maxBytes {
-		return fmt.Errorf("message exceeds %d bytes", f.maxBytes)
+	if maxBytes > 0 && len(message.Body) > maxBytes {
+		return fmt.Errorf("message exceeds %d bytes", maxBytes)
 	}
 	f.resent <- message
 	return nil
@@ -1463,6 +1574,21 @@ func waitForCondition(t *testing.T, fn func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("timed out waiting for condition")
+}
+
+func waitForBroadcastRetry(t *testing.T, room *HostRoom) {
+	t.Helper()
+
+	waitForCondition(t, func() bool {
+		room.mu.Lock()
+		defer room.mu.Unlock()
+		for _, queue := range room.broadcastRetries {
+			if len(queue) > 0 {
+				return true
+			}
+		}
+		return false
+	})
 }
 
 func waitForJoinRecord(t *testing.T, store *fakeJoinStore, roomKey, identityID string) {
