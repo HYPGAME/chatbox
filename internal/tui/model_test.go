@@ -3122,6 +3122,7 @@ func TestModelReplaysHostHistoryChunkThroughUnifiedMergePath(t *testing.T) {
 				Version:        1,
 				RoomKey:        transcript.JoinRoomKey("203.0.113.10:7331"),
 				TargetIdentity: "identity-local",
+				Final:          true,
 				Records: []transcript.Record{
 					{
 						MessageID:      "replayed-1",
@@ -3185,6 +3186,7 @@ func TestModelReplaysAuthoritativeHostHistoryChunkEarlierThanLocalJoinedAt(t *te
 				Version:        1,
 				RoomKey:        transcript.JoinRoomKey("203.0.113.10:7331"),
 				TargetIdentity: "identity-local",
+				Final:          true,
 				Records: []transcript.Record{
 					{
 						MessageID:      "offline-before-local-joinedat",
@@ -6686,6 +6688,103 @@ func TestScrollbackSessionReadyPrintsTranscriptAndNewMessages(t *testing.T) {
 	}
 	if strings.Contains(uiModel.View(), "from disk") {
 		t.Fatalf("expected scrollback view to avoid re-rendering history, got %q", uiModel.View())
+	}
+}
+
+func TestScrollbackSessionReadyCapsInitialTranscriptPrint(t *testing.T) {
+	t.Parallel()
+
+	const initialLimit = 200
+	loaded := make([]transcript.Record, 0, initialLimit+5)
+	baseTime := time.Date(2026, 5, 14, 9, 0, 0, 0, time.Local)
+	for i := 0; i < initialLimit+5; i++ {
+		loaded = append(loaded, transcript.Record{
+			MessageID: fmt.Sprintf("old-%03d", i),
+			Direction: transcript.DirectionIncoming,
+			From:      "joiner",
+			Body:      fmt.Sprintf("disk-%03d", i),
+			At:        baseTime.Add(time.Duration(i) * time.Minute),
+			Status:    transcript.StatusSent,
+		})
+	}
+	store := &fakeTranscriptStore{loaded: loaded}
+
+	var printed []string
+	uiModel := newModel(modelOptions{
+		mode:          "host",
+		uiMode:        uiModeScrollback,
+		listeningAddr: "127.0.0.1:7331",
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return store, nil
+		},
+		historyPrinter: func(lines []string) tea.Cmd {
+			printed = append(printed, lines...)
+			return nil
+		},
+	})
+
+	updated, _ := uiModel.Update(sessionReadyMsg{session: &fakeSession{peerName: "joiner"}})
+	uiModel = updated.(model)
+
+	joined := stripANSI(strings.Join(printed, "\n"))
+	if len(printed) != initialLimit+1 {
+		t.Fatalf("expected summary plus latest %d transcript lines, got %d", initialLimit, len(printed))
+	}
+	if !strings.Contains(joined, "scrollback skipped 5 older lines; showing latest 200") {
+		t.Fatalf("expected skipped-history summary, got %q", joined)
+	}
+	if strings.Contains(joined, "disk-000") || strings.Contains(joined, "disk-004") {
+		t.Fatalf("expected oldest transcript lines to be omitted, got %q", joined)
+	}
+	if !strings.Contains(joined, "disk-005") || !strings.Contains(joined, "disk-204") {
+		t.Fatalf("expected latest transcript window to be printed, got %q", joined)
+	}
+	if uiModel.printedCount != len(uiModel.history) {
+		t.Fatalf("expected capped initial flush to mark history printed, got printed=%d history=%d", uiModel.printedCount, len(uiModel.history))
+	}
+}
+
+func TestEnsureTranscriptLoadedLargeLocalHistoryAvoidsPerRecordUIWork(t *testing.T) {
+	t.Parallel()
+
+	const recordCount = 2000
+	loaded := make([]transcript.Record, 0, recordCount)
+	baseTime := time.Date(2026, 5, 14, 9, 0, 0, 0, time.Local)
+	for i := 0; i < recordCount; i++ {
+		loaded = append(loaded, transcript.Record{
+			MessageID: fmt.Sprintf("local-%04d", i),
+			Direction: transcript.DirectionIncoming,
+			From:      "joiner",
+			Body:      fmt.Sprintf("local transcript %04d", i),
+			At:        baseTime.Add(time.Duration(i) * time.Second),
+			Status:    transcript.StatusSent,
+		})
+	}
+	store := &fakeTranscriptStore{loaded: loaded}
+
+	uiModel := newModel(modelOptions{
+		mode:          "join",
+		uiMode:        uiModeScrollback,
+		listeningAddr: "127.0.0.1:7331",
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return store, nil
+		},
+	})
+
+	started := time.Now()
+	if err := uiModel.ensureTranscriptLoaded(transcript.JoinRoomKey("127.0.0.1:7331")); err != nil {
+		t.Fatalf("ensure transcript loaded: %v", err)
+	}
+	elapsed := time.Since(started)
+
+	if len(uiModel.history) != recordCount {
+		t.Fatalf("expected %d loaded entries, got %d", recordCount, len(uiModel.history))
+	}
+	if _, ok := uiModel.seenMessages["local-1999"]; !ok {
+		t.Fatal("expected loaded transcript messages to be marked seen")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("expected bulk transcript load under 2s, took %v", elapsed)
 	}
 }
 

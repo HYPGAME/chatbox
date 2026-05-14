@@ -146,6 +146,8 @@ const (
 	statusRetrying   = "retrying"
 	viewportTopRow   = 1
 	hostSyncTimeout  = 1500 * time.Millisecond
+
+	scrollbackFlushLineLimit = 200
 )
 
 type historyEntry struct {
@@ -273,6 +275,10 @@ type model struct {
 	offeredHistory         map[string]struct{}
 	hostSyncPending        bool
 	hostSyncCompleted      bool
+	pendingHostSyncRoomKey string
+	pendingHostSyncTarget  string
+	pendingHostSyncRecords []transcript.Record
+	pendingHostSyncRevokes []transcript.RevokeRecord
 	pendingPeerOffers      []room.HistorySyncOffer
 	hostSyncTimeout        time.Duration
 	hostSyncAttempt        uint64
@@ -663,6 +669,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.hostSyncPending {
+			m.flushPendingHostHistorySync()
 			m.hostSyncPending = false
 			m.flushQueuedPeerOffers()
 		}
@@ -797,6 +804,7 @@ func (m *model) bindSession(conn sessionClient) error {
 	m.offeredHistory = make(map[string]struct{})
 	m.hostSyncPending = false
 	m.hostSyncCompleted = false
+	m.clearPendingHostHistorySync()
 	m.pendingPeerOffers = nil
 	peerName := conn.PeerName()
 	conversationKey := m.conversationKeyForPeer(peerName)
@@ -901,6 +909,7 @@ func (m *model) requestHostHistory() (bool, uint64) {
 	}
 	summary := HistorySyncSummaryForRecords(m.history)
 	joinedAt := m.effectiveHistorySyncJoinedAt()
+	m.clearPendingHostHistorySync()
 	m.hostSyncPending = true
 	m.hostSyncCompleted = false
 	m.hostSyncAttempt++
@@ -1314,12 +1323,17 @@ func (m *model) handleControlMessage(message session.Message) (bool, tea.Cmd) {
 
 func (m *model) handleHistorySyncControl(message session.Message) bool {
 	if chunk, ok := room.ParseHostHistoryChunk(message.Body); ok {
-		if m.replayHistoricalWindow(chunk.RoomKey, chunk.TargetIdentity, m.identityID, chunk.Records, chunk.Revokes, false) {
-			if chunk.Final {
+		if m.hostSyncPending {
+			m.queueHostHistorySyncChunk(chunk)
+			if chunk.Final && m.flushPendingHostHistorySync() {
 				m.hostSyncPending = false
 				m.hostSyncCompleted = true
 				m.flushQueuedPeerOffers()
 			}
+			return true
+		}
+		if m.replayHistoricalWindow(chunk.RoomKey, chunk.TargetIdentity, m.identityID, chunk.Records, chunk.Revokes, false) && chunk.Final {
+			m.hostSyncCompleted = true
 		}
 		return true
 	}
@@ -1492,6 +1506,36 @@ func (m *model) maybeSendHistorySyncChunk(request room.HistorySyncRequest) {
 
 func (m *model) replayHistorySyncChunk(chunk room.HistorySyncChunk) {
 	m.replayHistoricalWindow(chunk.RoomKey, chunk.TargetIdentity, chunk.SourceIdentity, chunk.Records, chunk.Revokes, true)
+}
+
+func (m *model) queueHostHistorySyncChunk(chunk room.HostHistoryChunk) {
+	if m.pendingHostSyncRoomKey == "" {
+		m.pendingHostSyncRoomKey = chunk.RoomKey
+	}
+	if m.pendingHostSyncTarget == "" {
+		m.pendingHostSyncTarget = chunk.TargetIdentity
+	}
+	m.pendingHostSyncRecords = append(m.pendingHostSyncRecords, chunk.Records...)
+	m.pendingHostSyncRevokes = append(m.pendingHostSyncRevokes, chunk.Revokes...)
+}
+
+func (m *model) flushPendingHostHistorySync() bool {
+	if m.pendingHostSyncRoomKey == "" && len(m.pendingHostSyncRecords) == 0 && len(m.pendingHostSyncRevokes) == 0 {
+		return false
+	}
+	roomKey := m.pendingHostSyncRoomKey
+	targetIdentity := m.pendingHostSyncTarget
+	records := append([]transcript.Record(nil), m.pendingHostSyncRecords...)
+	revokes := append([]transcript.RevokeRecord(nil), m.pendingHostSyncRevokes...)
+	m.clearPendingHostHistorySync()
+	return m.replayHistoricalWindow(roomKey, targetIdentity, m.identityID, records, revokes, false)
+}
+
+func (m *model) clearPendingHostHistorySync() {
+	m.pendingHostSyncRoomKey = ""
+	m.pendingHostSyncTarget = ""
+	m.pendingHostSyncRecords = nil
+	m.pendingHostSyncRevokes = nil
 }
 
 func (m *model) effectiveHistorySyncJoinedAt() time.Time {
@@ -2177,6 +2221,7 @@ func (m *model) addHistoricalRecordEntries(records []transcript.Record, persist 
 	m.reindexHistoryMessageIDs()
 	for _, record := range records {
 		if record.MessageID != "" {
+			m.seenMessages[record.MessageID] = struct{}{}
 			m.applyPendingRevokes(record.MessageID)
 		}
 		if persist && m.transcript != nil {
@@ -2940,6 +2985,7 @@ func (m *model) ensureTranscriptLoaded(conversationKey string) error {
 
 	m.transcript = store
 	m.transcriptConversationKey = conversationKey
+	recordsToAdd := make([]transcript.Record, 0, len(records))
 	for _, record := range records {
 		if record.Direction == transcript.DirectionOutgoing && record.Status == transcript.StatusSending {
 			record.Status = transcript.StatusFailed
@@ -2948,8 +2994,9 @@ func (m *model) ensureTranscriptLoaded(conversationKey string) error {
 		if record.Direction == transcript.DirectionOutgoing && record.AuthorIdentity == "" {
 			record.AuthorIdentity = m.identityID
 		}
-		m.addHistoricalRecordEntry(record, false)
+		recordsToAdd = append(recordsToAdd, record)
 	}
+	m.addHistoricalRecordEntries(recordsToAdd, false)
 	return nil
 }
 
@@ -2969,6 +3016,7 @@ func (m *model) resetConversation() {
 	m.offeredHistory = make(map[string]struct{})
 	m.hostSyncPending = false
 	m.hostSyncCompleted = false
+	m.clearPendingHostHistorySync()
 	m.pendingPeerOffers = nil
 	m.executedRoomUpdates = make(map[string]struct{})
 	m.updateStatuses = make(map[string]map[string]string)
@@ -3508,7 +3556,23 @@ func (m *model) flushScrollbackCmd() tea.Cmd {
 	}
 	m.printedCount = len(m.history)
 	m.pendingScrollbackLines = nil
+	lines = capScrollbackFlushLines(lines, scrollbackFlushLineLimit)
 	return m.printLines(lines)
+}
+
+func capScrollbackFlushLines(lines []string, limit int) []string {
+	if limit <= 0 || len(lines) <= limit {
+		return lines
+	}
+	omitted := len(lines) - limit
+	capped := make([]string, 0, limit+1)
+	capped = append(capped, renderScrollbackEntry(historyEntry{
+		kind: historyKindSystem,
+		body: fmt.Sprintf("scrollback skipped %d older lines; showing latest %d", omitted, limit),
+		at:   time.Now(),
+	}))
+	capped = append(capped, lines[omitted:]...)
+	return capped
 }
 
 func (m *model) printLines(lines []string) tea.Cmd {
