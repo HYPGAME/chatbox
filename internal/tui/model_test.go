@@ -106,7 +106,7 @@ func TestModelShowsConnectedStatusAndIncomingMessage(t *testing.T) {
 	}
 }
 
-func TestModelRendersCompactStatusBar(t *testing.T) {
+func TestModelRendersPolishedTopBar(t *testing.T) {
 	t.Parallel()
 
 	uiModel := newModel(modelOptions{
@@ -120,14 +120,14 @@ func TestModelRendersCompactStatusBar(t *testing.T) {
 	uiModel = updated.(model)
 
 	firstLine := strings.Split(stripANSI(uiModel.View()), "\n")[0]
-	if !strings.Contains(firstLine, "chatbox host") {
-		t.Fatalf("expected compact status bar to contain mode, got %q", firstLine)
+	if !strings.Contains(firstLine, "chatbox") {
+		t.Fatalf("expected top bar to contain app name, got %q", firstLine)
+	}
+	if !strings.Contains(firstLine, "host 127.0.0.1:7331") {
+		t.Fatalf("expected top bar to contain host room, got %q", firstLine)
 	}
 	if !strings.Contains(firstLine, "listening on 127.0.0.1:7331") {
-		t.Fatalf("expected compact status bar to contain status, got %q", firstLine)
-	}
-	if !strings.Contains(firstLine, "/help") {
-		t.Fatalf("expected compact status bar to include help hint, got %q", firstLine)
+		t.Fatalf("expected top bar to contain connection status, got %q", firstLine)
 	}
 	if !strings.Contains(stripANSI(uiModel.View()), "commands: /help /status /events /quit") {
 		t.Fatalf("expected startup hints to include /events, got %q", stripANSI(uiModel.View()))
