@@ -5241,6 +5241,37 @@ func TestRenderedMessageBodyFormatsAttachmentMessagesCompactly(t *testing.T) {
 	}
 }
 
+func TestRenderTUIEntryShowsAttachmentCard(t *testing.T) {
+	t.Parallel()
+
+	entry := historyEntry{
+		kind: historyKindMessage,
+		from: "alice",
+		body: attachment.FormatChatMessage(attachment.ChatMessage{
+			Version: 1,
+			ID:      "att_123456",
+			Kind:    attachment.KindImage,
+			Name:    "cat.gif",
+			Size:    1536,
+		}),
+		at: time.Date(2026, 5, 14, 15, 4, 0, 0, time.Local),
+	}
+
+	lines := strings.Split(stripANSI(renderTUIEntry(entry, false)), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected header plus two attachment card lines, got %#v", lines)
+	}
+	if lines[0] != "[15:04] alice:" {
+		t.Fatalf("expected attachment header, got %#v", lines)
+	}
+	if lines[1] != "  [image] cat.gif · 1.5 KB" {
+		t.Fatalf("expected attachment summary line, got %#v", lines)
+	}
+	if lines[2] != "  #att_123456 · O open · D download" {
+		t.Fatalf("expected attachment action line, got %#v", lines)
+	}
+}
+
 func TestModelFileCommandUploadsAndSendsVisibleAttachmentMessage(t *testing.T) {
 	t.Parallel()
 
@@ -5321,8 +5352,9 @@ func TestModelFileCommandUploadsAndSendsVisibleAttachmentMessage(t *testing.T) {
 	if len(attachments.binds) != 1 || attachments.binds[0].AttachmentID != "att_a1" || attachments.binds[0].MessageID != sentMessage.ID {
 		t.Fatalf("expected attachment bind after send, got %#v", attachments.binds)
 	}
-	if !strings.Contains(stripANSI(uiModel.View()), "[image] cat.gif (6 B) #att_a1") {
-		t.Fatalf("expected compact attachment rendering in view, got %q", stripANSI(uiModel.View()))
+	view := stripANSI(uiModel.View())
+	if !strings.Contains(view, "[image] cat.gif · 6 B") || !strings.Contains(view, "#att_a1 · O open · D download") {
+		t.Fatalf("expected attachment card rendering in view, got %q", view)
 	}
 }
 
@@ -5470,8 +5502,9 @@ func TestModelDirectPasteUploadsClipboardAttachment(t *testing.T) {
 	if !cleaned {
 		t.Fatal("expected pasted temporary file cleanup after upload")
 	}
-	if !strings.Contains(stripANSI(uiModel.View()), "[image] pasted.png (3 B) #att_p1") {
-		t.Fatalf("expected pasted attachment message in view, got %q", stripANSI(uiModel.View()))
+	view := stripANSI(uiModel.View())
+	if !strings.Contains(view, "[image] pasted.png · 3 B") || !strings.Contains(view, "#att_p1 · O open · D download") {
+		t.Fatalf("expected pasted attachment card in view, got %q", view)
 	}
 }
 

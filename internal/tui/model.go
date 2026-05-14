@@ -3406,6 +3406,18 @@ func renderTUIEntryWithFeedbackAndContext(entry historyEntry, selected bool, fee
 		coloredLabel := senderSegmentStyle.Render(entry.from)
 		coloredTimestamp := timestampSegmentStyle.Render(fmt.Sprintf("[%s]", timestamp))
 		header := coloredTimestamp + textSegmentStyle.Render(" ") + coloredLabel
+		if !entry.revoked {
+			if card, ok := renderTUIAttachmentCard(entry.body, textSegmentStyle, statusSuffix); ok {
+				line := header + textSegmentStyle.Render(":") + "\n" + card
+				if ctx.compactSender {
+					line = card
+				}
+				if selected {
+					return inputHintStyle.Render("> ") + line
+				}
+				return line
+			}
+		}
 		body := textSegmentStyle.Render(renderedMessageBody(entry) + statusSuffix)
 		line := header + textSegmentStyle.Render(": ") + body
 		if ctx.compactSender {
@@ -3437,6 +3449,16 @@ func renderCompactReplyBody(body string, senderStyle lipgloss.Style, textStyle l
 	summary := bar + textStyle.Render(reply.summary)
 	replyBody := textStyle.Render(appendStatusSuffixToLastLine(reply.body, statusSuffix))
 	return strings.Join([]string{meta, summary, replyBody}, "\n"), true
+}
+
+func renderTUIAttachmentCard(body string, textStyle lipgloss.Style, statusSuffix string) (string, bool) {
+	msg, ok := attachment.ParseChatMessage(body)
+	if !ok {
+		return "", false
+	}
+	summary := textStyle.Render(fmt.Sprintf("  [%s] %s · %s", msg.Kind, msg.Name, humanBytes(msg.Size)))
+	actions := textStyle.Render(fmt.Sprintf("  #%s · O open · D download%s", msg.ID, statusSuffix))
+	return strings.Join([]string{summary, actions}, "\n"), true
 }
 
 func appendStatusSuffixToLastLine(body string, statusSuffix string) string {
