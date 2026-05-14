@@ -101,7 +101,7 @@ func TestModelShowsConnectedStatusAndIncomingMessage(t *testing.T) {
 	if !strings.Contains(view, "hello") {
 		t.Fatalf("expected incoming message in view, got %q", view)
 	}
-	if !strings.Contains(view, "[20:30]") {
+	if !strings.Contains(view, "joiner  20:30") {
 		t.Fatalf("expected compact message timestamp in view, got %q", view)
 	}
 }
@@ -276,7 +276,7 @@ func TestModelSendsTypedMessageOnEnter(t *testing.T) {
 	}
 
 	view := stripANSI(uiModel.View())
-	if !strings.Contains(view, "alice: hello from cli") {
+	if !strings.Contains(view, "alice  ") || !strings.Contains(view, "  hello from cli") {
 		t.Fatalf("expected local message in view, got %q", view)
 	}
 	if !strings.Contains(view, time.Now().Format("2006-01-02")) {
@@ -429,7 +429,7 @@ func TestRenderedCopyTextIncludesWrappedMessageLines(t *testing.T) {
 	if !ok {
 		t.Fatal("expected selected copy text")
 	}
-	if !strings.Contains(text, "[10:05]") || !strings.Contains(text, "alice:") {
+	if !strings.Contains(text, "alice  10:05") {
 		t.Fatalf("expected rendered metadata in copied text, got %q", text)
 	}
 	if !strings.Contains(text, "\n") {
@@ -461,7 +461,8 @@ func TestCtrlYEntersCopyModeAndEscExits(t *testing.T) {
 		at:   time.Date(2026, 4, 22, 11, 0, 0, 0, time.Local),
 	})
 
-	if strings.Contains(stripANSI(uiModel.View()), "> [11:00] alice: copy me") {
+	view := stripANSI(uiModel.View())
+	if strings.Contains(view, "> alice  11:00") && strings.Contains(view, "  copy me") {
 		t.Fatalf("expected no copy selection highlight before entering copy mode, got %q", stripANSI(uiModel.View()))
 	}
 
@@ -473,7 +474,8 @@ func TestCtrlYEntersCopyModeAndEscExits(t *testing.T) {
 	if !strings.Contains(stripANSI(uiModel.View()), "copy mode") {
 		t.Fatalf("expected copy mode notice, got %q", stripANSI(uiModel.View()))
 	}
-	if !strings.Contains(stripANSI(uiModel.View()), "> [11:00] alice: copy me") {
+	view = stripANSI(uiModel.View())
+	if !strings.Contains(view, "> alice  11:00") || !strings.Contains(view, "  copy me") {
 		t.Fatalf("expected selected message highlight in copy mode, got %q", stripANSI(uiModel.View()))
 	}
 
@@ -482,7 +484,8 @@ func TestCtrlYEntersCopyModeAndEscExits(t *testing.T) {
 	if uiModel.copyMode {
 		t.Fatal("expected Esc to exit copy mode")
 	}
-	if strings.Contains(stripANSI(uiModel.View()), "> [11:00] alice: copy me") {
+	view = stripANSI(uiModel.View())
+	if strings.Contains(view, "> alice  11:00") && strings.Contains(view, "  copy me") {
 		t.Fatalf("expected selection highlight to clear after exiting copy mode, got %q", stripANSI(uiModel.View()))
 	}
 }
@@ -921,7 +924,7 @@ func TestModelMouseDragDoesNotTriggerActionBarOrSelection(t *testing.T) {
 			return &fakeTranscriptStore{}, nil
 		},
 	})
-	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 72, Height: 8})
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 72, Height: 10})
 	uiModel = updated.(model)
 	for i := 0; i < 20; i++ {
 		uiModel.addHistoryEntry(historyEntry{
@@ -1723,8 +1726,49 @@ func TestRenderTUIEntryUsesCompactTime(t *testing.T) {
 		at:   time.Date(2026, 4, 17, 15, 10, 0, 0, time.Local),
 	}
 
-	if got := stripANSI(renderTUIEntry(entry, false)); got != "[15:10] alice: hello" {
+	if got := stripANSI(renderTUIEntry(entry, false)); got != "alice  15:10\n  hello" {
 		t.Fatalf("expected compact TUI message timestamp, got %q", got)
+	}
+}
+
+func TestRenderTUIEntryKeepsSenderSeparateFromBody(t *testing.T) {
+	t.Parallel()
+
+	entries := []historyEntry{
+		{
+			kind: historyKindMessage,
+			from: "goat",
+			body: "short name",
+			at:   time.Date(2026, 5, 14, 15, 10, 0, 0, time.Local),
+		},
+		{
+			kind: historyKindMessage,
+			from: "iStoreOS-group",
+			body: "long name",
+			at:   time.Date(2026, 5, 14, 15, 11, 0, 0, time.Local),
+		},
+		{
+			kind: historyKindMessage,
+			from: "帝影剑域",
+			body: "wide name",
+			at:   time.Date(2026, 5, 14, 15, 12, 0, 0, time.Local),
+		},
+	}
+
+	for _, entry := range entries {
+		lines := strings.Split(stripANSI(renderTUIEntry(entry, false)), "\n")
+		if len(lines) != 2 {
+			t.Fatalf("expected two-line message block for %q, got %#v", entry.from, lines)
+		}
+		if !strings.HasPrefix(lines[0], entry.from+"  ") {
+			t.Fatalf("expected sender and time on header line for %q, got %#v", entry.from, lines)
+		}
+		if lines[1] != "  "+entry.body {
+			t.Fatalf("expected indented body line for %q, got %#v", entry.from, lines)
+		}
+		if strings.Contains(lines[0], "│") || strings.Contains(lines[1], "│") {
+			t.Fatalf("expected message block without separator line, got %#v", lines)
+		}
 	}
 }
 
@@ -1739,7 +1783,7 @@ func TestRenderTUIEntryShowsReplyCard(t *testing.T) {
 	}
 
 	got := stripANSI(renderTUIEntry(entry, false))
-	if !strings.Contains(got, "[15:04] bob:") {
+	if !strings.Contains(got, "bob  15:04") {
 		t.Fatalf("expected message header, got %q", got)
 	}
 	if !strings.Contains(got, "│ alice · 11:22") {
@@ -1767,16 +1811,17 @@ func TestRenderTUIEntryKeepsReplyCardAboveBodyWithoutBlankLine(t *testing.T) {
 	if len(lines) != 4 {
 		t.Fatalf("expected 4 rendered lines, got %#v", lines)
 	}
-	if lines[0] != "[15:04] bob:" {
+	if lines[0] != "bob  15:04" {
 		t.Fatalf("expected header line, got %#v", lines)
 	}
-	if lines[1] != "  │ alice · 11:22" {
+	indent := tuiMessageBodyIndent()
+	if lines[1] != indent+"  │ alice · 11:22" {
 		t.Fatalf("expected meta line directly under header, got %#v", lines)
 	}
-	if lines[2] != "  │ hello world..." {
+	if lines[2] != indent+"  │ hello world..." {
 		t.Fatalf("expected summary line directly under meta, got %#v", lines)
 	}
-	if lines[3] != "收到，我晚点处理" {
+	if lines[3] != indent+"收到，我晚点处理" {
 		t.Fatalf("expected body directly under card, got %#v", lines)
 	}
 }
@@ -1923,13 +1968,25 @@ func TestRefreshViewportCompactsConsecutiveMessagesFromSameSender(t *testing.T) 
 	}, false, transcript.StatusSent, false)
 
 	view := stripANSI(uiModel.View())
-	if !strings.Contains(view, "[10:00] alice: first") {
+	if !strings.Contains(view, "alice  10:00") || !strings.Contains(view, "  first") {
 		t.Fatalf("expected first message header, got %q", view)
 	}
-	if strings.Contains(view, "[10:01] alice: second") {
+	if strings.Contains(view, "alice  10:01") && strings.Contains(view, "  second") {
 		t.Fatalf("expected second message to suppress repeated sender header, got %q", view)
 	}
-	if !strings.Contains(view, "       second") {
+	firstIndex := strings.Index(view, "first")
+	secondIndex := strings.Index(view, "second")
+	if firstIndex < 0 || secondIndex < 0 {
+		t.Fatalf("expected both compacted messages in view, got %q", view)
+	}
+	firstLineStart := strings.LastIndex(view[:firstIndex], "\n") + 1
+	secondLineStart := strings.LastIndex(view[:secondIndex], "\n") + 1
+	firstColumn := lipgloss.Width(view[firstLineStart:firstIndex])
+	secondColumn := lipgloss.Width(view[secondLineStart:secondIndex])
+	if firstColumn != secondColumn {
+		t.Fatalf("expected compact continuation body column %d, got %d in %q", firstColumn, secondColumn, view)
+	}
+	if !strings.Contains(view, "second") {
 		t.Fatalf("expected compact continuation body, got %q", view)
 	}
 }
@@ -2025,8 +2082,8 @@ func TestModelRetainsScrollableHistoryAcrossManyMessages(t *testing.T) {
 
 	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyHome})
 	uiModel = updated.(model)
-	if !strings.Contains(uiModel.View(), "message-00") {
-		t.Fatalf("expected first message after Home scroll, got %q", uiModel.View())
+	if !strings.Contains(uiModel.View(), "host  22:00") {
+		t.Fatalf("expected first message header after Home scroll, got %q", uiModel.View())
 	}
 }
 
@@ -5232,7 +5289,7 @@ func TestModelRendersSlashCommandSuggestionsAboveInput(t *testing.T) {
 	uiModel.input.SetValue("/")
 
 	view := stripANSI(uiModel.View())
-	messageIndex := strings.Index(view, "host: older message")
+	messageIndex := strings.Index(view, "host  18:00")
 	suggestionIndex := strings.Index(view, "/help -- 显示支持的命令")
 	inputIndex := strings.LastIndex(view, "/")
 	if messageIndex == -1 || suggestionIndex == -1 || inputIndex == -1 {
@@ -5313,13 +5370,14 @@ func TestRenderTUIEntryShowsAttachmentCard(t *testing.T) {
 	if len(lines) != 3 {
 		t.Fatalf("expected header plus two attachment card lines, got %#v", lines)
 	}
-	if lines[0] != "[15:04] alice:" {
+	if lines[0] != "alice  15:04" {
 		t.Fatalf("expected attachment header, got %#v", lines)
 	}
-	if lines[1] != "  [image] cat.gif · 1.5 KB" {
+	indent := tuiMessageBodyIndent()
+	if lines[1] != indent+"  [image] cat.gif · 1.5 KB" {
 		t.Fatalf("expected attachment summary line, got %#v", lines)
 	}
-	if lines[2] != "  #att_123456 · O open · D download" {
+	if lines[2] != indent+"  #att_123456 · O open · D download" {
 		t.Fatalf("expected attachment action line, got %#v", lines)
 	}
 }
@@ -5939,7 +5997,7 @@ func TestHostModelShowsRelayedMessagesFromOriginalSender(t *testing.T) {
 	uiModel = updated.(model)
 
 	view := stripANSI(uiModel.View())
-	if !strings.Contains(view, "aaa: hello group") {
+	if !strings.Contains(view, "aaa  20:00") || !strings.Contains(view, "  hello group") {
 		t.Fatalf("expected relayed message to preserve sender label, got %q", view)
 	}
 	if strings.Contains(view, "you: hello group") {

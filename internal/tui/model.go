@@ -3424,14 +3424,12 @@ func renderTUIEntryWithFeedbackAndContext(entry historyEntry, selected bool, fee
 			statusSuffix = fmt.Sprintf(" [%s]", entry.status)
 		}
 		timestampSegmentStyle, senderSegmentStyle, textSegmentStyle := attachmentFeedbackStyles(feedback, senderMessageStyle(entry.from))
-		coloredLabel := senderSegmentStyle.Render(entry.from)
-		coloredTimestamp := timestampSegmentStyle.Render(fmt.Sprintf("[%s]", timestamp))
-		header := coloredTimestamp + textSegmentStyle.Render(" ") + coloredLabel
+		header := renderTUIMessageHeader(timestamp, entry.from, timestampSegmentStyle, senderSegmentStyle, textSegmentStyle)
 		if !entry.revoked {
 			if card, ok := renderTUIAttachmentCard(entry.body, textSegmentStyle, statusSuffix); ok {
-				line := header + textSegmentStyle.Render(":") + "\n" + card
+				line := header + "\n" + indentTUIMessageBodyBlock(card, textSegmentStyle)
 				if ctx.compactSender {
-					line = card
+					line = indentTUIMessageBodyBlock(card, textSegmentStyle)
 				}
 				if selected {
 					return inputHintStyle.Render("> ") + line
@@ -3440,16 +3438,16 @@ func renderTUIEntryWithFeedbackAndContext(entry historyEntry, selected bool, fee
 			}
 		}
 		body := textSegmentStyle.Render(renderedMessageBody(entry) + statusSuffix)
-		line := header + textSegmentStyle.Render(": ") + body
+		line := header + "\n" + textSegmentStyle.Render(tuiMessageBodyIndent()) + body
 		if ctx.compactSender {
-			line = textSegmentStyle.Render("       " + renderedMessageBody(entry) + statusSuffix)
+			line = textSegmentStyle.Render(tuiMessageBodyIndent() + renderedMessageBody(entry) + statusSuffix)
 		}
 		if !entry.revoked {
 			if compact, ok := renderCompactReplyBody(entry.body, senderSegmentStyle, textSegmentStyle, statusSuffix); ok {
 				if ctx.compactSender {
-					line = compact
+					line = indentTUIMessageBodyBlock(compact, textSegmentStyle)
 				} else {
-					line = header + textSegmentStyle.Render(":") + "\n" + compact
+					line = header + "\n" + indentTUIMessageBodyBlock(compact, textSegmentStyle)
 				}
 			}
 		}
@@ -3458,6 +3456,25 @@ func renderTUIEntryWithFeedbackAndContext(entry historyEntry, selected bool, fee
 		}
 		return line
 	}
+}
+
+func renderTUIMessageHeader(timestamp string, sender string, timestampStyle lipgloss.Style, senderStyle lipgloss.Style, textStyle lipgloss.Style) string {
+	return senderStyle.Render(strings.TrimSpace(sender)) +
+		textStyle.Render("  ") +
+		timestampStyle.Render(timestamp)
+}
+
+func tuiMessageBodyIndent() string {
+	return "  "
+}
+
+func indentTUIMessageBodyBlock(text string, style lipgloss.Style) string {
+	indent := style.Render(tuiMessageBodyIndent())
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		lines[i] = indent + line
+	}
+	return strings.Join(lines, "\n")
 }
 
 func renderCompactReplyBody(body string, senderStyle lipgloss.Style, textStyle lipgloss.Style, statusSuffix string) (string, bool) {
