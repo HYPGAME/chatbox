@@ -282,7 +282,7 @@ func TestModelSendsTypedMessageOnEnter(t *testing.T) {
 	if !strings.Contains(view, time.Now().Format("2006-01-02")) {
 		t.Fatalf("expected local message date in view, got %q", view)
 	}
-	if !strings.Contains(view, "[sending]") {
+	if !strings.Contains(view, "◴") {
 		t.Fatalf("expected local message to start in sending state, got %q", view)
 	}
 
@@ -2082,7 +2082,7 @@ func TestModelRetainsScrollableHistoryAcrossManyMessages(t *testing.T) {
 
 	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyHome})
 	uiModel = updated.(model)
-	if !strings.Contains(uiModel.View(), "host  22:00") {
+	if !strings.Contains(stripANSI(uiModel.View()), "host  22:00") {
 		t.Fatalf("expected first message header after Home scroll, got %q", uiModel.View())
 	}
 }

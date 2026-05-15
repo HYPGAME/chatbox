@@ -3433,8 +3433,21 @@ func renderTUIEntryWithFeedbackAndContext(entry historyEntry, selected bool, fee
 		return historyErrorStyle().Render(fmt.Sprintf("error [%s]: %s", timestamp, entry.body))
 	default:
 		statusSuffix := ""
-		if entry.outgoing && entry.status != "" && entry.status != transcript.StatusSent && !entry.revoked {
-			statusSuffix = fmt.Sprintf(" [%s]", entry.status)
+		if entry.outgoing && !entry.revoked {
+			switch entry.status {
+			case transcript.StatusSending, statusRetrying:
+				statusSuffix = " ◴"
+			case transcript.StatusFailed:
+				statusSuffix = errorStyle.Render(" ✗")
+			case transcript.StatusSent:
+				// Only show sent tick if it was recently added to show feedback, or omit if you prefer a perfectly clean interface.
+				// For the sake of micro-interactions, we'll omit it when sent to keep it clean, 
+				// or we could show a subtle tick. Let's omit "sent" for absolute cleanliness.
+			default:
+				if entry.status != "" && entry.status != transcript.StatusSent {
+					statusSuffix = fmt.Sprintf(" [%s]", entry.status) // fallback
+				}
+			}
 		}
 		timestampSegmentStyle, senderSegmentStyle, textSegmentStyle := attachmentFeedbackStyles(feedback, senderMessageStyle(entry.from))
 		
