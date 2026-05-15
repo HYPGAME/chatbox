@@ -334,10 +334,9 @@ var (
 	topBarStyle          = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#89b4fa")) // Blue
 	statusStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("#a6e3a1"))            // Green
 	errorStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("#f38ba8"))            // Red
-	inputStyle           = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#585b70")).Padding(0, 1) // Surface2
+	inputBaseStyle       = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)   // Dynamic border color
 	inputHintStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#6c7086"))            // Overlay0
 	slashSuggestionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#a6adc8"))            // Subtext0
-	slashPanelStyle      = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#585b70")).Padding(0, 1) // Surface2
 	separatorStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#45475a"))            // Surface1
 	attachmentHoverStyle = lipgloss.NewStyle().Background(lipgloss.Color("#313244")).Underline(true) // Surface0
 	attachmentClickStyle = lipgloss.NewStyle().Background(lipgloss.Color("#45475a")).Underline(true) // Surface1
@@ -740,6 +739,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m model) currentInputStyle() lipgloss.Style {
+	if m.copyMode {
+		return inputBaseStyle.BorderForeground(lipgloss.Color("#f9e2af")) // Yellow
+	}
+	if m.revokeMode {
+		return inputBaseStyle.BorderForeground(lipgloss.Color("#eba0ac")) // Maroon
+	}
+	return inputBaseStyle.BorderForeground(lipgloss.Color("#cba6f7")) // Mauve
+}
+
 func (m model) View() string {
 	header := headerStyle.Render(fmt.Sprintf("chatbox [%s]", m.mode))
 	status := statusStyle.Render(m.status)
@@ -752,7 +761,7 @@ func (m model) View() string {
 			header,
 			status,
 			scrollbackHint,
-			inputStyle.Render(m.input.View()),
+			m.currentInputStyle().Render(m.input.View()),
 		}, "\n")
 	}
 
@@ -2026,7 +2035,8 @@ func (m model) renderSlashCommandSuggestions() string {
 	for _, suggestion := range suggestions {
 		lines = append(lines, slashSuggestionStyle.Render(fmt.Sprintf("%s -- %s", suggestion.command, suggestion.description)))
 	}
-	return slashPanelStyle.Width(max(20, m.viewport.Width-4)).Render(strings.Join(lines, "\n"))
+	// Share the border color with the input box to create a cohesive overlay
+	return m.currentInputStyle().Width(max(20, m.viewport.Width-4)).Render(strings.Join(lines, "\n"))
 }
 
 func (m model) buildRenderedActionBarState() renderedActionBarState {
@@ -3653,7 +3663,7 @@ func (m model) renderInputBox() string {
 		m.input.View(),
 		inputHintStyle.Render(hint),
 	}, "\n")
-	return inputStyle.Render(content)
+	return m.currentInputStyle().Render(content)
 }
 
 func (m model) renderStatusNotice() string {
