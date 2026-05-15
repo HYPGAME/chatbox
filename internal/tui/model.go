@@ -213,6 +213,7 @@ type renderedReplyBarState struct {
 type tuiEntryRenderContext struct {
 	compactSender bool
 	localName     string
+	width         int
 }
 
 type mouseViewportPress struct {
@@ -2826,6 +2827,7 @@ func (m model) buildRenderedViewportState() renderedViewportState {
 		line := renderTUIEntryWithFeedbackAndContext(entry, i == selectedIndex, feedback, tuiEntryRenderContext{
 			compactSender: compactSender,
 			localName:     m.localName,
+			width:         m.viewport.Width,
 		})
 		if entry.kind == historyKindMessage {
 			lastEntryWasMessage = true
@@ -2835,9 +2837,6 @@ func (m model) buildRenderedViewportState() renderedViewportState {
 			lastEntryWasMessage = false
 			lastMessageSender = ""
 			lastMessageDate = ""
-		}
-		if m.viewport.Width > 0 {
-			line = ansi.Wrap(line, m.viewport.Width, "")
 		}
 		attachmentID := ""
 		clickable := false
@@ -3534,11 +3533,35 @@ func renderTUIEntryWithFeedback(entry historyEntry, selected bool, feedback atta
 
 func renderTUIEntryWithFeedbackAndContext(entry historyEntry, selected bool, feedback attachmentFeedbackState, ctx tuiEntryRenderContext) string {
 	timestamp := entry.at.Local().Format("15:04")
+	indentWidth := lipgloss.Width(tuiMessageBodyIndent())
+
 	switch entry.kind {
 	case historyKindSystem:
-		return systemLineStyle().Render("        " + entry.body)
+		body := entry.body
+		if ctx.width > 8 {
+			body = ansi.Wrap(body, ctx.width-8, "")
+		}
+		lines := strings.Split(body, "\n")
+		for i, line := range lines {
+			lines[i] = systemLineStyle().Render("        " + line)
+		}
+		line := strings.Join(lines, "\n")
+		if selected {
+			return inputHintStyle.Render("> ") + line
+		}
+		return line
+
 	case historyKindError:
-		return historyErrorStyle().Render(fmt.Sprintf("error [%s]: %s", timestamp, entry.body))
+		body := fmt.Sprintf("error [%s]: %s", timestamp, entry.body)
+		if ctx.width > 0 {
+			body = ansi.Wrap(body, ctx.width, "")
+		}
+		line := historyErrorStyle().Render(body)
+		if selected {
+			return inputHintStyle.Render("> ") + line
+		}
+		return line
+
 	default:
 		statusSuffix := ""
 		if entry.outgoing && !entry.revoked {
@@ -3558,11 +3581,11 @@ func renderTUIEntryWithFeedbackAndContext(entry historyEntry, selected bool, fee
 			}
 		}
 		timestampSegmentStyle, senderSegmentStyle, textSegmentStyle := attachmentFeedbackStyles(feedback, senderMessageStyle(entry.from))
-		
+
 		if entry.outgoing {
 			senderSegmentStyle = senderSegmentStyle.Foreground(lipgloss.Color("#a6e3a1")).Bold(true) // Green for own messages
 		}
-		
+
 		isMention := ctx.localName != "" && !entry.outgoing && strings.Contains(entry.body, "@"+ctx.localName)
 		if isMention {
 			textSegmentStyle = textSegmentStyle.Foreground(lipgloss.Color("#fab387")) // Peach for mentions
@@ -3571,9 +3594,10 @@ func renderTUIEntryWithFeedbackAndContext(entry historyEntry, selected bool, fee
 		header := renderTUIMessageHeader(timestamp, entry.from, timestampSegmentStyle, senderSegmentStyle, textSegmentStyle)
 		if !entry.revoked {
 			if card, ok := renderTUIAttachmentCard(entry.body, textSegmentStyle, statusSuffix); ok {
-				line := header + "\n" + indentTUIMessageBodyBlock(card, textSegmentStyle)
+				body := indentTUIMessageBodyBlock(card, textSegmentStyle)
+				line := header + "\n" + body
 				if ctx.compactSender {
-					line = indentTUIMessageBodyBlock(card, textSegmentStyle)
+					line = body
 				}
 				if selected {
 					return inputHintStyle.Render("> ") + line
@@ -3581,17 +3605,25 @@ func renderTUIEntryWithFeedbackAndContext(entry historyEntry, selected bool, fee
 				return line
 			}
 		}
-		body := textSegmentStyle.Render(renderedMessageBody(entry) + statusSuffix)
-		line := header + "\n" + textSegmentStyle.Render(tuiMessageBodyIndent()) + body
-		if ctx.compactSender {
-			line = textSegmentStyle.Render(tuiMessageBodyIndent() + renderedMessageBody(entry) + statusSuffix)
+
+		bodyText := renderedMessageBody(entry) + statusSuffix
+		if ctx.width > indentWidth {
+			bodyText = ansi.Wrap(bodyText, ctx.width-indentWidth, "")
 		}
+		body := indentTUIMessageBodyBlock(bodyText, textSegmentStyle)
+
+		line := header + "\n" + body
+		if ctx.compactSender {
+			line = body
+		}
+
 		if !entry.revoked {
 			if compact, ok := renderCompactReplyBody(entry.body, senderSegmentStyle, textSegmentStyle, statusSuffix); ok {
-				if ctx.compactSender {
-					line = indentTUIMessageBodyBlock(compact, textSegmentStyle)
+				body := indentTUIMessageBodyBlock(compact, textSegmentStyle)
+				if !ctx.compactSender {
+					line = header + "\n" + body
 				} else {
-					line = header + "\n" + indentTUIMessageBodyBlock(compact, textSegmentStyle)
+					line = body
 				}
 			}
 		}
@@ -3601,7 +3633,6 @@ func renderTUIEntryWithFeedbackAndContext(entry historyEntry, selected bool, fee
 		return line
 	}
 }
-
 func renderTUIMessageHeader(timestamp string, sender string, timestampStyle lipgloss.Style, senderStyle lipgloss.Style, textStyle lipgloss.Style) string {
 	return senderStyle.Render(strings.TrimSpace(sender)) +
 		textStyle.Render("  ") +
