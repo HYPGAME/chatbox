@@ -343,7 +343,12 @@ var (
 	separatorStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#45475a"))            // Surface1
 	attachmentHoverStyle = lipgloss.NewStyle().Background(lipgloss.Color("#313244")).Underline(true) // Surface0
 	attachmentClickStyle = lipgloss.NewStyle().Background(lipgloss.Color("#45475a")).Underline(true) // Surface1
+	inlineCodeStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#f38ba8")).Background(lipgloss.Color("#313244")) // Red text on Surface0
+	blockCodeStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#a6adc8")).Background(lipgloss.Color("#1e1e2e")) // Subtext0 on Base
+	
 	compactReplyPattern  = regexp.MustCompile(`^> (.+) \[([0-9]{2}:[0-9]{2})\] (.+)$`)
+	codeBlockRegex       = regexp.MustCompile("(?s)```(.*?)```")
+	inlineCodeRegex      = regexp.MustCompile("`([^`]+)`")
 
 	senderPalette = []lipgloss.Color{
 		"#89b4fa", // Blue
@@ -752,6 +757,50 @@ func (m model) currentInputStyle() lipgloss.Style {
 	return inputBaseStyle.BorderForeground(lipgloss.Color("#cba6f7")) // Mauve
 }
 
+func (m model) showSidebar() bool {
+	return m.width >= 100 && m.peerNames != nil
+}
+
+func (m model) sidebarWidth() int {
+	if m.showSidebar() {
+		return 24
+	}
+	return 0
+}
+
+func (m model) renderSidebar(height int) string {
+	if !m.showSidebar() {
+		return ""
+	}
+	
+	names := m.peerNames()
+	if len(names) == 0 {
+		names = []string{"(no peers online)"}
+	} else {
+		sort.Strings(names)
+	}
+
+	sidebarStyle := lipgloss.NewStyle().
+		Width(m.sidebarWidth() - 1).
+		Height(height).
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(lipgloss.Color("#45475a")). // Surface1
+		PaddingLeft(1)
+		
+	title := headerStyle.Render(fmt.Sprintf("Online (%d)", len(m.peerNames())))
+	content := title + "\n\n"
+	
+	for i, name := range names {
+		if i >= height-3 {
+			content += "...\n"
+			break
+		}
+		content += name + "\n"
+	}
+
+	return sidebarStyle.Render(strings.TrimRight(content, "\n"))
+}
+
 func (m model) View() string {
 	header := headerStyle.Render(fmt.Sprintf("chatbox [%s]", m.mode))
 	status := statusStyle.Render(m.status)
@@ -768,22 +817,28 @@ func (m model) View() string {
 		}, "\n")
 	}
 
-	lines := []string{m.renderTopBar()}
-	lines = append(lines, m.viewport.View())
+	mainContent := m.viewport.View()
 	if actionBar := m.renderActionBar(); actionBar != "" {
-		lines = append(lines, actionBar)
+		mainContent += "\n" + actionBar
 	}
 	if suggestions := m.renderSlashCommandSuggestions(); suggestions != "" {
-		lines = append(lines, suggestions)
+		mainContent += "\n" + suggestions
 	}
 	if replyBar := m.renderReplyBar(); replyBar != "" {
-		lines = append(lines, replyBar)
+		mainContent += "\n" + replyBar
 	}
 	if statusNotice := m.renderStatusNotice(); statusNotice != "" {
-		lines = append(lines, statusNotice)
+		mainContent += "\n" + statusNotice
 	}
-	lines = append(lines, m.renderInputBox())
-	return strings.Join(lines, "\n")
+	mainContent += "\n" + m.renderInputBox()
+	
+	if m.showSidebar() {
+		sidebarHeight := m.height - 1 // minus top bar
+		sidebar := m.renderSidebar(sidebarHeight)
+		mainContent = lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(m.width-m.sidebarWidth()).Render(mainContent), sidebar)
+	}
+
+	return m.renderTopBar() + "\n" + mainContent
 }
 
 func (m *model) handleSessionReady(msg sessionReadyMsg) (tea.Model, tea.Cmd) {
@@ -2001,8 +2056,8 @@ func (m *model) resize() {
 		viewportHeight = 5
 	}
 	if m.width > 4 {
-		m.viewport.Width = m.width - 2
-		m.input.SetWidth(m.width - 8)
+		m.viewport.Width = m.width - m.sidebarWidth() - 2
+		m.input.SetWidth(m.width - m.sidebarWidth() - 8)
 	}
 	m.viewport.Height = viewportHeight
 	m.refreshViewport(m.viewport.AtBottom())
@@ -3579,7 +3634,36 @@ func renderedMessageBody(entry historyEntry) string {
 	if body, ok := formatAttachmentBody(entry.body); ok {
 		return body
 	}
-	return entry.body
+	
+	body := entry.body
+	// Process multiline code blocks first
+	body = codeBlockRegex.ReplaceAllStringFunc(body, func(match string) string {
+		content := match[3 : len(match)-3]
+		lines := strings.Split(content, "\n")
+		// Very naive language tag strip (if first line has no spaces and is short)
+		if len(lines) > 0 && !strings.Contains(lines[0], " ") && len(lines[0]) < 20 {
+			lines[0] = ""
+		}
+		for i, line := range lines {
+			lines[i] = blockCodeStyle.Render(" " + line + " ")
+		}
+		// Clean up empty lines created by formatting
+		if len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+			lines = lines[1:]
+		}
+		if len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+			lines = lines[:len(lines)-1]
+		}
+		return strings.Join(lines, "\n")
+	})
+	
+	// Then process inline code blocks
+	body = inlineCodeRegex.ReplaceAllStringFunc(body, func(match string) string {
+		content := match[1 : len(match)-1]
+		return inlineCodeStyle.Render(" " + content + " ")
+	})
+	
+	return body
 }
 
 func renderDateSeparator(date string) string {
