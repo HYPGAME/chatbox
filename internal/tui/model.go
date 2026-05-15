@@ -296,6 +296,8 @@ type model struct {
 	viewport viewport.Model
 	input    textarea.Model
 
+	unreadCount int
+
 	width  int
 	height int
 
@@ -2426,6 +2428,9 @@ func (m *model) addHistoryEntry(entry historyEntry) {
 	m.rebuildCopySelection()
 	m.syncRevokeCandidates()
 	m.refreshViewport(stickToBottom)
+	if !stickToBottom && entry.kind == historyKindMessage && !entry.outgoing {
+		m.unreadCount++
+	}
 }
 
 func (m *model) insertHistoryEntryChronologically(entry historyEntry) {
@@ -2447,6 +2452,9 @@ func (m *model) insertHistoryEntryChronologically(entry historyEntry) {
 	m.rebuildCopySelection()
 	m.syncRevokeCandidates()
 	m.refreshViewport(stickToBottom)
+	if !stickToBottom && entry.kind == historyKindMessage && !entry.outgoing {
+		m.unreadCount++
+	}
 }
 
 func (m *model) reindexHistoryMessageIDs() {
@@ -2774,9 +2782,13 @@ func (m *model) refreshViewport(stickToBottom bool) {
 	m.viewport.SetContent(strings.Join(lines, "\n"))
 	if stickToBottom {
 		m.viewport.GotoBottom()
+		m.unreadCount = 0
 		return
 	}
 	m.viewport.SetYOffset(offset)
+	if m.viewport.AtBottom() {
+		m.unreadCount = 0
+	}
 }
 
 func (m *model) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
@@ -3701,6 +3713,9 @@ func (m model) renderStatusNotice() string {
 	case strings.TrimSpace(m.statusNotice) != "":
 		text = strings.TrimSpace(m.statusNotice)
 		isError = m.statusNoticeIsError
+	case m.unreadCount > 0:
+		text = fmt.Sprintf("↓ %d new messages", m.unreadCount)
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#89b4fa")).Bold(true).Render(text) // Blue badge
 	}
 	if text == "" || (m.copyMode && text == "copy mode") {
 		return ""
