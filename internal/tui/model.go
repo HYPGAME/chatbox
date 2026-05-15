@@ -758,7 +758,7 @@ func (m model) currentInputStyle() lipgloss.Style {
 }
 
 func (m model) showSidebar() bool {
-	return m.width >= 100 && m.peerNames != nil
+	return m.width >= 100 && m.uiMode != uiModeScrollback
 }
 
 func (m model) sidebarWidth() int {
@@ -773,11 +773,24 @@ func (m model) renderSidebar(height int) string {
 		return ""
 	}
 	
-	names := m.peerNames()
-	if len(names) == 0 {
-		names = []string{"(no peers online)"}
+	var names []string
+	var titleText string
+	
+	if m.peerNames != nil {
+		names = m.peerNames()
+		titleText = fmt.Sprintf("Online (%d)", len(names))
+		if len(names) == 0 {
+			names = []string{"(no peers online)"}
+		} else {
+			sort.Strings(names)
+		}
 	} else {
-		sort.Strings(names)
+		peer := strings.TrimSpace(m.currentPeer)
+		if peer == "" {
+			peer = "host"
+		}
+		names = []string{peer, m.localName}
+		titleText = "Online (2)"
 	}
 
 	sidebarStyle := lipgloss.NewStyle().
@@ -787,7 +800,7 @@ func (m model) renderSidebar(height int) string {
 		BorderForeground(lipgloss.Color("#45475a")). // Surface1
 		PaddingLeft(1)
 		
-	title := headerStyle.Render(fmt.Sprintf("Online (%d)", len(m.peerNames())))
+	title := headerStyle.Render(titleText)
 	content := title + "\n\n"
 	
 	for i, name := range names {
