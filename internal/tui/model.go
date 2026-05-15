@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -216,7 +217,14 @@ type tuiEntryRenderContext struct {
 	width         int
 }
 
+var mdCache sync.Map
+
 func renderMarkdownBody(body string, width int) string {
+	cacheKey := fmt.Sprintf("%d:%s", width, body)
+	if cached, ok := mdCache.Load(cacheKey); ok {
+		return cached.(string)
+	}
+
 	opts := []glamour.TermRendererOption{
 		glamour.WithStandardStyle("dracula"),
 	}
@@ -232,7 +240,9 @@ func renderMarkdownBody(body string, width int) string {
 		return body
 	}
 	// Glamour adds extra newlines and indentation, trim spaces to keep it compact in chat
-	return strings.TrimSpace(out)
+	rendered := strings.TrimSpace(out)
+	mdCache.Store(cacheKey, rendered)
+	return rendered
 }
 
 type mouseViewportPress struct {
