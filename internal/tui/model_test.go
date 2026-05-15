@@ -52,8 +52,8 @@ func enableTrueColorForTest(t *testing.T) {
 func TestAttachmentFeedbackStylesUseMutedHighlightColors(t *testing.T) {
 	t.Parallel()
 
-	hoverBackground := lipgloss.Color("#2B343C")
-	clickBackground := lipgloss.Color("#364049")
+	hoverBackground := lipgloss.Color("#313244")
+	clickBackground := lipgloss.Color("#45475a")
 
 	if got := attachmentHoverStyle.GetBackground(); got != hoverBackground {
 		t.Fatalf("expected hover background %v, got %v", hoverBackground, got)

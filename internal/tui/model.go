@@ -329,28 +329,29 @@ type model struct {
 }
 
 var (
-	headerStyle          = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
-	topBarStyle          = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#8AB4D6"))
-	statusStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	errorStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-	inputStyle           = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8")).Padding(0, 1)
-	inputHintStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#66707A"))
-	slashSuggestionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
-	slashPanelStyle      = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8")).Padding(0, 1)
-	separatorStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#59636E"))
-	attachmentHoverStyle = lipgloss.NewStyle().Background(lipgloss.Color("#2B343C")).Underline(true)
-	attachmentClickStyle = lipgloss.NewStyle().Background(lipgloss.Color("#364049")).Underline(true)
+	// Modern Catppuccin Mocha Palette
+	headerStyle          = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#b4befe")) // Lavender
+	topBarStyle          = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#89b4fa")) // Blue
+	statusStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("#a6e3a1"))            // Green
+	errorStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("#f38ba8"))            // Red
+	inputStyle           = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#585b70")).Padding(0, 1) // Surface2
+	inputHintStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#6c7086"))            // Overlay0
+	slashSuggestionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#a6adc8"))            // Subtext0
+	slashPanelStyle      = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#585b70")).Padding(0, 1) // Surface2
+	separatorStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#45475a"))            // Surface1
+	attachmentHoverStyle = lipgloss.NewStyle().Background(lipgloss.Color("#313244")).Underline(true) // Surface0
+	attachmentClickStyle = lipgloss.NewStyle().Background(lipgloss.Color("#45475a")).Underline(true) // Surface1
 	compactReplyPattern  = regexp.MustCompile(`^> (.+) \[([0-9]{2}:[0-9]{2})\] (.+)$`)
 
 	senderPalette = []lipgloss.Color{
-		"#5C7993",
-		"#6A7F5F",
-		"#8A6C4A",
-		"#7C658A",
-		"#5F7F83",
-		"#8B5E6D",
-		"#6D6F8C",
-		"#7D7A5B",
+		"#89b4fa", // Blue
+		"#cba6f7", // Mauve
+		"#a6e3a1", // Green
+		"#fab387", // Peach
+		"#f9e2af", // Yellow
+		"#74c7ec", // Sapphire
+		"#f5c2e7", // Pink
+		"#94e2d5", // Teal
 	}
 
 	bubbleTeaRunner  = runProgram
@@ -3677,23 +3678,23 @@ func (m model) renderStatusNotice() string {
 }
 
 func timestampStyle() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280"))
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#585b70")) // Surface2
 }
 
 func systemLineStyle() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("#66707A"))
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#6c7086")) // Overlay0
 }
 
 func historyErrorStyle() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("#8A666A"))
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#eba0ac")) // Maroon
 }
 
 func replyCardBarStyle() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("#5F6871"))
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#585b70")) // Surface2
 }
 
 func replyCardMetaStyle() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("#7A8088"))
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#7f849c")) // Overlay1
 }
 
 func senderMessageStyle(sender string) lipgloss.Style {
