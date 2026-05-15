@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
@@ -212,6 +213,26 @@ type renderedReplyBarState struct {
 
 type tuiEntryRenderContext struct {
 	compactSender bool
+	width         int
+}
+
+func renderMarkdownBody(body string, width int) string {
+	opts := []glamour.TermRendererOption{
+		glamour.WithStandardStyle("dracula"),
+	}
+	if width > 0 {
+		opts = append(opts, glamour.WithWordWrap(width))
+	}
+	r, err := glamour.NewTermRenderer(opts...)
+	if err != nil {
+		return body
+	}
+	out, err := r.Render(body)
+	if err != nil {
+		return body
+	}
+	// Glamour adds extra newlines and indentation, trim spaces to keep it compact in chat
+	return strings.TrimSpace(out)
 }
 
 type mouseViewportPress struct {
@@ -2714,6 +2735,7 @@ func (m model) buildRenderedViewportState() renderedViewportState {
 			entryDate == lastMessageDate
 		line := renderTUIEntryWithFeedbackAndContext(entry, i == selectedIndex, feedback, tuiEntryRenderContext{
 			compactSender: compactSender,
+			width:         m.viewport.Width,
 		})
 		if entry.kind == historyKindMessage {
 			lastEntryWasMessage = true
@@ -3438,10 +3460,16 @@ func renderTUIEntryWithFeedbackAndContext(entry historyEntry, selected bool, fee
 				return line
 			}
 		}
-		body := textSegmentStyle.Render(renderedMessageBody(entry) + statusSuffix)
-		line := header + "\n" + textSegmentStyle.Render(tuiMessageBodyIndent()) + body
+		
+		bodyText := renderedMessageBody(entry)
+		if !entry.revoked {
+			bodyText = renderMarkdownBody(bodyText, ctx.width-lipgloss.Width(tuiMessageBodyIndent()))
+		}
+		
+		body := textSegmentStyle.Render(bodyText + statusSuffix)
+		line := header + "\n" + indentTUIMessageBodyBlock(body, textSegmentStyle)
 		if ctx.compactSender {
-			line = textSegmentStyle.Render(tuiMessageBodyIndent() + renderedMessageBody(entry) + statusSuffix)
+			line = indentTUIMessageBodyBlock(body, textSegmentStyle)
 		}
 		if !entry.revoked {
 			if compact, ok := renderCompactReplyBody(entry.body, senderSegmentStyle, textSegmentStyle, statusSuffix); ok {
