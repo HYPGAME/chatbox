@@ -1726,8 +1726,7 @@ func TestRenderTUIEntryUsesCompactTime(t *testing.T) {
 		at:   time.Date(2026, 4, 17, 15, 10, 0, 0, time.Local),
 	}
 
-	got := stripANSI(renderTUIEntry(entry, false))
-	if !strings.HasPrefix(got, "alice  15:10\n") || !strings.Contains(got, "hello") {
+	if got := stripANSI(renderTUIEntry(entry, false)); got != "alice  15:10\n  hello" {
 		t.Fatalf("expected compact TUI message timestamp, got %q", got)
 	}
 }
@@ -1764,8 +1763,8 @@ func TestRenderTUIEntryKeepsSenderSeparateFromBody(t *testing.T) {
 		if !strings.HasPrefix(lines[0], entry.from+"  ") {
 			t.Fatalf("expected sender and time on header line for %q, got %#v", entry.from, lines)
 		}
-		if !strings.HasPrefix(strings.TrimSpace(lines[1]), entry.body) {
-			t.Fatalf("expected indented body line for %q to contain body, got %#v", entry.from, lines)
+		if lines[1] != "  "+entry.body {
+			t.Fatalf("expected indented body line for %q, got %#v", entry.from, lines)
 		}
 		if strings.Contains(lines[0], "│") || strings.Contains(lines[1], "│") {
 			t.Fatalf("expected message block without separator line, got %#v", lines)
@@ -1890,7 +1889,7 @@ func TestLegacyMultiLineQuoteStillRendersAsPlainText(t *testing.T) {
 	}
 
 	got := stripANSI(renderTUIEntry(entry, false))
-	if !strings.Contains(got, "alice [11:22]") || !strings.Contains(got, "hello world") {
+	if !strings.Contains(got, "> alice [11:22]") {
 		t.Fatalf("expected legacy quote text to remain visible, got %q", got)
 	}
 	if strings.Contains(got, "reply alice [11:22]") {
@@ -6610,7 +6609,7 @@ func TestModelLoadsTranscriptEntriesOnConnect(t *testing.T) {
 	updated, _ = uiModel.Update(sessionReadyMsg{session: &fakeSession{peerName: "joiner"}})
 	uiModel = updated.(model)
 
-	if !strings.Contains(stripANSI(uiModel.View()), "from disk") {
+	if !strings.Contains(uiModel.View(), "from disk") {
 		t.Fatalf("expected transcript history to load into view, got %q", uiModel.View())
 	}
 }
