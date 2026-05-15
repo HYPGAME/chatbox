@@ -649,6 +649,23 @@ func (m model) Init() tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	initialUnread := m.unreadCount
+	m2, cmd := m.updateInner(msg)
+	if m3, ok := m2.(model); ok {
+		// if user scrolled to bottom, clear unread count
+		if m3.unreadCount > 0 && m3.viewport.AtBottom() {
+			m3.unreadCount = 0
+		}
+
+		if m3.unreadCount != initialUnread {
+			m3.resize()
+			return m3, cmd
+		}
+	}
+	return m2, cmd
+}
+
+func (m model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -2490,6 +2507,13 @@ func (m *model) applyRevokeRecord(revoke transcript.RevokeRecord, persist bool) 
 	return true, false
 }
 
+func (m *model) setUnreadCount(count int) {
+	if m.unreadCount != count {
+		m.unreadCount = count
+		m.resize() // trigger height recalculation so the badge doesn't push the input box off screen
+	}
+}
+
 func (m *model) addHistoryEntry(entry historyEntry) {
 	stickToBottom := m.viewport.AtBottom() || len(m.history) == 0
 	m.history = append(m.history, entry)
@@ -2497,7 +2521,7 @@ func (m *model) addHistoryEntry(entry historyEntry) {
 	m.syncRevokeCandidates()
 	m.refreshViewport(stickToBottom)
 	if !stickToBottom && entry.kind == historyKindMessage && !entry.outgoing {
-		m.unreadCount++
+		m.setUnreadCount(m.unreadCount + 1)
 	}
 }
 
@@ -2521,7 +2545,7 @@ func (m *model) insertHistoryEntryChronologically(entry historyEntry) {
 	m.syncRevokeCandidates()
 	m.refreshViewport(stickToBottom)
 	if !stickToBottom && entry.kind == historyKindMessage && !entry.outgoing {
-		m.unreadCount++
+		m.setUnreadCount(m.unreadCount + 1)
 	}
 }
 
@@ -2850,7 +2874,11 @@ func (m *model) refreshViewport(stickToBottom bool) {
 	m.viewport.SetContent(strings.Join(lines, "\n"))
 	if stickToBottom {
 		m.viewport.GotoBottom()
-		m.unreadCount = 0
+		if m.unreadCount > 0 {
+			m.unreadCount = 0 // intentionally avoid setUnreadCount to prevent recursive resize loop, resize is already happening or we just let it clear
+			// Actually wait, if we are in resize, calling setUnreadCount(0) calls resize().
+			// But m.unreadCount = 0 is fine if the layout adjusts gracefully.
+		}
 		return
 	}
 	m.viewport.SetYOffset(offset)
@@ -3801,27 +3829,32 @@ func (m model) renderInputBox() string {
 }
 
 func (m model) renderStatusNotice() string {
+	var notices []string
+
+	if m.unreadCount > 0 {
+		badge := lipgloss.NewStyle().Foreground(lipgloss.Color("#89b4fa")).Bold(true).Render(fmt.Sprintf("↓ %d new messages", m.unreadCount))
+		notices = append(notices, badge)
+	}
+
 	text := ""
 	isError := false
-	switch {
-	case strings.TrimSpace(m.operationNotice) != "":
+	if strings.TrimSpace(m.operationNotice) != "" {
 		text = strings.TrimSpace(m.operationNotice)
 		isError = m.operationNoticeIsError
-	case strings.TrimSpace(m.statusNotice) != "":
+	} else if strings.TrimSpace(m.statusNotice) != "" {
 		text = strings.TrimSpace(m.statusNotice)
 		isError = m.statusNoticeIsError
-	case m.unreadCount > 0:
-		text = fmt.Sprintf("↓ %d new messages", m.unreadCount)
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("#89b4fa")).Bold(true).Render(text) // Blue badge
 	}
-	if text == "" || (m.copyMode && text == "copy mode") {
-		return ""
+
+	if text != "" && !(m.copyMode && text == "copy mode") {
+		style := inputHintStyle
+		if isError {
+			style = errorStyle
+		}
+		notices = append(notices, style.Render(text))
 	}
-	style := inputHintStyle
-	if isError {
-		style = errorStyle
-	}
-	return style.Render(text)
+
+	return strings.Join(notices, "\n")
 }
 
 func timestampStyle() lipgloss.Style {
