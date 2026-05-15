@@ -51,7 +51,7 @@ if [[ "$BRANCH" != "main" ]]; then
   exit 1
 fi
 
-if [[ -n "$(git status --short)" ]]; then
+if [[ -n "$(git status --short --untracked-files=no)" ]]; then
   echo "working tree is not clean" >&2
   exit 1
 fi
