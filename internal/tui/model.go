@@ -212,6 +212,7 @@ type renderedReplyBarState struct {
 
 type tuiEntryRenderContext struct {
 	compactSender bool
+	localName     string
 }
 
 type mouseViewportPress struct {
@@ -2724,6 +2725,7 @@ func (m model) buildRenderedViewportState() renderedViewportState {
 			entryDate == lastMessageDate
 		line := renderTUIEntryWithFeedbackAndContext(entry, i == selectedIndex, feedback, tuiEntryRenderContext{
 			compactSender: compactSender,
+			localName:     m.localName,
 		})
 		if entry.kind == historyKindMessage {
 			lastEntryWasMessage = true
@@ -3435,6 +3437,16 @@ func renderTUIEntryWithFeedbackAndContext(entry historyEntry, selected bool, fee
 			statusSuffix = fmt.Sprintf(" [%s]", entry.status)
 		}
 		timestampSegmentStyle, senderSegmentStyle, textSegmentStyle := attachmentFeedbackStyles(feedback, senderMessageStyle(entry.from))
+		
+		if entry.outgoing {
+			senderSegmentStyle = senderSegmentStyle.Foreground(lipgloss.Color("#a6e3a1")).Bold(true) // Green for own messages
+		}
+		
+		isMention := ctx.localName != "" && !entry.outgoing && strings.Contains(entry.body, "@"+ctx.localName)
+		if isMention {
+			textSegmentStyle = textSegmentStyle.Foreground(lipgloss.Color("#fab387")) // Peach for mentions
+		}
+
 		header := renderTUIMessageHeader(timestamp, entry.from, timestampSegmentStyle, senderSegmentStyle, textSegmentStyle)
 		if !entry.revoked {
 			if card, ok := renderTUIAttachmentCard(entry.body, textSegmentStyle, statusSuffix); ok {
@@ -3692,7 +3704,7 @@ func timestampStyle() lipgloss.Style {
 }
 
 func systemLineStyle() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("#6c7086")) // Overlay0
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#6c7086")).Italic(true) // Overlay0
 }
 
 func historyErrorStyle() lipgloss.Style {
