@@ -715,8 +715,18 @@ func (m model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.copyMode {
 			return m.handleCopyModeKey(msg)
 		}
-		if msg.Type == tea.KeyEsc && m.clearReplyDraft() {
-			return m, nil
+		if msg.Type == tea.KeyEsc {
+			cleared := m.clearReplyDraft()
+			if m.operationNotice != "" || m.statusNotice != "" {
+				m.operationNotice = ""
+				m.statusNotice = ""
+				m.operationNoticeIsError = false
+				m.statusNoticeIsError = false
+				cleared = true
+			}
+			if cleared {
+				return m, nil
+			}
 		}
 		if msg.Paste {
 			if handledModel, handledCmd, handled := m.handleAttachmentPaste(msg); handled {
@@ -2783,6 +2793,8 @@ func (m *model) submitInput() (tea.Model, tea.Cmd) {
 	if m.replyDraft != nil {
 		m.replyDraft = nil
 	}
+	m.operationNotice = ""
+	m.operationNoticeIsError = false
 	m.input.Reset()
 	m.resize()
 	return m.handleSubmit(text)
