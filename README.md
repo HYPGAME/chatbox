@@ -378,6 +378,14 @@ After a successful run, collaborators can update with:
 chatbox self-update
 ```
 
+Verify the published release before asking others to update:
+
+```bash
+./scripts/release-verify.sh v0.1.3
+```
+
+This checks that the requested version is the latest GitHub Release, all required assets are present, checksums match, and the downloaded binary reports the expected version.
+
 On Android/Termux, download the latest `chatbox_android_arm64.tar.gz` release and replace the binary manually instead.
 
 Recommended post-release smoke check:
