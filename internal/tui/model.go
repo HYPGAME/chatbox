@@ -740,6 +740,10 @@ func (m model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				_ = m.session.Close()
 			}
 			return m, tea.Quit
+		case tea.KeyTab:
+			if m.completeSlashCommand() {
+				return m, nil
+			}
 		case tea.KeyCtrlV:
 			return m.startPasteCommand()
 		case tea.KeyCtrlR:
@@ -2121,6 +2125,23 @@ func (m model) activeSlashCommandSuggestions() []slashCommandSuggestion {
 		}
 	}
 	return matches
+}
+
+func (m *model) completeSlashCommand() bool {
+	suggestions := m.activeSlashCommandSuggestions()
+	if len(suggestions) != 1 {
+		return false
+	}
+
+	value := strings.TrimSpace(m.input.Value())
+	if value == "" || value == suggestions[0].command {
+		return false
+	}
+
+	m.input.SetValue(suggestions[0].command)
+	m.input.SetCursor(len([]rune(suggestions[0].command)))
+	m.resize()
+	return true
 }
 
 func (m model) renderSlashCommandSuggestions() string {

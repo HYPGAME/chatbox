@@ -5249,6 +5249,67 @@ func TestModelShowsSlashCommandSuggestions(t *testing.T) {
 	}
 }
 
+func TestModelCompletesUniqueSlashCommandWithTab(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:    "join",
+		session: &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	uiModel.input.SetValue("/st")
+	updated, _ := uiModel.Update(tea.KeyMsg{Type: tea.KeyTab})
+	uiModel = updated.(model)
+
+	if got := uiModel.input.Value(); got != "/status" {
+		t.Fatalf("expected /st to complete to /status, got %q", got)
+	}
+}
+
+func TestModelKeepsAmbiguousSlashCommandOnTab(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:    "join",
+		session: &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	uiModel.input.SetValue("/")
+	updated, _ := uiModel.Update(tea.KeyMsg{Type: tea.KeyTab})
+	uiModel = updated.(model)
+
+	if got := uiModel.input.Value(); got != "/" {
+		t.Fatalf("expected ambiguous slash command to remain unchanged, got %q", got)
+	}
+}
+
+func TestScrollbackModeDoesNotCompleteSlashCommands(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:    "join",
+		uiMode:  uiModeScrollback,
+		session: &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+
+	uiModel.input.SetValue("/st")
+	updated, _ := uiModel.Update(tea.KeyMsg{Type: tea.KeyTab})
+	uiModel = updated.(model)
+
+	if got := uiModel.input.Value(); got != "/st" {
+		t.Fatalf("expected scrollback slash command to remain unchanged, got %q", got)
+	}
+}
+
 func TestInputAreaShowsSendHint(t *testing.T) {
 	t.Parallel()
 
