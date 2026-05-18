@@ -5328,6 +5328,40 @@ func TestInputAreaShowsSendHint(t *testing.T) {
 	}
 }
 
+func TestInputBoxKeepsBorderWidthInCopyMode(t *testing.T) {
+	t.Parallel()
+
+	uiModel := newModel(modelOptions{
+		mode:    "join",
+		session: &fakeSession{peerName: "host"},
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	updated, _ := uiModel.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	uiModel = updated.(model)
+	uiModel.addHistoryEntry(historyEntry{
+		kind:      historyKindMessage,
+		messageID: "message-1",
+		from:      "host",
+		body:      "selectable message",
+		at:        time.Date(2026, 5, 18, 12, 0, 0, 0, time.Local),
+	})
+	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	uiModel = updated.(model)
+
+	rendered := stripANSI(uiModel.View())
+	lines := strings.Split(rendered, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected rendered view, got %q", rendered)
+	}
+	for _, line := range lines {
+		if got := lipgloss.Width(line); got > uiModel.width {
+			t.Fatalf("expected rendered line width not to exceed terminal width %d, got %d in %q\n%s", uiModel.width, got, line, rendered)
+		}
+	}
+}
+
 func TestModelRendersSlashCommandSuggestionsAboveInput(t *testing.T) {
 	t.Parallel()
 
