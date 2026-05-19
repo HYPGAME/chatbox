@@ -2922,12 +2922,11 @@ func (m *model) refreshViewport(stickToBottom bool) {
 func (m *model) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 	switch msg.Action {
 	case tea.MouseActionPress:
-		inViewport := m.isWithinViewport(msg.X, msg.Y)
-		if msg.Button == tea.MouseButtonLeft && (inViewport || m.isWithinActionBar(msg.Y) || m.isWithinReplyBar(msg.Y)) {
-			if inViewport {
+		if msg.Button == tea.MouseButtonLeft && (m.isWithinViewport(msg.Y) || m.isWithinActionBar(msg.Y) || m.isWithinReplyBar(msg.Y)) {
+			if m.isWithinViewport(msg.Y) {
 				m.updateHoveredHistoryIndex(msg.Y)
 			}
-			m.pendingViewportPress = &mouseViewportPress{x: msg.X, y: msg.Y, inViewport: inViewport}
+			m.pendingViewportPress = &mouseViewportPress{x: msg.X, y: msg.Y, inViewport: m.isWithinViewport(msg.Y)}
 			m.draggingViewport = false
 			m.lastMouseY = msg.Y
 			return true, nil
@@ -3039,11 +3038,8 @@ func (m model) clickedReplyBarClear(mouseX, mouseY int) bool {
 	return mouseX >= m.renderedReplyBar.clearStart && mouseX < m.renderedReplyBar.clearEnd
 }
 
-func (m model) isWithinViewport(mouseX, mouseY int) bool {
+func (m model) isWithinViewport(mouseY int) bool {
 	if m.viewport.Height <= 0 {
-		return false
-	}
-	if mouseX < 0 || mouseX >= m.viewport.Width {
 		return false
 	}
 	viewportBottom := viewportTopRow + m.viewport.Height - 1
@@ -3055,7 +3051,7 @@ func (m model) viewportLineIndex(mouseY int) int {
 }
 
 func (m model) clickedAttachment(mouseY int) (string, int) {
-	if !m.isWithinViewport(0, mouseY) {
+	if !m.isWithinViewport(mouseY) {
 		return "", -1
 	}
 	lineIndex := m.viewportLineIndex(mouseY)
@@ -3070,7 +3066,7 @@ func (m model) clickedAttachment(mouseY int) (string, int) {
 }
 
 func (m model) clickedHistoryIndex(mouseY int) int {
-	if !m.isWithinViewport(0, mouseY) {
+	if !m.isWithinViewport(mouseY) {
 		return -1
 	}
 	lineIndex := m.viewportLineIndex(mouseY)
