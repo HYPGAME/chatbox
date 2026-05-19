@@ -3889,7 +3889,7 @@ func (m model) renderInputBox() string {
 		m.input.View(),
 		inputHintStyle.Render(hint),
 	}, "\n")
-	return m.currentInputStyle().Width(max(20, m.width-m.sidebarWidth()-2)).Render(content)
+	return m.currentInputStyle().Width(max(20, m.viewport.Width-2)).Render(content)
 }
 
 func (m model) renderStatusNotice() string {
