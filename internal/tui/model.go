@@ -2079,7 +2079,7 @@ func (m *model) resize() {
 		return
 	}
 
-	inputHeight := 5
+	inputHeight := lipgloss.Height(m.renderInputBox())
 	suggestionHeight := 0
 	if len(m.activeSlashCommandSuggestions()) > 0 {
 		suggestionHeight = len(m.activeSlashCommandSuggestions()) + 2
