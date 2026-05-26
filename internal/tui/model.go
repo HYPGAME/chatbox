@@ -330,6 +330,15 @@ type model struct {
 	clipboardReader        clipboardReaderFunc
 	operationNotice        string
 	operationNoticeIsError bool
+
+	lastLayoutWidth         int
+	lastLayoutHeight        int
+	lastLayoutCopyMode      bool
+	lastLayoutRevokeMode    bool
+	lastLayoutSuggestionH   int
+	lastLayoutReplyBarH     int
+	lastLayoutStatusNoticeH int
+	lastLayoutInputH        int
 }
 
 var (
@@ -2075,7 +2084,6 @@ func (m *model) resize() {
 		return
 	}
 
-	inputHeight := lipgloss.Height(m.renderInputBox())
 	suggestionHeight := 0
 	if len(m.activeSlashCommandSuggestions()) > 0 {
 		suggestionHeight = len(m.activeSlashCommandSuggestions()) + 2
@@ -2092,6 +2100,28 @@ func (m *model) resize() {
 	if statusNotice := strings.TrimSpace(m.renderStatusNotice()); statusNotice != "" {
 		statusNoticeHeight = lipgloss.Height(statusNotice)
 	}
+	inputHeight := lipgloss.Height(m.renderInputBox())
+
+	if m.width == m.lastLayoutWidth &&
+		m.height == m.lastLayoutHeight &&
+		m.copyMode == m.lastLayoutCopyMode &&
+		m.revokeMode == m.lastLayoutRevokeMode &&
+		suggestionHeight == m.lastLayoutSuggestionH &&
+		replyBarHeight == m.lastLayoutReplyBarH &&
+		statusNoticeHeight == m.lastLayoutStatusNoticeH &&
+		inputHeight == m.lastLayoutInputH {
+		return
+	}
+
+	m.lastLayoutWidth = m.width
+	m.lastLayoutHeight = m.height
+	m.lastLayoutCopyMode = m.copyMode
+	m.lastLayoutRevokeMode = m.revokeMode
+	m.lastLayoutSuggestionH = suggestionHeight
+	m.lastLayoutReplyBarH = replyBarHeight
+	m.lastLayoutStatusNoticeH = statusNoticeHeight
+	m.lastLayoutInputH = inputHeight
+
 	viewportHeight := m.height - inputHeight - 1 - suggestionHeight - actionBarHeight - replyBarHeight - statusNoticeHeight
 	if viewportHeight < 5 {
 		viewportHeight = 5
