@@ -859,12 +859,13 @@ func (m model) View() string {
 	}
 	if m.uiMode == uiModeScrollback {
 		scrollbackHint := "history: terminal scrollback (use terminal scroll/drag)"
-		return strings.Join([]string{
+		res := strings.Join([]string{
 			header,
 			status,
 			scrollbackHint,
 			m.currentInputStyle().Render(m.input.View()),
 		}, "\n")
+		return strings.ReplaceAll(res, "\u200d", " ")
 	}
 
 	mainContent := m.viewport.View()
@@ -881,15 +882,15 @@ func (m model) View() string {
 		mainContent += "\n" + statusNotice
 	}
 	mainContent += "\n" + m.renderInputBox()
-	
+
 	if m.showSidebar() {
 		sidebarHeight := m.height - 1 // minus top bar
 		sidebar := m.renderSidebar(sidebarHeight)
 		mainContent = lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(m.width-m.sidebarWidth()).Render(mainContent), sidebar)
 	}
 
-	return m.renderTopBar() + "\n" + mainContent
-}
+	res := m.renderTopBar() + "\n" + mainContent
+	return strings.ReplaceAll(res, "\u200d", " ")}
 
 func (m *model) handleSessionReady(msg sessionReadyMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
