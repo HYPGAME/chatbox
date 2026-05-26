@@ -2084,6 +2084,11 @@ func (m *model) resize() {
 		return
 	}
 
+	if m.width > 4 {
+		m.viewport.Width = m.width - m.sidebarWidth() - 2
+		m.input.SetWidth(m.width - m.sidebarWidth() - 8)
+	}
+
 	suggestionHeight := 0
 	if len(m.activeSlashCommandSuggestions()) > 0 {
 		suggestionHeight = len(m.activeSlashCommandSuggestions()) + 2
@@ -2125,10 +2130,6 @@ func (m *model) resize() {
 	viewportHeight := m.height - inputHeight - 1 - suggestionHeight - actionBarHeight - replyBarHeight - statusNoticeHeight
 	if viewportHeight < 5 {
 		viewportHeight = 5
-	}
-	if m.width > 4 {
-		m.viewport.Width = m.width - m.sidebarWidth() - 2
-		m.input.SetWidth(m.width - m.sidebarWidth() - 8)
 	}
 	m.viewport.Height = viewportHeight
 	m.refreshViewport(m.viewport.AtBottom())
