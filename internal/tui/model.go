@@ -3592,6 +3592,7 @@ func renderTUIEntryWithFeedback(entry historyEntry, selected bool, feedback atta
 }
 
 func renderTUIEntryWithFeedbackAndContext(entry historyEntry, selected bool, feedback attachmentFeedbackState, ctx tuiEntryRenderContext) string {
+	entry.body = strings.ReplaceAll(entry.body, "\u200d", " ")
 	timestamp := entry.at.Local().Format("15:04")
 	indentWidth := lipgloss.Width(tuiMessageBodyIndent())
 
