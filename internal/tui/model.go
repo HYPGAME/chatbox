@@ -650,18 +650,14 @@ func (m model) Init() tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	initialUnread := m.unreadCount
 	m2, cmd := m.updateInner(msg)
 	if m3, ok := m2.(model); ok {
 		// if user scrolled to bottom, clear unread count
 		if m3.unreadCount > 0 && m3.viewport.AtBottom() {
 			m3.unreadCount = 0
 		}
-
-		if m3.unreadCount != initialUnread {
-			m3.resize()
-			return m3, cmd
-		}
+		m3.resize()
+		return m3, cmd
 	}
 	return m2, cmd
 }
