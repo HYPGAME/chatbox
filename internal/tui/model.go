@@ -279,6 +279,7 @@ type model struct {
 	pending                map[string]session.Message
 	pendingRevokes         map[string][]transcript.RevokeRecord
 	peerIdentities         map[string]string
+	peerSignatures         map[string]string
 	syncCapablePeers       map[string]bool
 	requestedHistory       map[string]struct{}
 	offeredHistory         map[string]struct{}
@@ -309,6 +310,7 @@ type model struct {
 	lastMouseY              int
 	pendingViewportPress    *mouseViewportPress
 	hoveredHistoryIndex     int
+	hoveredPeerName         string
 	activeClickHistoryIndex int
 
 	copyMode            bool
@@ -576,6 +578,7 @@ func newModel(opts modelOptions) model {
 		pending:                 make(map[string]session.Message),
 		pendingRevokes:          make(map[string][]transcript.RevokeRecord),
 		peerIdentities:          make(map[string]string),
+		peerSignatures:          make(map[string]string),
 		syncCapablePeers:        make(map[string]bool),
 		requestedHistory:        make(map[string]struct{}),
 		offeredHistory:          make(map[string]struct{}),
@@ -2368,6 +2371,9 @@ func (m *model) addReconnectErrorEntry(err error) {
 }
 
 func (m *model) addMessageEntry(message session.Message, outgoing bool, status string, persist bool) {
+	if !outgoing {
+		m.rememberPeerSignature(message.From, message.Signature)
+	}
 	record := transcript.Record{
 		MessageID:      message.ID,
 		Direction:      transcript.DirectionIncoming,
@@ -2385,6 +2391,9 @@ func (m *model) addMessageEntry(message session.Message, outgoing bool, status s
 }
 
 func (m *model) addHistoricalMessageEntry(message session.Message, outgoing bool, status string, persist bool) {
+	if !outgoing {
+		m.rememberPeerSignature(message.From, message.Signature)
+	}
 	record := transcript.Record{
 		MessageID:      message.ID,
 		Direction:      transcript.DirectionIncoming,
@@ -2535,6 +2544,17 @@ func (m *model) rememberPeerIdentity(peerName, identityID string) {
 	if updated {
 		m.refreshViewport(false)
 	}
+}
+
+func (m *model) rememberPeerSignature(peerName, signature string) {
+	peerName = strings.TrimSpace(peerName)
+	if peerName == "" {
+		return
+	}
+	if current := m.peerSignatures[peerName]; current == signature {
+		return
+	}
+	m.peerSignatures[peerName] = signature
 }
 
 func (m *model) handleRevokeRecord(revoke transcript.RevokeRecord, persist bool) {
@@ -2989,7 +3009,7 @@ func (m *model) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 	case tea.MouseActionPress:
 		if msg.Button == tea.MouseButtonLeft && (m.isWithinViewport(msg.Y) || m.isWithinActionBar(msg.Y) || m.isWithinReplyBar(msg.Y)) {
 			if m.isWithinViewport(msg.Y) {
-				m.updateHoveredHistoryIndex(msg.Y)
+				m.updateHoveredState(msg.X, msg.Y)
 			}
 			m.pendingViewportPress = &mouseViewportPress{x: msg.X, y: msg.Y, inViewport: m.isWithinViewport(msg.Y)}
 			m.draggingViewport = false
@@ -3013,7 +3033,7 @@ func (m *model) handleMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 			}
 		}
 		if msg.Button == tea.MouseButtonNone {
-			if m.updateHoveredHistoryIndex(msg.Y) {
+			if m.updateHoveredState(msg.X, msg.Y) {
 				return true, nil
 			}
 		}
@@ -3111,6 +3131,50 @@ func (m model) isWithinViewport(mouseY int) bool {
 	return mouseY >= viewportTopRow && mouseY <= viewportBottom
 }
 
+func (m model) isWithinSidebar(mouseX, mouseY int) bool {
+	if !m.showSidebar() {
+		return false
+	}
+	return mouseX >= m.width-m.sidebarWidth() && mouseX < m.width && mouseY >= 1 && mouseY < m.height
+}
+
+func (m model) hoveredSidebarPeerName(mouseY int) string {
+	if !m.showSidebar() {
+		return ""
+	}
+	// The sidebar starts at top bar height (1).
+	// Content starts with title (line 0), empty line (line 1), and then names (line 2 onwards)
+	sidebarLine := mouseY - 1
+	if sidebarLine < 2 {
+		return ""
+	}
+	nameIndex := sidebarLine - 2
+
+	var names []string
+	if m.peerNames != nil {
+		names = m.peerNames()
+		if len(names) > 0 {
+			sort.Strings(names)
+		}
+	} else {
+		peer := strings.TrimSpace(m.currentPeer)
+		if peer == "" {
+			peer = "host"
+		}
+		names = []string{peer, m.localName}
+	}
+
+	if nameIndex >= 0 && nameIndex < len(names) {
+		// Parse out the name without the version suffix e.g., "alice [v0.1.80]"
+		fullName := names[nameIndex]
+		if idx := strings.LastIndex(fullName, " ["); idx != -1 {
+			return strings.TrimSpace(fullName[:idx])
+		}
+		return strings.TrimSpace(fullName)
+	}
+	return ""
+}
+
 func (m model) viewportLineIndex(mouseY int) int {
 	return m.viewport.YOffset + (mouseY - viewportTopRow)
 }
@@ -3146,17 +3210,34 @@ func (m model) clickedAttachmentID(mouseY int) string {
 	return attachmentID
 }
 
-func (m *model) updateHoveredHistoryIndex(mouseY int) bool {
+func (m *model) updateHoveredState(mouseX, mouseY int) bool {
+	updated := false
+
 	hoveredIndex := -1
-	if attachmentID, historyIndex := m.clickedAttachment(mouseY); attachmentID != "" {
-		hoveredIndex = historyIndex
+	if m.isWithinViewport(mouseY) {
+		if attachmentID, historyIndex := m.clickedAttachment(mouseY); attachmentID != "" {
+			hoveredIndex = historyIndex
+		}
 	}
-	if hoveredIndex == m.hoveredHistoryIndex {
-		return false
+	if hoveredIndex != m.hoveredHistoryIndex {
+		m.hoveredHistoryIndex = hoveredIndex
+		updated = true
 	}
-	m.hoveredHistoryIndex = hoveredIndex
-	m.refreshViewport(false)
-	return true
+
+	hoveredPeer := ""
+	if m.isWithinSidebar(mouseX, mouseY) {
+		hoveredPeer = m.hoveredSidebarPeerName(mouseY)
+	}
+	if hoveredPeer != m.hoveredPeerName {
+		m.hoveredPeerName = hoveredPeer
+		updated = true
+	}
+
+	if updated {
+		m.resize()
+		m.refreshViewport(false)
+	}
+	return updated
 }
 
 func absInt(value int) int {
@@ -3270,6 +3351,7 @@ func (m *model) resetConversation() {
 	m.pending = make(map[string]session.Message)
 	m.pendingRevokes = make(map[string][]transcript.RevokeRecord)
 	m.peerIdentities = make(map[string]string)
+	m.peerSignatures = make(map[string]string)
 	m.transcript = nil
 	m.transcriptConversationKey = ""
 	m.currentConversationKey = ""
@@ -3965,6 +4047,13 @@ func (m model) renderInputBox() string {
 
 func (m model) renderStatusNotice() string {
 	var notices []string
+
+	if m.hoveredPeerName != "" {
+		if sig := m.peerSignatures[m.hoveredPeerName]; sig != "" {
+			hoverNotice := fmt.Sprintf("%s: %s", m.hoveredPeerName, sig)
+			notices = append(notices, inputHintStyle.Render(hoverNotice))
+		}
+	}
 
 	if m.unreadCount > 0 {
 		badge := lipgloss.NewStyle().Foreground(lipgloss.Color("#89b4fa")).Bold(true).Render(fmt.Sprintf("↓ %d new messages", m.unreadCount))
