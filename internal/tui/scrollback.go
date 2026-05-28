@@ -547,6 +547,8 @@ func handleScrollbackLine(m *model, console *promptConsole, text string) bool {
 			attachmentID, destPath := splitFirstToken(remainder)
 			runScrollbackDownload(m, console, attachmentID, destPath)
 			m.flushScrollbackCmd()
+		case "/signature":
+			_, _ = m.handleSignatureCommand(remainder)
 		case "/update-all":
 			args := []string(nil)
 			if strings.TrimSpace(remainder) != "" {

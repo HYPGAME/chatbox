@@ -2,10 +2,11 @@ package session
 
 import "time"
 
-const ProtocolVersion uint16 = 2
+const ProtocolVersion uint16 = 3
 
 type Config struct {
 	Name              string
+	Signature         string
 	PSK               []byte
 	Version           uint16
 	HandshakeTimeout  time.Duration

@@ -21,10 +21,11 @@ type Host struct {
 }
 
 type Message struct {
-	ID   string
-	From string
-	Body string
-	At   time.Time
+	ID        string
+	From      string
+	Body      string
+	At        time.Time
+	Signature string
 }
 
 type Receipt struct {
@@ -163,6 +164,12 @@ func (s *Session) MaxMessageSize() int {
 	return s.cfg.MaxMessageSize
 }
 
+func (s *Session) SetSignature(sig string) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	s.cfg.Signature = sig
+}
+
 func (s *Session) Send(text string) (Message, error) {
 	if !utf8.ValidString(text) {
 		return Message{}, errors.New("message must be valid UTF-8")
@@ -172,10 +179,11 @@ func (s *Session) Send(text string) (Message, error) {
 		return Message{}, err
 	}
 	message := Message{
-		ID:   messageID,
-		From: s.cfg.Name,
-		Body: text,
-		At:   time.Now(),
+		ID:        messageID,
+		From:      s.cfg.Name,
+		Signature: s.cfg.Signature,
+		Body:      text,
+		At:        time.Now(),
 	}
 	if err := s.sendMessage(message); err != nil {
 		return Message{}, err
@@ -388,17 +396,27 @@ func encodeMessagePayload(message Message) ([]byte, error) {
 	if message.From == "" {
 		return nil, errors.New("message must have a sender")
 	}
+	if !utf8.ValidString(message.Signature) {
+		return nil, errors.New("message signature must be valid UTF-8")
+	}
 
 	idBytes := []byte(message.ID)
 	fromBytes := []byte(message.From)
+	sigBytes := []byte(message.Signature)
 	body := []byte(message.Body)
-	payload := make([]byte, 2+len(idBytes)+2+len(fromBytes)+8+len(body))
+	payload := make([]byte, 2+len(idBytes)+2+len(fromBytes)+2+len(sigBytes)+8+len(body))
 	binary.BigEndian.PutUint16(payload[:2], uint16(len(idBytes)))
 	copy(payload[2:2+len(idBytes)], idBytes)
+	
 	fromStart := 2 + len(idBytes)
 	binary.BigEndian.PutUint16(payload[fromStart:fromStart+2], uint16(len(fromBytes)))
 	copy(payload[fromStart+2:fromStart+2+len(fromBytes)], fromBytes)
-	timestampStart := fromStart + 2 + len(fromBytes)
+	
+	sigStart := fromStart + 2 + len(fromBytes)
+	binary.BigEndian.PutUint16(payload[sigStart:sigStart+2], uint16(len(sigBytes)))
+	copy(payload[sigStart+2:sigStart+2+len(sigBytes)], sigBytes)
+	
+	timestampStart := sigStart + 2 + len(sigBytes)
 	binary.BigEndian.PutUint64(payload[timestampStart:timestampStart+8], uint64(message.At.UnixNano()))
 	copy(payload[timestampStart+8:], body)
 	return payload, nil
@@ -413,26 +431,38 @@ func PayloadSize(message Message) (int, error) {
 }
 
 func decodeMessagePayload(fallbackFrom string, payload []byte) (Message, error) {
-	if len(payload) < 12 {
+	if len(payload) < 14 {
 		return Message{}, errors.New("message payload too short")
 	}
 
 	idLength := int(binary.BigEndian.Uint16(payload[:2]))
 	fromLengthOffset := 2 + idLength
-	if idLength == 0 || len(payload) < fromLengthOffset+2+8 {
+	if idLength == 0 || len(payload) < fromLengthOffset+2 {
 		return Message{}, errors.New("message payload has invalid ID")
 	}
 
 	fromLength := int(binary.BigEndian.Uint16(payload[fromLengthOffset : fromLengthOffset+2]))
 	fromStart := fromLengthOffset + 2
-	timestampStart := fromStart + fromLength
-	if fromLength == 0 || len(payload) < timestampStart+8 {
+	sigLengthOffset := fromStart + fromLength
+	if fromLength == 0 || len(payload) < sigLengthOffset+2+8 {
 		return Message{}, errors.New("message payload has invalid sender")
 	}
 
-	fromBytes := payload[fromStart:timestampStart]
+	fromBytes := payload[fromStart:sigLengthOffset]
 	if !utf8.Valid(fromBytes) {
 		return Message{}, errors.New("received invalid UTF-8 sender")
+	}
+
+	sigLength := int(binary.BigEndian.Uint16(payload[sigLengthOffset : sigLengthOffset+2]))
+	sigStart := sigLengthOffset + 2
+	timestampStart := sigStart + sigLength
+	if len(payload) < timestampStart+8 {
+		return Message{}, errors.New("message payload has invalid signature offset")
+	}
+
+	sigBytes := payload[sigStart:timestampStart]
+	if !utf8.Valid(sigBytes) {
+		return Message{}, errors.New("received invalid UTF-8 signature")
 	}
 
 	body := payload[timestampStart+8:]
@@ -446,10 +476,11 @@ func decodeMessagePayload(fallbackFrom string, payload []byte) (Message, error) 
 	}
 
 	return Message{
-		ID:   string(payload[2 : 2+idLength]),
-		From: from,
-		Body: string(body),
-		At:   time.Unix(0, int64(binary.BigEndian.Uint64(payload[timestampStart:timestampStart+8]))),
+		ID:        string(payload[2 : 2+idLength]),
+		From:      from,
+		Signature: string(sigBytes),
+		Body:      string(body),
+		At:        time.Unix(0, int64(binary.BigEndian.Uint64(payload[timestampStart:timestampStart+8]))),
 	}, nil
 }
 

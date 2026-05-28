@@ -36,6 +36,7 @@ type Record struct {
 	MessageID      string    `json:"message_id"`
 	Direction      string    `json:"direction"`
 	From           string    `json:"from"`
+	Signature      string    `json:"signature,omitempty"`
 	AuthorIdentity string    `json:"author_identity,omitempty"`
 	Body           string    `json:"body"`
 	At             time.Time `json:"at"`

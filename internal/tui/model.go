@@ -40,6 +40,7 @@ type sessionClient interface {
 	PeerName() string
 	Send(string) (session.Message, error)
 	Resend(session.Message) error
+	SetSignature(string)
 }
 
 type transcriptStore interface {
@@ -154,6 +155,7 @@ type historyEntry struct {
 	kind           historyKind
 	messageID      string
 	from           string
+	signature      string
 	body           string
 	authorIdentity string
 	at             time.Time
@@ -265,6 +267,7 @@ type model struct {
 	currentConversationKey    string
 	currentPeer               string
 	identityID                string
+	identitySignature         string
 	roomAuthorization         historymeta.Record
 	roomEventLog              []room.Event
 
@@ -374,8 +377,8 @@ var (
 	bubbleTeaRunner  = runProgram
 	scrollbackRunner = runScrollback
 
-	tuiCommandsHelp        = "commands: /help /status /events /quit /file /open /download /update-all | Ctrl+V attach / Ctrl+Y copy / Ctrl+R revoke"
-	scrollbackCommandsHelp = "commands: /help /status /events /quit /file /open /download /update-all"
+	tuiCommandsHelp        = "commands: /help /status /events /quit /file /open /download /signature /update-all | Ctrl+V attach / Ctrl+Y copy / Ctrl+R revoke"
+	scrollbackCommandsHelp = "commands: /help /status /events /quit /file /open /download /signature /update-all"
 
 	slashCommandSuggestions = []slashCommandSuggestion{
 		{command: "/help", description: "显示支持的命令"},
@@ -384,6 +387,7 @@ var (
 		{command: "/file", description: "上传图片或文件"},
 		{command: "/open", description: "打开附件"},
 		{command: "/download", description: "下载附件到本地"},
+		{command: "/signature", description: "设置个性签名"},
 		{command: "/quit", description: "退出当前会话"},
 		{command: "/update-all", description: "触发全房间更新，可选指定版本"},
 	}
@@ -919,6 +923,7 @@ func (m *model) activateSession(conn sessionClient) (bool, uint64, error) {
 	if err := m.bindSession(conn); err != nil {
 		return false, 0, err
 	}
+	conn.SetSignature(m.identitySignature)
 	m.announceClientVersion()
 	hostHistoryRequested, hostSyncAttempt := m.requestHostHistory()
 	m.announceHistorySyncCapability()
@@ -982,6 +987,7 @@ func (m *model) ensureIdentityLoaded() error {
 		return fmt.Errorf("load identity: %w", err)
 	}
 	m.identityID = store.IdentityID
+	m.identitySignature = store.Signature
 	return nil
 }
 
@@ -1195,6 +1201,8 @@ func (m *model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 				return m.handleUpdateAllCommand(nil)
 			}
 			return m.handleUpdateAllCommand([]string{strings.TrimSpace(remainder)})
+		case "/signature":
+			return m.handleSignatureCommand(remainder)
 		default:
 			m.addErrorEntry("unknown command")
 			return *m, m.flushScrollbackCmd()
@@ -1217,8 +1225,34 @@ func (m *model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 	return *m, m.flushScrollbackCmd()
 }
 
-func (m *model) handleRevokeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
+func (m *model) handleSignatureCommand(signature string) (tea.Model, tea.Cmd) {
+	if err := m.ensureIdentityLoaded(); err != nil {
+		m.addErrorEntry(fmt.Sprintf("load identity: %v", err))
+		return *m, m.flushScrollbackCmd()
+	}
+
+	sig := strings.TrimSpace(signature)
+	store, err := m.identityLoader()
+	if err != nil {
+		m.addErrorEntry(fmt.Sprintf("load identity: %v", err))
+		return *m, m.flushScrollbackCmd()
+	}
+
+	if err := store.SaveSignature(sig); err != nil {
+		m.addErrorEntry(fmt.Sprintf("save signature: %v", err))
+		return *m, m.flushScrollbackCmd()
+	}
+
+	m.identitySignature = sig
+	if m.session != nil {
+		m.session.SetSignature(sig)
+	}
+
+	m.addSystemEntry(fmt.Sprintf("signature updated to %q", sig))
+	return *m, m.flushScrollbackCmd()
+	}
+
+	func (m *model) handleRevokeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {	switch msg.Type {
 	case tea.KeyCtrlY:
 		if m.enterCopyMode() {
 			m.refreshViewport(false)
@@ -2338,6 +2372,7 @@ func (m *model) addMessageEntry(message session.Message, outgoing bool, status s
 		MessageID:      message.ID,
 		Direction:      transcript.DirectionIncoming,
 		From:           message.From,
+		Signature:      message.Signature,
 		AuthorIdentity: m.authorIdentityForMessage(message, outgoing),
 		Body:           message.Body,
 		At:             message.At,
@@ -2354,6 +2389,7 @@ func (m *model) addHistoricalMessageEntry(message session.Message, outgoing bool
 		MessageID:      message.ID,
 		Direction:      transcript.DirectionIncoming,
 		From:           message.From,
+		Signature:      message.Signature,
 		AuthorIdentity: m.authorIdentityForMessage(message, outgoing),
 		Body:           message.Body,
 		At:             message.At,
@@ -2430,6 +2466,7 @@ func historyEntryFromRecord(record transcript.Record) historyEntry {
 		kind:           historyKindMessage,
 		messageID:      record.MessageID,
 		from:           record.From,
+		signature:      record.Signature,
 		body:           record.Body,
 		authorIdentity: record.AuthorIdentity,
 		at:             record.At,
@@ -3653,7 +3690,7 @@ func renderTUIEntryWithFeedbackAndContext(entry historyEntry, selected bool, fee
 			textSegmentStyle = textSegmentStyle.Foreground(lipgloss.Color("#fab387")) // Peach for mentions
 		}
 
-		header := renderTUIMessageHeader(timestamp, entry.from, timestampSegmentStyle, senderSegmentStyle, textSegmentStyle)
+		header := renderTUIMessageHeader(timestamp, entry.from, entry.signature, timestampSegmentStyle, senderSegmentStyle, textSegmentStyle)
 		if !entry.revoked {
 			if card, ok := renderTUIAttachmentCard(entry.body, textSegmentStyle, statusSuffix); ok {
 				body := indentTUIMessageBodyBlock(card, textSegmentStyle)
@@ -3695,10 +3732,15 @@ func renderTUIEntryWithFeedbackAndContext(entry historyEntry, selected bool, fee
 		return line
 	}
 }
-func renderTUIMessageHeader(timestamp string, sender string, timestampStyle lipgloss.Style, senderStyle lipgloss.Style, textStyle lipgloss.Style) string {
-	return senderStyle.Render(strings.TrimSpace(sender)) +
-		textStyle.Render("  ") +
-		timestampStyle.Render(timestamp)
+func renderTUIMessageHeader(timestamp string, sender string, signature string, timestampStyle lipgloss.Style, senderStyle lipgloss.Style, textStyle lipgloss.Style) string {
+	res := senderStyle.Render(strings.TrimSpace(sender))
+	if signature = strings.TrimSpace(signature); signature != "" {
+		// Use overlay0 (#6c7086) for signature text to make it subtle
+		sigStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#6c7086")).Italic(true)
+		res += textStyle.Render(" ") + sigStyle.Render("("+signature+")")
+	}
+	res += textStyle.Render("  ") + timestampStyle.Render(timestamp)
+	return res
 }
 
 func tuiMessageBodyIndent() string {

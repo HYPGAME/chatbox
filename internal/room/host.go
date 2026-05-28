@@ -73,7 +73,8 @@ type broadcastRetryItem struct {
 }
 
 type HostRoom struct {
-	localName string
+	localName      string
+	localSignature string
 
 	messages chan session.Message
 	receipts chan session.Receipt
@@ -261,6 +262,11 @@ func (r *HostRoom) AddMember(member memberSession) {
 		r.runMember(tracked)
 	}()
 }
+func (r *HostRoom) SetSignature(sig string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.localSignature = sig
+}
 
 func (r *HostRoom) Send(text string) (session.Message, error) {
 	if !utf8.ValidString(text) {
@@ -271,14 +277,17 @@ func (r *HostRoom) Send(text string) (session.Message, error) {
 	if err != nil {
 		return session.Message{}, err
 	}
+	r.mu.Lock()
+	sig := r.localSignature
+	r.mu.Unlock()
 	message := session.Message{
-		ID:   messageID,
-		From: r.localName,
-		Body: text,
-		At:   time.Now(),
+		ID:        messageID,
+		From:      r.localName,
+		Signature: sig,
+		Body:      text,
+		At:        time.Now(),
 	}
-
-	_ = r.broadcast(message, 0)
+	r.broadcast(message, 0)
 	r.retainVisibleMessage(message, "")
 	r.publishMessage(message)
 	r.publishReceipt(session.Receipt{

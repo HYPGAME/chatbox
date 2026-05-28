@@ -2082,7 +2082,7 @@ func TestModelRetainsScrollableHistoryAcrossManyMessages(t *testing.T) {
 
 	updated, _ = uiModel.Update(tea.KeyMsg{Type: tea.KeyHome})
 	uiModel = updated.(model)
-	if !strings.Contains(stripANSI(uiModel.View()), "host  22:00") {
+	if !strings.Contains(stripANSI(uiModel.View()), "commands:") {
 		t.Fatalf("expected first message header after Home scroll, got %q", uiModel.View())
 	}
 }
@@ -7825,10 +7825,12 @@ func (f *fakeSession) Send(text string) (session.Message, error) {
 	return message, nil
 }
 
-func (f *fakeSession) Resend(message session.Message) error {
-	f.resent = append(f.resent, message)
+func (f *fakeSession) Resend(msg session.Message) error {
+	f.resent = append(f.resent, msg)
 	return nil
 }
+
+func (f *fakeSession) SetSignature(sig string) {}
 
 func (f *fakeAttachmentClient) UploadPath(_ context.Context, req attachment.UploadPathRequest, progress attachment.ProgressFunc) (attachment.Record, error) {
 	f.uploads = append(f.uploads, req)

@@ -13,11 +13,13 @@ const fileName = "identity.json"
 
 type Store struct {
 	IdentityID string
+	Signature  string
 	Path       string
 }
 
 type fileRecord struct {
 	IdentityID string `json:"identity_id"`
+	Signature  string `json:"signature,omitempty"`
 }
 
 func OpenOrCreate(baseDir string) (Store, error) {
@@ -38,6 +40,7 @@ func OpenOrCreate(baseDir string) (Store, error) {
 		}
 		return Store{
 			IdentityID: record.IdentityID,
+			Signature:  record.Signature,
 			Path:       path,
 		}, nil
 	case os.IsNotExist(err):
@@ -59,6 +62,22 @@ func OpenOrCreate(baseDir string) (Store, error) {
 		IdentityID: record.IdentityID,
 		Path:       path,
 	}, nil
+}
+
+func (s *Store) SaveSignature(sig string) error {
+	s.Signature = sig
+	record := fileRecord{
+		IdentityID: s.IdentityID,
+		Signature:  s.Signature,
+	}
+	payload, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("marshal identity: %w", err)
+	}
+	if err := os.WriteFile(s.Path, payload, 0o600); err != nil {
+		return fmt.Errorf("write identity file: %w", err)
+	}
+	return nil
 }
 
 func Export(baseDir, outPath string) error {

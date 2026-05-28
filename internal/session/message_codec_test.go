@@ -9,10 +9,11 @@ func TestEncodeAndDecodeMessagePayloadPreservesSenderTimestamp(t *testing.T) {
 	t.Parallel()
 
 	original := Message{
-		ID:   "msg-1",
-		From: "joiner",
-		Body: "hello",
-		At:   time.Date(2026, 4, 14, 20, 30, 45, 123000000, time.UTC),
+		ID:        "msg-1",
+		From:      "joiner",
+		Signature: "testing",
+		Body:      "hello",
+		At:        time.Date(2026, 4, 14, 20, 30, 45, 123000000, time.UTC),
 	}
 
 	payload, err := encodeMessagePayload(original)
@@ -34,16 +35,20 @@ func TestEncodeAndDecodeMessagePayloadPreservesSenderTimestamp(t *testing.T) {
 	if decoded.ID != original.ID {
 		t.Fatalf("expected message ID %q, got %q", original.ID, decoded.ID)
 	}
+	if decoded.Signature != original.Signature {
+		t.Fatalf("expected signature %q, got %q", original.Signature, decoded.Signature)
+	}
 }
 
 func TestDecodeMessagePayloadUsesPayloadSenderOverConnectionPeer(t *testing.T) {
 	t.Parallel()
 
 	original := Message{
-		ID:   "msg-2",
-		From: "aaa",
-		Body: "hello from aaa",
-		At:   time.Date(2026, 4, 15, 9, 30, 45, 0, time.UTC),
+		ID:        "msg-2",
+		From:      "aaa",
+		Signature: "",
+		Body:      "hello from aaa",
+		At:        time.Date(2026, 4, 15, 9, 30, 45, 0, time.UTC),
 	}
 
 	payload, err := encodeMessagePayload(original)
