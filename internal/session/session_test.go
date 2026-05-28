@@ -231,15 +231,16 @@ func newSingleInboundPacketConn(t *testing.T, message Message, writeErr error) (
 
 func newManualSession(conn net.Conn, sendCipher, recvCipher *cipherState) *Session {
 	session := &Session{
-		conn:       conn,
-		cfg:        Config{WriteTimeout: 20 * time.Millisecond}.withDefaults(),
-		peerName:   "host",
-		sendCipher: sendCipher,
-		recvCipher: recvCipher,
-		messages:   make(chan Message, 1),
-		receipts:   make(chan Receipt, 1),
-		done:       make(chan struct{}),
-		seenIDs:    make(map[string]struct{}),
+		conn:              conn,
+		cfg:               Config{WriteTimeout: 20 * time.Millisecond}.withDefaults(),
+		peerName:          "host",
+		negotiatedVersion: 3,
+		sendCipher:        sendCipher,
+		recvCipher:        recvCipher,
+		messages:          make(chan Message, 1),
+		receipts:          make(chan Receipt, 1),
+		done:              make(chan struct{}),
+		seenIDs:           make(map[string]struct{}),
 	}
 	session.touch()
 	return session

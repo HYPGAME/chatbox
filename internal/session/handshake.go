@@ -25,9 +25,10 @@ const (
 )
 
 type handshakeState struct {
-	peerName string
-	sendKey  []byte
-	recvKey  []byte
+	peerName          string
+	negotiatedVersion uint16
+	sendKey           []byte
+	recvKey           []byte
 }
 
 func clientHandshake(ctx context.Context, conn net.Conn, cfg Config) (*handshakeState, error) {
@@ -50,7 +51,7 @@ func clientHandshake(ctx context.Context, conn net.Conn, cfg Config) (*handshake
 	if err != nil {
 		return nil, err
 	}
-	if serverHello.version != cfg.Version {
+	if serverHello.version != cfg.Version && serverHello.version != 2 {
 		return nil, fmt.Errorf("protocol version mismatch: local=%d remote=%d", cfg.Version, serverHello.version)
 	}
 
@@ -70,9 +71,10 @@ func clientHandshake(ctx context.Context, conn net.Conn, cfg Config) (*handshake
 	}
 
 	return &handshakeState{
-		peerName: serverHello.name,
-		sendKey:  sendKey,
-		recvKey:  recvKey,
+		peerName:          serverHello.name,
+		negotiatedVersion: serverHello.version,
+		sendKey:           sendKey,
+		recvKey:           recvKey,
 	}, nil
 }
 
@@ -87,8 +89,13 @@ func serverHandshake(ctx context.Context, conn net.Conn, cfg Config) (*handshake
 	if err != nil {
 		return nil, err
 	}
+	negotiatedVersion := cfg.Version
 	if clientHello.version != cfg.Version {
-		return nil, fmt.Errorf("protocol version mismatch: local=%d remote=%d", cfg.Version, clientHello.version)
+		if clientHello.version == 2 {
+			negotiatedVersion = 2
+		} else {
+			return nil, fmt.Errorf("protocol version mismatch: local=%d remote=%d", cfg.Version, clientHello.version)
+		}
 	}
 
 	serverNonce, err := randomNonce()
@@ -97,7 +104,7 @@ func serverHandshake(ctx context.Context, conn net.Conn, cfg Config) (*handshake
 	}
 
 	serverProof := computeProof(cfg.PSK, "server-proof", clientHello.nonce, serverNonce)
-	if err := writeServerHello(conn, cfg.Version, cfg.Name, serverNonce, serverProof); err != nil {
+	if err := writeServerHello(conn, negotiatedVersion, cfg.Name, serverNonce, serverProof); err != nil {
 		return nil, err
 	}
 
@@ -116,9 +123,10 @@ func serverHandshake(ctx context.Context, conn net.Conn, cfg Config) (*handshake
 	}
 
 	return &handshakeState{
-		peerName: clientHello.name,
-		sendKey:  sendKey,
-		recvKey:  recvKey,
+		peerName:          clientHello.name,
+		negotiatedVersion: negotiatedVersion,
+		sendKey:           sendKey,
+		recvKey:           recvKey,
 	}, nil
 }
 
