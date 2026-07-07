@@ -294,7 +294,7 @@ type model struct {
 	hostSyncAttempt        uint64
 	executedRoomUpdates    map[string]struct{}
 	updateStatuses         map[string]map[string]string
-	lastReconnectError     string
+	lastReconnectErrorKey  string
 
 	status string
 
@@ -903,7 +903,7 @@ func (m *model) handleSessionReady(msg sessionReadyMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
 		return m.handleReconnectError(msg.err)
 	}
-	m.lastReconnectError = ""
+	m.lastReconnectErrorKey = ""
 
 	hostHistoryRequested, hostSyncAttempt, err := m.activateSession(msg.session)
 	if err != nil {
@@ -2363,11 +2363,23 @@ func (m *model) addReconnectErrorEntry(err error) {
 		return
 	}
 	text := strings.TrimSpace(err.Error())
-	if text == "" || text == m.lastReconnectError {
+	key := reconnectErrorKey(text)
+	if text == "" || key == m.lastReconnectErrorKey {
 		return
 	}
-	m.lastReconnectError = text
+	m.lastReconnectErrorKey = key
 	m.addErrorEntry(text)
+}
+
+func reconnectErrorKey(text string) string {
+	switch {
+	case strings.HasPrefix(text, "dial:"):
+		return "dial"
+	case strings.Contains(text, "dial tcp "):
+		return "dial"
+	default:
+		return text
+	}
 }
 
 func (m *model) addMessageEntry(message session.Message, outgoing bool, status string, persist bool) {

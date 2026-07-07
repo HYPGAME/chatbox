@@ -7304,6 +7304,40 @@ func TestScrollbackReconnectErrorsAreThrottled(t *testing.T) {
 	}
 }
 
+func TestScrollbackReconnectDialErrorsAreThrottledByCategory(t *testing.T) {
+	t.Parallel()
+
+	var printed []string
+	uiModel := newModel(modelOptions{
+		mode:   "join",
+		uiMode: uiModeScrollback,
+		connect: func(context.Context) (sessionClient, error) {
+			return nil, errors.New("still offline")
+		},
+		historyPrinter: func(lines []string) tea.Cmd {
+			printed = append(printed, lines...)
+			return nil
+		},
+	})
+
+	for _, errText := range []string{
+		"dial: dial tcp 10.77.1.4:7331: i/o timeout",
+		"dial: dial tcp 10.77.1.4:7331: connect: no route to host",
+		"dial: dial tcp 10.77.1.4:7331: i/o timeout",
+	} {
+		updated, _ := uiModel.Update(sessionReadyMsg{err: errors.New(errText)})
+		uiModel = updated.(model)
+	}
+
+	joined := strings.Join(printed, "\n")
+	if got := strings.Count(joined, "dial tcp 10.77.1.4:7331"); got != 1 {
+		t.Fatalf("expected dial reconnect errors to print once, got %d in %q", got, joined)
+	}
+	if !strings.Contains(uiModel.View(), "reconnecting") {
+		t.Fatalf("expected reconnecting status in view, got %q", uiModel.View())
+	}
+}
+
 func TestScrollbackOutgoingReceiptDoesNotPrintDeliveryStatuses(t *testing.T) {
 	t.Parallel()
 
