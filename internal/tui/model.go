@@ -1664,7 +1664,6 @@ func (m *model) maybeSendHistorySyncChunk(request room.HistorySyncRequest) {
 	}
 	for _, chunk := range chunks {
 		if _, err := m.session.Send(room.HistorySyncChunkBody(chunk)); err != nil {
-			m.addErrorEntry(err.Error())
 			return
 		}
 	}

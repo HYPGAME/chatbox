@@ -4528,6 +4528,49 @@ func TestModelSplitsOversizedHistorySyncChunk(t *testing.T) {
 	}
 }
 
+func TestModelHidesHistorySyncSendError(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeSession{
+		peerName:  "host",
+		localName: "alice",
+		sendErr:   errors.New("message exceeds 4096 bytes"),
+	}
+	joinedAt := time.Date(2026, 4, 20, 20, 0, 0, 0, time.UTC)
+	uiModel := newModel(modelOptions{
+		mode:    "join",
+		session: fake,
+		transcriptOpener: func(string) (transcriptStore, error) {
+			return &fakeTranscriptStore{}, nil
+		},
+	})
+	uiModel.identityID = "identity-local"
+	uiModel.roomAuthorization.RoomKey = transcript.JoinRoomKey("203.0.113.10:7331")
+	uiModel.addHistoryEntry(historyEntry{
+		kind:      historyKindMessage,
+		messageID: "sync-hidden-error",
+		from:      "alice",
+		body:      "sync me",
+		at:        joinedAt.Add(time.Minute),
+		status:    transcript.StatusSent,
+	})
+	uiModel.maybeSendHistorySyncChunk(room.HistorySyncRequest{
+		SourceIdentity: "identity-local",
+		TargetIdentity: "identity-host",
+		RoomKey:        uiModel.roomAuthorization.RoomKey,
+		Since:          joinedAt,
+	})
+
+	if fake.sendCalls != 1 {
+		t.Fatal("expected history sync send to be attempted")
+	}
+	for _, entry := range uiModel.history {
+		if entry.kind == historyKindError && entry.body == fake.sendErr.Error() {
+			t.Fatalf("expected background history sync error to stay hidden, got %#v", entry)
+		}
+	}
+}
+
 func TestModelReplaysHistorySyncChunkIntoTranscript(t *testing.T) {
 	t.Parallel()
 
@@ -7784,6 +7827,8 @@ type fakeSession struct {
 	peerName  string
 	localName string
 	maxBytes  int
+	sendCalls int
+	sendErr   error
 	sent      []session.Message
 	resent    []session.Message
 }
@@ -7842,6 +7887,10 @@ func (f *fakeSession) MaxMessageSize() int {
 }
 
 func (f *fakeSession) Send(text string) (session.Message, error) {
+	f.sendCalls++
+	if f.sendErr != nil {
+		return session.Message{}, f.sendErr
+	}
 	if f.maxBytes > 0 && len(text) > f.maxBytes {
 		return session.Message{}, fmt.Errorf("message exceeds %d bytes", f.maxBytes)
 	}
