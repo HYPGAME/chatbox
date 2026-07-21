@@ -1664,6 +1664,9 @@ func (m *model) maybeSendHistorySyncChunk(request room.HistorySyncRequest) {
 	}
 	for _, chunk := range chunks {
 		if _, err := m.session.Send(room.HistorySyncChunkBody(chunk)); err != nil {
+			if !strings.HasPrefix(err.Error(), "message exceeds ") {
+				m.addErrorEntry(err.Error())
+			}
 			return
 		}
 	}

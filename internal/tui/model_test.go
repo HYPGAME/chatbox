@@ -4528,7 +4528,7 @@ func TestModelSplitsOversizedHistorySyncChunk(t *testing.T) {
 	}
 }
 
-func TestModelHidesHistorySyncSendError(t *testing.T) {
+func TestModelFiltersHistorySyncSendErrors(t *testing.T) {
 	t.Parallel()
 
 	fake := &fakeSession{
@@ -4569,6 +4569,20 @@ func TestModelHidesHistorySyncSendError(t *testing.T) {
 			t.Fatalf("expected background history sync error to stay hidden, got %#v", entry)
 		}
 	}
+
+	fake.sendErr = errors.New("write packet: broken pipe")
+	uiModel.maybeSendHistorySyncChunk(room.HistorySyncRequest{
+		SourceIdentity: "identity-local",
+		TargetIdentity: "identity-host",
+		RoomKey:        uiModel.roomAuthorization.RoomKey,
+		Since:          joinedAt,
+	})
+	for _, entry := range uiModel.history {
+		if entry.kind == historyKindError && entry.body == fake.sendErr.Error() {
+			return
+		}
+	}
+	t.Fatal("expected non-size history sync error to stay visible")
 }
 
 func TestModelReplaysHistorySyncChunkIntoTranscript(t *testing.T) {
