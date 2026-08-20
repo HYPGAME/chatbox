@@ -74,18 +74,20 @@ func (h *Host) Addr() string {
 }
 
 func (h *Host) Accept(ctx context.Context) (*Session, error) {
-	conn, err := h.listener.Accept()
-	if err != nil {
-		return nil, fmt.Errorf("accept: %w", err)
-	}
+	for {
+		conn, err := h.listener.Accept()
+		if err != nil {
+			return nil, fmt.Errorf("accept: %w", err)
+		}
 
-	state, err := serverHandshake(ctx, conn, h.cfg)
-	if err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
+		state, err := serverHandshake(ctx, conn, h.cfg)
+		if err != nil {
+			_ = conn.Close()
+			continue
+		}
 
-	return newSession(conn, h.cfg, state)
+		return newSession(conn, h.cfg, state)
+	}
 }
 
 func (h *Host) Close() error {
