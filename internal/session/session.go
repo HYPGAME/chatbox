@@ -16,8 +16,9 @@ import (
 )
 
 type Host struct {
-	listener net.Listener
-	cfg      Config
+	listener  net.Listener
+	cfg       Config
+	RejectLog io.Writer // if set, rejected handshakes are logged here
 }
 
 type Message struct {
@@ -82,6 +83,9 @@ func (h *Host) Accept(ctx context.Context) (*Session, error) {
 
 		state, err := serverHandshake(ctx, conn, h.cfg)
 		if err != nil {
+			if h.RejectLog != nil {
+				fmt.Fprintf(h.RejectLog, "rejected connection from %s: %v\n", conn.RemoteAddr(), err)
+			}
 			_ = conn.Close()
 			continue
 		}

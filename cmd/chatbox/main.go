@@ -252,6 +252,7 @@ func runHost(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	host.RejectLog = stderr
 	defer host.Close()
 
 	attachmentDir, err := attachment.DefaultHostDir()
